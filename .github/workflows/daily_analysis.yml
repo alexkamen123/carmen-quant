@@ -22,11 +22,14 @@ jobs:
       - name: 安装依赖
         run: pip install -e .
 
+      - name: 安装 Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: 运行每日分析
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          DEEPSEEK_API_KEY:  ${{ secrets.DEEPSEEK_API_KEY }}
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          DEEPSEEK_API_KEY:        ${{ secrets.DEEPSEEK_API_KEY }}
+          FEISHU_WEBHOOK_URL:      ${{ secrets.FEISHU_WEBHOOK_URL }}
         run: finance-agent run
 
       - name: 上传 SQLite 数据库（保留历史）
