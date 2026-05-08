@@ -1,0 +1,37 @@
+# .github/workflows/daily_analysis.yml
+name: 每日持仓分析
+
+on:
+  schedule:
+    # 北京时间 09:00 = UTC 01:00
+    - cron: "0 1 * * 1-5"   # 周一到周五
+  workflow_dispatch:          # 允许手动触发
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 安装依赖
+        run: pip install -e .
+
+      - name: 运行每日分析
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DEEPSEEK_API_KEY:  ${{ secrets.DEEPSEEK_API_KEY }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+        run: finance-agent run
+
+      - name: 上传 SQLite 数据库（保留历史）
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-db-${{ github.run_number }}
+          path: data/agent.db
+          retention-days: 30
