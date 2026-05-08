@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finance-agent"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2",
+    "langchain-anthropic>=0.2",
+    "langchain-openai>=0.2",
+    "anthropic>=0.30",
+    "openai>=1.40",
+    "akshare>=1.14",
+    "yfinance>=0.2.40",
+    "pandas-ta>=0.3.14b",
+    "pandas>=2.1",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "aiosqlite>=0.20",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+    "typer>=0.12",
+]
+
+[project.scripts]
+finance-agent = "finance_agent.main:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.14",
+    "respx>=0.21",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
