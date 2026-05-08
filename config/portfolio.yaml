@@ -1,0 +1,44 @@
+holdings:
+  - ticker: NVDA
+    market: us
+    shares: 2
+    cost_basis: null
+    notes: "AI算力核心持仓"
+
+  - ticker: AAPL
+    market: us
+    shares: 1
+    cost_basis: null
+
+  - ticker: GOOGL
+    market: us
+    shares: 1
+    cost_basis: null
+
+  - ticker: QQQM
+    market: us
+    shares: 1
+    cost_basis: null
+    is_dca: true
+
+  - ticker: VOO
+    market: us
+    shares: 0
+    is_dca: true
+
+  - ticker: "00700"
+    market: hk
+    shares: 3
+    cost_basis: null
+    notes: "腾讯控股"
+
+  - ticker: "02513"
+    market: hk
+    shares: 1
+    cost_basis: null
+    notes: "智谱AI"
+
+watchlist:
+  - ticker: MU
+    market: us
+    notes: "美光科技，考虑建仓"

@@ -1,0 +1,32 @@
+models:
+  analysis:
+    provider: deepseek
+    model: deepseek-chat
+    temperature: 0.3
+    max_tokens: 1000
+
+  decision:
+    provider: anthropic
+    model: claude-sonnet-4-5
+    temperature: 0.2
+    max_tokens: 1500
+
+signals:
+  rsi:
+    overbought: 70
+    oversold: 30
+    lookback: 14
+  ma:
+    short: 5
+    medium: 20
+    long: 60
+  min_confidence: 0.55
+
+notifications:
+  feishu:
+    enabled: true
+    send_hour: 9
+
+backtest:
+  lookback_days: 30
+  win_threshold_pct: 1.0
