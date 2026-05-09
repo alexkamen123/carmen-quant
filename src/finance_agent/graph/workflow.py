@@ -77,13 +77,13 @@ async def decision_node(state: AgentState) -> AgentState:
 
 
 async def format_report_node(state: AgentState) -> AgentState:
-    """生成飞书消息文本"""
+    """生成飞书消息文本（含辩论过程）"""
     EMOJI = {"买入": "🟢", "持有": "🟡", "观望": "🟡",
               "减仓": "🟠", "卖出": "🔴", "按计划定投": "⬜"}
     CONF  = {"高": "★★★", "中": "★★☆", "低": "★☆☆"}
 
     lines = [
-        f"📊 卡门持仓日报 · {state.date}",
+        f"📊 卡门智投日报 · {state.date}",
         "",
         "━━━━ 今日操作建议 ━━━━",
     ]
@@ -96,6 +96,11 @@ async def format_report_node(state: AgentState) -> AgentState:
             lines.append(f"   📌 {s.entry_hint}")
         if s.key_risk:
             lines.append(f"   ⚠️  {s.key_risk}")
+
+        # 展示辩论过程（定投标的跳过）
+        if s.bull_thesis and s.ticker not in ("QQQM", "VOO"):
+            lines.append(f"   🐂 多方：{s.bull_thesis}")
+            lines.append(f"   🐻 空方：{s.bear_thesis}")
 
     if state.errors:
         lines.append(f"\n⚙️ 获取失败：{', '.join(state.errors)}")
