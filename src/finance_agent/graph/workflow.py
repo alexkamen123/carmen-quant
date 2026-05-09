@@ -59,9 +59,9 @@ async def fundamentals_node(state: AgentState) -> AgentState:
             }))
         else:
             updated.append(await run_fundamental_analysis(analysis))
-            # 每次 Claude 调用后等待 5 秒，避免触发 Pro 限速
+            # 串行调用，防止同一会话并发触发限速
             if analysis != needs_claude[-1]:
-                await asyncio.sleep(5)
+                await asyncio.sleep(1)
     return state.model_copy(update={"stocks": updated})
 
 
@@ -95,9 +95,9 @@ async def decision_node(state: AgentState) -> AgentState:
             })
         else:
             updated = await run_portfolio_manager(analysis)
-            # 每次 Claude 调用后等待 5 秒，避免触发 Pro 限速
+            # 串行调用，防止同一会话并发触发限速
             if analysis != needs_pm[-1]:
-                await asyncio.sleep(5)
+                await asyncio.sleep(1)
         updated_stocks.append(updated)
     return state.model_copy(update={"stocks": updated_stocks})
 
