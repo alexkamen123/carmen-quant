@@ -8,9 +8,11 @@ async def run_bear_analysis(analysis: StockAnalysis) -> StockAnalysis:
     news_str = "\n".join(
         f"- {n.title}" for n in analysis.news
     ) or "暂无新闻"
+    fundamental_view = analysis.earnings.fundamental_view or "暂无基本面数据"
 
     user_msg = BEAR_USER.format(
         signals_str=analysis.signals.to_prompt_str(),
+        fundamental_view=fundamental_view,
         news_str=news_str,
     )
     thesis = await deepseek_chat(BEAR_SYSTEM, user_msg)

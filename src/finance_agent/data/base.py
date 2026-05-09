@@ -19,3 +19,12 @@ class DataProvider(ABC):
         {"title": str, "summary": str, "published": str}
         """
         ...
+
+    @abstractmethod
+    async def fetch_earnings(self, ticker: str) -> dict:
+        """
+        返回基本面数据字典：
+        {"revenue_growth_yoy": float|None, "gross_margin": float|None,
+         "pe_ratio": float|None, "ps_ratio": float|None, "debt_to_equity": float|None}
+        """
+        ...

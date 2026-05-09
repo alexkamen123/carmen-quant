@@ -6,12 +6,13 @@ from pathlib import Path
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-from finance_agent.graph.state import AgentState, StockAnalysis, NewsItem
+from finance_agent.graph.state import AgentState, StockAnalysis, NewsItem, EarningsSummary
 from finance_agent.data.router import DataRouter
 from finance_agent.signals.technical import calculate_signals
 from finance_agent.agents.bull_agent import run_bull_analysis
 from finance_agent.agents.bear_agent import run_bear_analysis
 from finance_agent.agents.portfolio_manager import run_portfolio_manager
+from finance_agent.agents.fundamental_analyst import run_fundamental_analysis
 
 router = DataRouter()
 
@@ -33,7 +34,9 @@ async def fetch_data_node(state: AgentState) -> AgentState:
             signals = calculate_signals(df, ticker=ticker)
             news_raw = await router.fetch_news(ticker, market, limit=3)
             news = [NewsItem(**n) for n in news_raw]
-            return StockAnalysis(ticker=ticker, market=market, signals=signals, news=news)
+            earnings_raw = await router.fetch_earnings(ticker, market)
+            earnings = EarningsSummary(**{k: v for k, v in earnings_raw.items() if v is not None})
+            return StockAnalysis(ticker=ticker, market=market, signals=signals, news=news, earnings=earnings)
         except Exception as e:
             state.errors.append(f"{ticker}: {e}")
             return None
@@ -41,6 +44,22 @@ async def fetch_data_node(state: AgentState) -> AgentState:
     results = await asyncio.gather(*[fetch_one(h) for h in all_holdings])
     stocks = [r for r in results if r is not None]
     return state.model_copy(update={"stocks": stocks, "date": datetime.today().strftime("%Y-%m-%d")})
+
+
+async def fundamentals_node(state: AgentState) -> AgentState:
+    """用 Claude 分析每只股票基本面（串行避免限速）"""
+    updated = []
+    for analysis in state.stocks:
+        if analysis.ticker in ("QQQM", "VOO"):
+            # 宽基 ETF 不做基本面分析
+            updated.append(analysis.model_copy(update={
+                "earnings": analysis.earnings.model_copy(
+                    update={"fundamental_view": "宽基 ETF，按定投计划执行"}
+                )
+            }))
+        else:
+            updated.append(await run_fundamental_analysis(analysis))
+    return state.model_copy(update={"stocks": updated})
 
 
 async def debate_node(state: AgentState) -> AgentState:
@@ -99,6 +118,8 @@ async def format_report_node(state: AgentState) -> AgentState:
 
         # 展示辩论过程（定投标的跳过）
         if s.bull_thesis and s.ticker not in ("QQQM", "VOO"):
+            if s.earnings.fundamental_view and "宽基" not in s.earnings.fundamental_view:
+                lines.append(f"   📈 基本面：{s.earnings.fundamental_view}")
             lines.append(f"   🐂 多方：{s.bull_thesis}")
             lines.append(f"   🐻 空方：{s.bear_thesis}")
 
@@ -113,16 +134,18 @@ async def format_report_node(state: AgentState) -> AgentState:
 
 def build_graph(checkpointer=None):
     builder = StateGraph(AgentState)
-    builder.add_node("fetch_data", fetch_data_node)
-    builder.add_node("debate",     debate_node)
-    builder.add_node("decision",   decision_node)
-    builder.add_node("format",     format_report_node)
+    builder.add_node("fetch_data",   fetch_data_node)
+    builder.add_node("fundamentals", fundamentals_node)
+    builder.add_node("debate",       debate_node)
+    builder.add_node("decision",     decision_node)
+    builder.add_node("format",       format_report_node)
 
     builder.set_entry_point("fetch_data")
-    builder.add_edge("fetch_data", "debate")
-    builder.add_edge("debate",     "decision")
-    builder.add_edge("decision",   "format")
-    builder.add_edge("format",      END)
+    builder.add_edge("fetch_data",   "fundamentals")
+    builder.add_edge("fundamentals", "debate")
+    builder.add_edge("debate",       "decision")
+    builder.add_edge("decision",     "format")
+    builder.add_edge("format",        END)
 
     return builder.compile(checkpointer=checkpointer)
 

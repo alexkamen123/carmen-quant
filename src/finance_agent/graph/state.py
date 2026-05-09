@@ -10,32 +10,40 @@ class NewsItem(BaseModel):
     published: str
 
 
+class EarningsSummary(BaseModel):
+    """基本面数据摘要（由 Fundamental Analyst 填充）"""
+    revenue_growth_yoy: float | None = None   # 营收同比增速 %
+    gross_margin: float | None = None          # 毛利率 %
+    pe_ratio: float | None = None              # 市盈率
+    ps_ratio: float | None = None              # 市销率
+    debt_to_equity: float | None = None        # 资产负债率
+    fundamental_view: str = ""                 # Claude 的基本面一段话判断
+
+
 class StockAnalysis(BaseModel):
-    """单只股票的完整分析结果（Pydantic 确保 Agent 间信息无衰减）"""
+    """单只股票的完整分析结果"""
     ticker: str
     market: str
     signals: TechnicalSignals
     news: list[NewsItem] = Field(default_factory=list)
+    earnings: EarningsSummary = Field(default_factory=EarningsSummary)
 
-    # Agent 输出（由 LangGraph 节点填充）
-    bull_thesis: str = ""       # 多方论点（DeepSeek）
-    bear_thesis: str = ""       # 空方论点（DeepSeek）
+    # Technical debate (DeepSeek)
+    bull_thesis: str = ""
+    bear_thesis: str = ""
 
-    # 最终裁决（Claude）
-    recommendation: str = ""    # "买入" | "持有" | "减仓" | "观望" | "卖出"
-    confidence: str = ""        # "高" | "中" | "低"
-    entry_hint: str = ""        # 进场/止损建议
-    key_risk: str = ""          # 最大风险点
-    one_line: str = ""          # 一句话结论（飞书卡片用）
+    # Final decision (Claude)
+    recommendation: str = ""
+    confidence: str = ""
+    entry_hint: str = ""
+    key_risk: str = ""
+    one_line: str = ""
 
 
 class AgentState(BaseModel):
-    """LangGraph 全局状态，贯穿整个工作流"""
+    """LangGraph 全局状态"""
     date: str = ""
     stocks: list[StockAnalysis] = Field(default_factory=list)
-    # 当前正在处理的 ticker 索引（用于节点间传递进度）
     current_index: int = 0
-    # 最终报告文本（发飞书用）
     report_text: str = ""
-    # 错误记录
     errors: list[str] = Field(default_factory=list)
