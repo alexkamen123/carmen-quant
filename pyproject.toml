@@ -14,7 +14,7 @@ dependencies = [
     "openai>=1.40",
     "akshare>=1.14",
     "yfinance>=0.2.40",
-    "pandas-ta>=0.3.14b",
+    "pandas-ta",
     "pandas>=2.1",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
