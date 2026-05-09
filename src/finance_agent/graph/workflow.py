@@ -59,9 +59,9 @@ async def fundamentals_node(state: AgentState) -> AgentState:
             }))
         else:
             updated.append(await run_fundamental_analysis(analysis))
-            # 每次 Claude 调用后等待 3 秒，避免触发 Pro 限速
+            # 每次 Claude 调用后等待 5 秒，避免触发 Pro 限速
             if analysis != needs_claude[-1]:
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
     return state.model_copy(update={"stocks": updated})
 
 
@@ -85,6 +85,7 @@ async def debate_node(state: AgentState) -> AgentState:
 async def decision_node(state: AgentState) -> AgentState:
     """Portfolio Manager 对每只股票做最终裁决"""
     updated_stocks = []
+    needs_pm = [s for s in state.stocks if s.ticker not in ("QQQM", "VOO")]
     for analysis in state.stocks:
         if analysis.ticker in ("QQQM", "VOO"):
             updated = analysis.model_copy(update={
@@ -94,6 +95,9 @@ async def decision_node(state: AgentState) -> AgentState:
             })
         else:
             updated = await run_portfolio_manager(analysis)
+            # 每次 Claude 调用后等待 5 秒，避免触发 Pro 限速
+            if analysis != needs_pm[-1]:
+                await asyncio.sleep(5)
         updated_stocks.append(updated)
     return state.model_copy(update={"stocks": updated_stocks})
 
