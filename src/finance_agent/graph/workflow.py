@@ -47,11 +47,11 @@ async def fetch_data_node(state: AgentState) -> AgentState:
 
 
 async def fundamentals_node(state: AgentState) -> AgentState:
-    """用 Claude 分析每只股票基本面（串行避免限速）"""
+    """用 Claude 分析每只股票基本面（串行 + 间隔，避免 Pro 限速）"""
     updated = []
+    needs_claude = [s for s in state.stocks if s.ticker not in ("QQQM", "VOO")]
     for analysis in state.stocks:
         if analysis.ticker in ("QQQM", "VOO"):
-            # 宽基 ETF 不做基本面分析
             updated.append(analysis.model_copy(update={
                 "earnings": analysis.earnings.model_copy(
                     update={"fundamental_view": "宽基 ETF，按定投计划执行"}
@@ -59,6 +59,9 @@ async def fundamentals_node(state: AgentState) -> AgentState:
             }))
         else:
             updated.append(await run_fundamental_analysis(analysis))
+            # 每次 Claude 调用后等待 3 秒，避免触发 Pro 限速
+            if analysis != needs_claude[-1]:
+                await asyncio.sleep(3)
     return state.model_copy(update={"stocks": updated})
 
 

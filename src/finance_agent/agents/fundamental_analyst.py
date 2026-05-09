@@ -60,9 +60,9 @@ async def run_fundamental_analysis(analysis: StockAnalysis) -> StockAnalysis:
             messages=[{"role": "user", "content": user_msg}],
         )
         view = message.content[0].text.strip()
-    except Exception as e:
-        # 降级：直接用财务数字，不做 AI 解读
-        view = f"财务数据：{financials_str}（Claude 调用失败: {e}）"
+    except Exception:
+        # 降级：直接展示原始财务数字（不显示错误信息）
+        view = financials_str
 
     return analysis.model_copy(update={
         "earnings": analysis.earnings.model_copy(update={"fundamental_view": view})
