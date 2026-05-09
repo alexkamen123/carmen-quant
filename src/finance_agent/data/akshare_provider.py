@@ -1,9 +1,17 @@
 import asyncio
+import os
 from datetime import datetime, timedelta
 import pandas as pd
 import akshare as ak
 import yfinance as yf
 from .base import DataProvider
+
+# AkShare 数据来自东方财富，本地开发走代理时 eastmoney.com 可能被拦截。
+# 将其加入 NO_PROXY，让 requests 直连；CI 环境无代理，这里是 no-op。
+_AKSHARE_NO_PROXY = "eastmoney.com,push2his.eastmoney.com,datacenter-web.eastmoney.com"
+_current = os.environ.get("NO_PROXY", "")
+if "eastmoney.com" not in _current:
+    os.environ["NO_PROXY"] = f"{_current},{_AKSHARE_NO_PROXY}".strip(",")
 
 
 def _to_yf_hk(ticker: str) -> str:
