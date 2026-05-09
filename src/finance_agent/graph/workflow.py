@@ -127,5 +127,6 @@ async def run_workflow(db_path: str = "data/agent.db") -> AgentState:
     checkpointer = MemorySaver()
     graph = build_graph(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": "daily_run"}}
-    final_state = await graph.ainvoke(AgentState(), config=config)
-    return final_state
+    raw = await graph.ainvoke(AgentState(), config=config)
+    # LangGraph ainvoke 返回 dict，转回 AgentState
+    return AgentState(**raw) if isinstance(raw, dict) else raw
