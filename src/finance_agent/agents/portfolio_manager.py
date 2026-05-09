@@ -43,6 +43,7 @@ async def run_portfolio_manager(analysis: StockAnalysis) -> StockAnalysis:
         ticker=analysis.ticker,
         market=MARKET_LABEL.get(analysis.market, analysis.market),
         signals_str=analysis.signals.to_prompt_str(),
+        fundamental_view=analysis.earnings.fundamental_view or "暂无基本面数据",
         bull_thesis=analysis.bull_thesis,
         bear_thesis=analysis.bear_thesis,
     )

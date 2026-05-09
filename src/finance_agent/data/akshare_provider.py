@@ -44,3 +44,7 @@ class AkShareProvider(DataProvider):
     async def fetch_news(self, ticker: str, limit: int = 5) -> list[dict]:
         # 简化版：港股新闻获取，失败时返回空列表不影响主流程
         return []
+
+    async def fetch_earnings(self, ticker: str) -> dict:
+        """港股/A股基本面数据（暂返回空，后续可接 akshare 财务接口）"""
+        return {}

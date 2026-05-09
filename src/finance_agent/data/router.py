@@ -25,3 +25,7 @@ class DataRouter:
     async def fetch_news(self, ticker: str, market: str, limit: int = 5) -> list[dict]:
         provider = self.get_provider(ticker, market)
         return await provider.fetch_news(ticker, limit)
+
+    async def fetch_earnings(self, ticker: str, market: str) -> dict:
+        provider = self.get_provider(ticker, market)
+        return await provider.fetch_earnings(ticker)
