@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from finance_agent.graph.workflow import run_workflow
 from finance_agent.storage.db import init_db, save_daily_signals
-from finance_agent.notifications.feishu import send_feishu_message
+from finance_agent.notifications.feishu import send_feishu_card, send_feishu_message
 from finance_agent.backtest.engine import backfill_yesterday
 
 load_dotenv()
@@ -48,9 +48,12 @@ async def _run(skip_notify: bool, backfill: bool):
     # Step 4: 打印报告
     console.print("\n" + state.report_text)
 
-    # Step 5: 推送飞书
+    # Step 5: 推送飞书（优先卡片，降级纯文本）
     if not skip_notify:
-        ok = await send_feishu_message(state.report_text)
+        if state.report_card:
+            ok = await send_feishu_card(state.report_card)
+        else:
+            ok = await send_feishu_message(state.report_text)
         console.print("✅ 飞书推送成功" if ok else "❌ 飞书推送失败")
 
 

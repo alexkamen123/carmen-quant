@@ -103,16 +103,16 @@ async def decision_node(state: AgentState) -> AgentState:
 
 
 async def format_report_node(state: AgentState) -> AgentState:
-    """生成飞书消息文本（含辩论过程）"""
-    EMOJI = {"买入": "🟢", "持有": "🟡", "观望": "🟡",
-              "减仓": "🟠", "卖出": "🔴", "按计划定投": "⬜"}
-    CONF  = {"高": "★★★", "中": "★★☆", "低": "★☆☆"}
+    """生成飞书卡片（含辩论过程）和控制台文本"""
+    EMOJI      = {"买入": "🟢", "持有": "🟡", "观望": "🟡",
+                  "减仓": "🟠", "卖出": "🔴", "按计划定投": "⬜"}
+    CONF       = {"高": "★★★", "中": "★★☆", "低": "★☆☆"}
+    # 飞书卡片 header 配色
+    TEMPLATE   = {"买入": "green", "持有": "blue", "观望": "blue",
+                  "减仓": "orange", "卖出": "red", "按计划定投": "grey"}
 
-    lines = [
-        f"📊 卡门智投日报 · {state.date}",
-        "",
-        "━━━━ 今日操作建议 ━━━━",
-    ]
+    # ── 控制台文本（保留，供 --skip-notify 调试用）──────────────
+    lines = [f"📊 卡门智投日报 · {state.date}", "", "━━━━ 今日操作建议 ━━━━"]
     for s in state.stocks:
         emoji = EMOJI.get(s.recommendation, "⬜")
         conf  = CONF.get(s.confidence, "")
@@ -122,19 +122,85 @@ async def format_report_node(state: AgentState) -> AgentState:
             lines.append(f"   📌 {s.entry_hint}")
         if s.key_risk:
             lines.append(f"   ⚠️  {s.key_risk}")
-
-        # 展示辩论过程（定投标的跳过）
         if s.bull_thesis and s.ticker not in ("QQQM", "VOO"):
             if s.earnings.fundamental_view and "宽基" not in s.earnings.fundamental_view:
                 lines.append(f"   📈 基本面：{s.earnings.fundamental_view}")
             lines.append(f"   🐂 多方：{s.bull_thesis}")
             lines.append(f"   🐻 空方：{s.bear_thesis}")
-
     if state.errors:
         lines.append(f"\n⚙️ 获取失败：{', '.join(state.errors)}")
-
     lines.append("\n以上仅供参考，操作前请自行判断")
-    return state.model_copy(update={"report_text": "\n".join(lines)})
+    report_text = "\n".join(lines)
+
+    # ── 飞书卡片 JSON ────────────────────────────────────────────
+    # 决定 header 配色：取第一个非定投标的的建议色，否则用蓝色
+    dominant = next(
+        (s.recommendation for s in state.stocks if s.recommendation not in ("按计划定投", "")),
+        "持有"
+    )
+    elements: list[dict] = []
+
+    for i, s in enumerate(state.stocks):
+        emoji = EMOJI.get(s.recommendation, "⬜")
+        conf  = CONF.get(s.confidence, "")
+        is_etf = s.ticker in ("QQQM", "VOO")
+
+        # 主推荐块
+        main_md_lines = [
+            f"**{emoji} {s.ticker}**　{s.recommendation}　{conf}",
+            f"{s.one_line}",
+        ]
+        if s.entry_hint:
+            main_md_lines.append(f"📌 {s.entry_hint}")
+        if s.key_risk:
+            main_md_lines.append(f"⚠️ {s.key_risk}")
+
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "\n".join(main_md_lines)},
+        })
+
+        # 辩论 + 基本面块（非 ETF）
+        if s.bull_thesis and not is_etf:
+            debate_lines = []
+            fv = s.earnings.fundamental_view
+            if fv and "宽基" not in fv and "暂无" not in fv:
+                debate_lines.append(f"📈 **基本面**：{fv}")
+            debate_lines.append(f"🐂 **多方**：{s.bull_thesis}")
+            debate_lines.append(f"🐻 **空方**：{s.bear_thesis}")
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": "\n".join(debate_lines)},
+            })
+
+        # 分隔线（最后一只不加）
+        if i < len(state.stocks) - 1:
+            elements.append({"tag": "hr"})
+
+    # 底部提示
+    if state.errors:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "note",
+            "elements": [{"tag": "plain_text",
+                          "content": f"⚙️ 数据获取失败：{', '.join(state.errors)}"}],
+        })
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "note",
+        "elements": [{"tag": "plain_text", "content": "以上仅供参考，操作前请自行判断"}],
+    })
+
+    report_card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"📊 卡门智投日报 · {state.date}"},
+            "template": TEMPLATE.get(dominant, "blue"),
+        },
+        "elements": elements,
+    }
+
+    return state.model_copy(update={"report_text": report_text, "report_card": report_card})
 
 
 # ─── 构建图 ──────────────────────────────────────────────
