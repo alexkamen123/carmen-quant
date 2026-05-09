@@ -2,7 +2,13 @@ import asyncio
 from datetime import datetime, timedelta
 import pandas as pd
 import akshare as ak
+import yfinance as yf
 from .base import DataProvider
+
+
+def _to_yf_hk(ticker: str) -> str:
+    """将 AkShare 港股代码转为 yfinance 格式：'00700' → '0700.HK'"""
+    return f"{int(ticker):04d}.HK"
 
 class AkShareProvider(DataProvider):
     """港股/A股数据，使用 akshare（免费）"""
@@ -46,5 +52,42 @@ class AkShareProvider(DataProvider):
         return []
 
     async def fetch_earnings(self, ticker: str) -> dict:
-        """港股/A股基本面数据（暂返回空，后续可接 akshare 财务接口）"""
-        return {}
+        """
+        港股基本面数据：via yfinance（0700.HK 格式）。
+        A股代码格式不符，暂返回空；yfinance 查不到时静默返回空。
+        """
+        # A 股代码含字母或超过 6 位时跳过（yfinance 港股格式只适用数字代码）
+        if not ticker.isdigit():
+            return {}
+
+        yf_ticker = _to_yf_hk(ticker)
+        loop = asyncio.get_event_loop()
+        try:
+            stock = await loop.run_in_executor(None, lambda: yf.Ticker(yf_ticker))
+            info = await loop.run_in_executor(None, lambda: stock.info) or {}
+        except Exception:
+            return {}
+
+        def safe(key, divisor=1):
+            v = info.get(key)
+            if v is None:
+                return None
+            try:
+                return round(float(v) / divisor, 2)
+            except (TypeError, ValueError):
+                return None
+
+        rev_growth = safe("revenueGrowth")
+        if rev_growth is not None:
+            rev_growth = round(rev_growth * 100, 1)
+
+        gross_margins = safe("grossMargins")
+        gross_margin = round(gross_margins * 100, 1) if gross_margins is not None else None
+
+        return {
+            "revenue_growth_yoy": rev_growth,
+            "gross_margin": gross_margin,
+            "pe_ratio": safe("trailingPE"),
+            "ps_ratio": safe("priceToSalesTrailing12Months"),
+            "debt_to_equity": safe("debtToEquity"),
+        }
