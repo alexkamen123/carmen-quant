@@ -79,12 +79,22 @@ async def run_portfolio_manager_batch(
     for s in needs_pm:
         val = s.shares * s.signals.close if s.shares > 0 and s.signals else 0.0
         pct = round(val / total_value * 100, 1) if total_value > 0 else 0.0
+        # 成本/盈亏字符串
+        if s.cost_basis and s.cost_basis > 0:
+            pnl_str = (
+                f"{s.unrealized_pnl_pct:+.1f}%" if s.unrealized_pnl_pct is not None else "计算中"
+            )
+            cost_basis_str = f"均价 {s.cost_basis}，浮盈 {pnl_str}"
+        else:
+            cost_basis_str = "未记录成本"
+
         blocks.append(PM_BATCH_STOCK_TEMPLATE.format(
             ticker=s.ticker,
             market=MARKET_LABEL.get(s.market, s.market),
             position_pct=pct,
             shares=s.shares,
             current_price=round(s.signals.close, 2) if s.signals else "N/A",
+            cost_basis_str=cost_basis_str,
             signals_str=s.signals.to_prompt_str(),
             fundamental_view=s.earnings.fundamental_view or "暂无基本面数据",
             bull_thesis=s.bull_thesis or "无",
