@@ -37,6 +37,16 @@ CREATE TABLE IF NOT EXISTS recommendations (
 );
 CREATE INDEX IF NOT EXISTS idx_rec_date   ON recommendations(date);
 CREATE INDEX IF NOT EXISTS idx_rec_ticker ON recommendations(ticker);
+
+CREATE TABLE IF NOT EXISTS theses (
+    ticker          TEXT PRIMARY KEY,
+    market          TEXT NOT NULL DEFAULT 'us',
+    thesis_text     TEXT NOT NULL,          -- Claude 生成的完整持仓逻辑（Markdown）
+    pillars         TEXT,                   -- JSON 数组：[{"pillar": "...", "status": "intact|weakening|broken"}]
+    stop_conditions TEXT,                   -- 什么情况下应考虑出场（一段文字）
+    generated_at    TEXT DEFAULT (datetime('now')),
+    updated_at      TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -154,6 +164,58 @@ async def fill_7d_returns() -> int:
     if filled:
         print(f"[Tracker] 回填 {filled} 条 7 日涨跌记录")
     return filled
+
+
+# ── Thesis CRUD ──────────────────────────────────────────────
+
+def save_thesis(ticker: str, market: str, thesis_text: str,
+                pillars: list[dict] | None = None,
+                stop_conditions: str = "") -> None:
+    """写入或更新持仓逻辑（upsert by ticker）"""
+    import json
+    init_db()
+    pillars_json = json.dumps(pillars, ensure_ascii=False) if pillars else None
+    with _conn() as con:
+        con.execute("""
+            INSERT INTO theses(ticker, market, thesis_text, pillars, stop_conditions, updated_at)
+            VALUES(?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(ticker) DO UPDATE SET
+                market          = excluded.market,
+                thesis_text     = excluded.thesis_text,
+                pillars         = excluded.pillars,
+                stop_conditions = excluded.stop_conditions,
+                updated_at      = excluded.updated_at
+        """, (ticker, market, thesis_text, pillars_json, stop_conditions))
+    print(f"[Thesis] 已保存 {ticker} 持仓逻辑")
+
+
+def load_thesis(ticker: str) -> str:
+    """加载某只股票的持仓逻辑，不存在则返回空字符串"""
+    init_db()
+    with _conn() as con:
+        row = con.execute(
+            "SELECT thesis_text FROM theses WHERE ticker = ?", (ticker,)
+        ).fetchone()
+    return row["thesis_text"] if row else ""
+
+
+def load_all_theses() -> dict[str, str]:
+    """加载所有持仓逻辑，返回 {ticker: thesis_text}"""
+    init_db()
+    with _conn() as con:
+        rows = con.execute("SELECT ticker, thesis_text FROM theses").fetchall()
+    return {r["ticker"]: r["thesis_text"] for r in rows}
+
+
+def list_theses() -> list[dict]:
+    """列出所有持仓逻辑摘要（供 CLI 展示）"""
+    init_db()
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT ticker, market, updated_at, "
+            "SUBSTR(thesis_text, 1, 80) AS preview FROM theses ORDER BY ticker"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── 准确率统计摘要 ────────────────────────────────────────────

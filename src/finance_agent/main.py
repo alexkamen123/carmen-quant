@@ -10,6 +10,8 @@ from finance_agent.storage.db import init_db, save_daily_signals
 from finance_agent.notifications.feishu import send_feishu_card, send_feishu_message
 from finance_agent.backtest.engine import backfill_yesterday
 from finance_agent.alerts.news_monitor import run_news_scan
+from finance_agent.db.thesis_generator import generate_all_theses, generate_thesis_for
+from finance_agent.db.tracker import list_theses
 from finance_agent.weekly.allocation_advisor import run_allocation_advisor
 from finance_agent.weekly.report_card import build_weekly_card
 from finance_agent.weekly.daily_followup import run_daily_followup
@@ -114,6 +116,54 @@ async def _daily_followup(skip_notify: bool):
         from finance_agent.notifications.feishu import send_feishu_message
         ok = await send_feishu_message(text)
         console.print("✅ 跟进消息推送成功" if ok else "❌ 跟进消息推送失败")
+
+
+@app.command("generate-theses")
+def generate_theses(
+    force: bool = typer.Option(False, "--force", "-f", help="强制重新生成（覆盖已有记录）"),
+    ticker: str = typer.Option("", "--ticker", "-t", help="只生成指定股票，留空则全部"),
+):
+    """为持仓股票生成/更新持仓逻辑（Thesis），写入 SQLite"""
+    asyncio.run(_generate_theses(force=force, ticker=ticker))
+
+
+async def _generate_theses(force: bool, ticker: str):
+    import yaml
+    from pathlib import Path
+    if ticker:
+        config_path = Path("config/portfolio.yaml")
+        with open(config_path) as f:
+            portfolio = yaml.safe_load(f)
+        holding = next(
+            (h for h in portfolio.get("holdings", []) if h["ticker"] == ticker), None
+        )
+        if not holding:
+            console.print(f"[red]未找到 {ticker} 的持仓记录[/red]")
+            return
+        thesis = await generate_thesis_for(
+            ticker=ticker, market=holding.get("market", "us"),
+            cost_basis=float(holding.get("cost_basis") or 0),
+            shares=float(holding.get("shares", 0)),
+            notes=holding.get("notes", ""), force=force,
+        )
+        console.print(f"\n[bold]{ticker} 持仓逻辑：[/bold]\n{thesis}")
+    else:
+        results = await generate_all_theses(force=force)
+        console.print(f"✅ 共生成 {len(results)} 只股票的持仓逻辑")
+        for t, th in results.items():
+            console.print(f"\n[bold]{t}：[/bold]\n{th[:120]}...")
+
+
+@app.command("show-theses")
+def show_theses():
+    """展示所有已保存的持仓逻辑摘要"""
+    rows = list_theses()
+    if not rows:
+        console.print("暂无持仓逻辑，请先运行 finance-agent generate-theses")
+        return
+    for r in rows:
+        console.print(f"\n[bold]{r['ticker']}[/bold]（{r['market']}，更新：{r['updated_at'][:10]}）")
+        console.print(f"  {r['preview']}...")
 
 
 @app.command()
