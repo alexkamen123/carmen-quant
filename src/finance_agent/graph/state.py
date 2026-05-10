@@ -35,6 +35,9 @@ class StockAnalysis(BaseModel):
     cost_basis: float = 0.0          # 买入均价（来自 portfolio.yaml）
     unrealized_pnl_pct: float | None = None   # 浮动盈亏 %（运行时计算）
 
+    # 持仓逻辑（从 DB 加载，注入 PM prompt）
+    thesis: str = ""             # 原始持仓理由（Claude 生成，持久化在 theses 表）
+
     # Technical debate (DeepSeek)
     bull_thesis: str = ""
     bear_thesis: str = ""

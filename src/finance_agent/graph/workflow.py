@@ -12,7 +12,10 @@ from finance_agent.signals.technical import calculate_signals
 from finance_agent.agents.bull_agent import run_bull_analysis
 from finance_agent.agents.bear_agent import run_bear_analysis
 from finance_agent.agents.portfolio_manager import run_portfolio_manager_batch, _sector_summary
-from finance_agent.db.tracker import save_recommendations, fill_7d_returns, accuracy_summary
+from finance_agent.db.tracker import (
+    save_recommendations, fill_7d_returns, accuracy_summary,
+    load_all_theses,
+)
 from finance_agent.agents.fundamental_analyst import run_fundamental_analysis
 from finance_agent.data.macro import fetch_macro_context
 
@@ -66,6 +69,21 @@ async def fetch_data_node(state: AgentState) -> AgentState:
         "date": datetime.today().strftime("%Y-%m-%d"),
         "macro_summary": macro.to_prompt_str(),
     })
+
+
+async def thesis_node(state: AgentState) -> AgentState:
+    """从 DB 加载每只股票的持仓逻辑，注入 StockAnalysis.thesis"""
+    all_theses = load_all_theses()
+    if not all_theses:
+        return state
+    updated = [
+        s.model_copy(update={"thesis": all_theses.get(s.ticker, "")})
+        for s in state.stocks
+    ]
+    loaded = sum(1 for s in updated if s.thesis)
+    if loaded:
+        print(f"[Thesis] 加载 {loaded} 只股票的持仓逻辑")
+    return state.model_copy(update={"stocks": updated})
 
 
 async def fundamentals_node(state: AgentState) -> AgentState:
@@ -276,6 +294,7 @@ async def track_node(state: AgentState) -> AgentState:
 def build_graph(checkpointer=None):
     builder = StateGraph(AgentState)
     builder.add_node("fetch_data",   fetch_data_node)
+    builder.add_node("thesis",       thesis_node)
     builder.add_node("fundamentals", fundamentals_node)
     builder.add_node("debate",       debate_node)
     builder.add_node("decision",     decision_node)
@@ -283,7 +302,8 @@ def build_graph(checkpointer=None):
     builder.add_node("track",        track_node)
 
     builder.set_entry_point("fetch_data")
-    builder.add_edge("fetch_data",   "fundamentals")
+    builder.add_edge("fetch_data",   "thesis")
+    builder.add_edge("thesis",       "fundamentals")
     builder.add_edge("fundamentals", "debate")
     builder.add_edge("debate",       "decision")
     builder.add_edge("decision",     "format")

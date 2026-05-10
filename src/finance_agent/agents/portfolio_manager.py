@@ -95,6 +95,7 @@ async def run_portfolio_manager_batch(
             shares=s.shares,
             current_price=round(s.signals.close, 2) if s.signals else "N/A",
             cost_basis_str=cost_basis_str,
+            thesis=s.thesis or "暂未记录持仓逻辑",
             signals_str=s.signals.to_prompt_str(),
             fundamental_view=s.earnings.fundamental_view or "暂无基本面数据",
             bull_thesis=s.bull_thesis or "无",
