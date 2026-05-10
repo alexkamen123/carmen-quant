@@ -98,11 +98,14 @@ PM_BATCH_SYSTEM = """你是一位家庭财富管理顾问，帮助一位普通�
   ...
 ]"""
 
-PM_BATCH_USER = """请对以下 {n} 只股票逐一给出最终操作建议：
+PM_BATCH_USER = """【今日宏观背景】
+{macro_summary}
+
+请对以下 {n} 只股票逐一给出最终操作建议：
 
 {stocks_block}
 
-请输出包含所有股票决策的 JSON 数组。"""
+请结合宏观背景（VIX高时整体偏保守，大盘跌时提高风险权重），输出包含所有股票决策的 JSON 数组。"""
 
 PM_BATCH_STOCK_TEMPLATE = """--- {ticker}（{market}市场）---
 【技术面】{signals_str}
