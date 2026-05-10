@@ -47,20 +47,19 @@ async def fetch_data_node(state: AgentState) -> AgentState:
 
 
 async def fundamentals_node(state: AgentState) -> AgentState:
-    """用 DeepSeek 分析每只股票基本面（并行，无限速问题）"""
+    """用 Claude 分析每只股票基本面（串行，Claude CLI 判断能力更强）"""
     etf_tickers = {"QQQM", "VOO"}
-
-    async def process_one(analysis: StockAnalysis) -> StockAnalysis:
+    updated = []
+    for analysis in state.stocks:
         if analysis.ticker in etf_tickers:
-            return analysis.model_copy(update={
+            updated.append(analysis.model_copy(update={
                 "earnings": analysis.earnings.model_copy(
                     update={"fundamental_view": "宽基 ETF，按定投计划执行"}
                 )
-            })
-        return await run_fundamental_analysis(analysis)
-
-    updated = await asyncio.gather(*[process_one(s) for s in state.stocks])
-    return state.model_copy(update={"stocks": list(updated)})
+            }))
+        else:
+            updated.append(await run_fundamental_analysis(analysis))
+    return state.model_copy(update={"stocks": updated})
 
 
 async def debate_node(state: AgentState) -> AgentState:
