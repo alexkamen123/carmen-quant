@@ -135,8 +135,12 @@ CANDIDATE_POOL = {
 
 def _quick_screen(tickers: list[str], market: str = "us") -> list[dict]:
     """
-    对候选池做快速技术面筛选：拉 60 天数据，计算 RSI(14)，
-    返回 RSI < 45 且近期成交量未萎缩的标的。
+    对候选池做技术面 + 基本面双重筛选：
+      技术面：RSI < 45 且成交量未大幅萎缩
+      基本面（防价值陷阱）：
+        - 非 ETF 品种：排除 PE > 60 且营收增速 < 5% 的标的（贵且不增长）
+        - 允许亏损成长股（PE=None 时不排除）
+        - 排除营收连续下滑（revenueGrowth < -20%）的衰退型公司
     """
     results = []
     for ticker in tickers:
@@ -164,12 +168,41 @@ def _quick_screen(tickers: list[str], market: str = "us") -> list[dict]:
             if rsi > 45:
                 continue  # 不超卖，跳过
 
-            # 成交量（近5日均量 vs 前15日均量，排除量能萎缩）
+            # 成交量（近5日均量 vs 前20日均量，排除量能大幅萎缩）
             vol = df["volume"].dropna()
             avg_recent = vol.iloc[-5:].mean()
             avg_prior = vol.iloc[-20:-5].mean()
             if avg_prior > 0 and avg_recent / avg_prior < 0.5:
-                continue  # 量能大幅萎缩，缺乏支撑
+                continue  # 量能萎缩超过 50%，缺乏支撑
+
+            # ── 基本面过滤（ETF 跳过，纯技术判断即可）──────────────
+            is_etf = any(etf in ticker for etf in ["ETF", "TLT", "IEF", "BND", "AGG",
+                                                     "HYG", "EEM", "VWO", "GLD", "SLV",
+                                                     "IAU", "DBA", "KWEB", "MCHI"])
+            fundamentals_note = ""
+            if not is_etf:
+                try:
+                    info = yf.Ticker(yf_ticker).info
+                    pe = info.get("trailingPE")
+                    rev_growth = info.get("revenueGrowth")  # 小数，如 0.15 = 15%
+
+                    # 排除"贵且不增长"：PE > 60 且营收增速 < 5%
+                    if pe and pe > 60 and (rev_growth is None or rev_growth < 0.05):
+                        continue
+
+                    # 排除营收严重下滑（> -20%）的衰退型公司
+                    if rev_growth is not None and rev_growth < -0.20:
+                        continue
+
+                    # 记录基本面概况
+                    parts = []
+                    if pe:
+                        parts.append(f"PE={pe:.0f}x")
+                    if rev_growth is not None:
+                        parts.append(f"营收增速={rev_growth*100:.0f}%")
+                    fundamentals_note = " | ".join(parts)
+                except Exception:
+                    pass  # info 拉取失败则不排除，让 Claude 自己判断
 
             # 52周内回撤
             high_52w = close.rolling(252, min_periods=len(close)).max().iloc[-1]
@@ -181,6 +214,7 @@ def _quick_screen(tickers: list[str], market: str = "us") -> list[dict]:
                 "close": round(float(close.iloc[-1]), 2),
                 "rsi": round(float(rsi), 1),
                 "drawdown_from_high": round(float(drawdown), 1),
+                "fundamentals": fundamentals_note,
             })
         except Exception as e:
             print(f"[Screen] {ticker} 筛选失败: {e}")
@@ -285,6 +319,7 @@ async def run_allocation_advisor() -> dict[str, Any]:
         candidates_str = "\n".join(
             f"  {c['ticker']}（{c['category']}）现价={c['close']}，RSI={c['rsi']}，"
             f"较高点回撤={c['drawdown_from_high']}%"
+            + (f"，{c['fundamentals']}" if c.get("fundamentals") else "")
             for c in all_candidates
         )
         screen_user = SCREEN_USER.format(
