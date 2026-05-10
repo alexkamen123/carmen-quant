@@ -22,6 +22,10 @@ app = typer.Typer(help="卡门家庭量化交易助手")
 console = Console()
 DB_PATH = "data/agent.db"
 
+# 让 tracker.py / thesis_generator.py 使用与 main 一致的 DB 路径
+import os as _os
+_os.environ.setdefault("AGENT_DB_PATH", DB_PATH)
+
 
 @app.command()
 def run(

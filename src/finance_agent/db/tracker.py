@@ -19,7 +19,19 @@ from pathlib import Path
 
 import yfinance as yf
 
-DB_PATH = Path("data/agent.db")
+_DEFAULT_DB = Path("data/agent.db")
+
+
+def _resolve_db(db_path: str | Path | None = None) -> Path:
+    """优先使用传入路径，其次环境变量 AGENT_DB_PATH，最后默认值"""
+    if db_path:
+        return Path(db_path)
+    env = __import__("os").environ.get("AGENT_DB_PATH")
+    return Path(env) if env else _DEFAULT_DB
+
+
+# 模块级默认路径（向后兼容）—— 调用方可在 init_db() 时传入自定义路径
+DB_PATH = _resolve_db()
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS recommendations (
@@ -51,9 +63,10 @@ CREATE TABLE IF NOT EXISTS theses (
 
 
 @contextmanager
-def _conn():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
+def _conn(db_path: Path | None = None):
+    p = db_path or DB_PATH
+    p.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(p)
     con.row_factory = sqlite3.Row
     try:
         yield con
@@ -62,20 +75,23 @@ def _conn():
         con.close()
 
 
-def init_db() -> None:
-    with _conn() as con:
+def init_db(db_path: str | Path | None = None) -> None:
+    p = _resolve_db(db_path)
+    with _conn(p) as con:
         con.executescript(_CREATE_SQL)
 
 
 # ── 写入当日推荐 ──────────────────────────────────────────────
 
-def save_recommendations(date: str, records: list[dict]) -> None:
+def save_recommendations(date: str, records: list[dict],
+                         db_path: str | Path | None = None) -> None:
     """
     records 每项：{ticker, recommendation, confidence, position_change, price_at_rec}
     若当天已有记录则跳过（幂等）。
     """
-    init_db()
-    with _conn() as con:
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
         existing = {r["ticker"] for r in con.execute(
             "SELECT ticker FROM recommendations WHERE date = ?", (date,)
         ).fetchall()}
@@ -124,15 +140,16 @@ def _fetch_current_price(ticker: str, market: str = "us") -> float | None:
         return None
 
 
-async def fill_7d_returns() -> int:
+async def fill_7d_returns(db_path: str | Path | None = None) -> int:
     """
     找出 7 个交易日前（日历日 ~10 天）还没有 price_7d 的记录，
     拉当前价格回填，返回回填条数。
     """
-    init_db()
+    p = _resolve_db(db_path)
+    init_db(p)
     cutoff = (datetime.today() - timedelta(days=10)).strftime("%Y-%m-%d")
 
-    with _conn() as con:
+    with _conn(p) as con:
         pending = con.execute(
             "SELECT id, ticker, recommendation, position_change, price_at_rec "
             "FROM recommendations WHERE date <= ? AND price_7d IS NULL",
@@ -154,7 +171,7 @@ async def fill_7d_returns() -> int:
         outcome = _determine_outcome(
             row["recommendation"] or "", row["position_change"] or "", ret
         )
-        with _conn() as con:
+        with _conn(p) as con:
             con.execute(
                 "UPDATE recommendations SET price_7d=?, return_7d=?, outcome=? WHERE id=?",
                 (round(price_now, 4), round(ret, 2), outcome, row["id"]),
@@ -170,12 +187,14 @@ async def fill_7d_returns() -> int:
 
 def save_thesis(ticker: str, market: str, thesis_text: str,
                 pillars: list[dict] | None = None,
-                stop_conditions: str = "") -> None:
+                stop_conditions: str = "",
+                db_path: str | Path | None = None) -> None:
     """写入或更新持仓逻辑（upsert by ticker）"""
     import json
-    init_db()
+    p = _resolve_db(db_path)
+    init_db(p)
     pillars_json = json.dumps(pillars, ensure_ascii=False) if pillars else None
-    with _conn() as con:
+    with _conn(p) as con:
         con.execute("""
             INSERT INTO theses(ticker, market, thesis_text, pillars, stop_conditions, updated_at)
             VALUES(?, ?, ?, ?, ?, datetime('now'))
@@ -189,28 +208,31 @@ def save_thesis(ticker: str, market: str, thesis_text: str,
     print(f"[Thesis] 已保存 {ticker} 持仓逻辑")
 
 
-def load_thesis(ticker: str) -> str:
+def load_thesis(ticker: str, db_path: str | Path | None = None) -> str:
     """加载某只股票的持仓逻辑，不存在则返回空字符串"""
-    init_db()
-    with _conn() as con:
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
         row = con.execute(
             "SELECT thesis_text FROM theses WHERE ticker = ?", (ticker,)
         ).fetchone()
     return row["thesis_text"] if row else ""
 
 
-def load_all_theses() -> dict[str, str]:
+def load_all_theses(db_path: str | Path | None = None) -> dict[str, str]:
     """加载所有持仓逻辑，返回 {ticker: thesis_text}"""
-    init_db()
-    with _conn() as con:
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
         rows = con.execute("SELECT ticker, thesis_text FROM theses").fetchall()
     return {r["ticker"]: r["thesis_text"] for r in rows}
 
 
-def list_theses() -> list[dict]:
+def list_theses(db_path: str | Path | None = None) -> list[dict]:
     """列出所有持仓逻辑摘要（供 CLI 展示）"""
-    init_db()
-    with _conn() as con:
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
         rows = con.execute(
             "SELECT ticker, market, updated_at, "
             "SUBSTR(thesis_text, 1, 80) AS preview FROM theses ORDER BY ticker"
@@ -220,13 +242,14 @@ def list_theses() -> list[dict]:
 
 # ── 准确率统计摘要 ────────────────────────────────────────────
 
-def accuracy_summary(days: int = 30) -> str:
+def accuracy_summary(days: int = 30, db_path: str | Path | None = None) -> str:
     """
     返回最近 N 天内已回填记录的准确率摘要文字，供注入飞书卡片。
     """
-    init_db()
+    p = _resolve_db(db_path)
+    init_db(p)
     since = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
-    with _conn() as con:
+    with _conn(p) as con:
         rows = con.execute(
             "SELECT outcome FROM recommendations "
             "WHERE date >= ? AND outcome IS NOT NULL",
