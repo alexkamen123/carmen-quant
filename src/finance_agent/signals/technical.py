@@ -7,8 +7,8 @@ def calculate_signals(df: pd.DataFrame, ticker: str = "") -> TechnicalSignals:
     输入：OHLCV DataFrame（列名：open/high/low/close/volume，至少30行）
     输出：TechnicalSignals Pydantic 模型
     """
-    if len(df) < 30:
-        raise ValueError(f"至少需要 30 条数据，当前只有 {len(df)} 条")
+    if len(df) < 20:
+        raise ValueError(f"至少需要 20 条数据，当前只有 {len(df)} 条")
 
     close = df["close"]
     volume = df["volume"]
@@ -46,14 +46,19 @@ def calculate_signals(df: pd.DataFrame, ticker: str = "") -> TechnicalSignals:
 
     price_vs_ma20 = (current_close - ma20) / ma20 * 100
 
-    # MACD
-    macd_df = ta.macd(close, fast=12, slow=26, signal=9)
-    macd_cols = [c for c in macd_df.columns]
-    macd_val  = float(macd_df[macd_cols[0]].dropna().iloc[-1])
-    macd_sig  = float(macd_df[macd_cols[1]].dropna().iloc[-1])
-    macd_hist_series = macd_df[macd_cols[2]].dropna()
-    macd_hist = float(macd_hist_series.iloc[-1])
-    prev_hist = float(macd_hist_series.iloc[-2]) if len(macd_hist_series) >= 2 else 0.0
+    # MACD（数据不足时安全降级）
+    try:
+        macd_df = ta.macd(close, fast=12, slow=26, signal=9)
+        macd_cols = [c for c in macd_df.columns]
+        macd_val_s  = macd_df[macd_cols[0]].dropna()
+        macd_sig_s  = macd_df[macd_cols[1]].dropna()
+        macd_hist_series = macd_df[macd_cols[2]].dropna()
+        macd_val  = float(macd_val_s.iloc[-1])  if len(macd_val_s)  > 0 else 0.0
+        macd_sig  = float(macd_sig_s.iloc[-1])  if len(macd_sig_s)  > 0 else 0.0
+        macd_hist = float(macd_hist_series.iloc[-1]) if len(macd_hist_series) > 0 else 0.0
+        prev_hist = float(macd_hist_series.iloc[-2]) if len(macd_hist_series) >= 2 else 0.0
+    except Exception:
+        macd_val = macd_sig = macd_hist = prev_hist = 0.0
     if macd_hist > 0 and macd_hist > prev_hist:
         macd_trend = "bullish"
     elif macd_hist < 0 and macd_hist < prev_hist:
