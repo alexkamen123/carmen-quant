@@ -1,44 +1,59 @@
 holdings:
+  # ── 美股 ──────────────────────────────────────────────
   - ticker: NVDA
     market: us
-    shares: 2
-    cost_basis: null
+    shares: 3.04        # 汇丰 3 股 + 盈立零碎 0.04 股
+    cost_basis: 194.82  # 加权均价
     notes: "AI算力核心持仓"
-
-  - ticker: AAPL
-    market: us
-    shares: 1
-    cost_basis: null
 
   - ticker: GOOGL
     market: us
     shares: 1
-    cost_basis: null
+    cost_basis: 312.38
 
   - ticker: QQQM
     market: us
     shares: 1
-    cost_basis: null
+    cost_basis: 276.50
     is_dca: true
+    notes: "纳指100 ETF，定投"
 
   - ticker: VOO
     market: us
-    shares: 0
+    shares: 0.5004
+    cost_basis: 676.98
     is_dca: true
+    notes: "标普500 ETF，零碎定投"
 
+  - ticker: SCHD
+    market: us
+    shares: 1
+    cost_basis: 31.64
+    notes: "Schwab美股股息ETF"
+
+  - ticker: DRAM
+    market: us
+    shares: 1
+    cost_basis: 46.43
+    notes: "Roundhill内存芯片ETF"
+
+  - ticker: MU
+    market: us
+    shares: 0.1533
+    cost_basis: 651.99
+    notes: "美光科技，零碎股"
+
+  # ── 港股 ──────────────────────────────────────────────
   - ticker: "00700"
     market: hk
     shares: 3
-    cost_basis: null
+    cost_basis: 541.50
     notes: "腾讯控股"
 
   - ticker: "02513"
     market: hk
     shares: 1
-    cost_basis: null
-    notes: "智谱AI"
+    cost_basis: 933.00
+    notes: "智谱AI-H"
 
-watchlist:
-  - ticker: MU
-    market: us
-    notes: "美光科技，考虑建仓"
+watchlist: []
