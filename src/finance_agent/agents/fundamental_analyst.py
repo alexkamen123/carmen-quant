@@ -45,7 +45,7 @@ async def run_fundamental_analysis(analysis: StockAnalysis) -> StockAnalysis:
     try:
         # 优先用 Claude（基本面判断能力更强）
         if has_claude_cli():
-            view = await claude_cli_chat(FUNDAMENTAL_SYSTEM, user_msg)
+            view = await claude_cli_chat(FUNDAMENTAL_SYSTEM, user_msg, timeout=90)
             print(f"[Fundamental] Claude 分析 {analysis.ticker} 完成")
         else:
             raise RuntimeError("无 Claude CLI")

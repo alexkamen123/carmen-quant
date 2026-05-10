@@ -104,7 +104,7 @@ async def run_portfolio_manager_batch(
     # 优先 claude CLI（Pro 订阅路径，无 API 限速）
     if has_claude_cli():
         try:
-            raw = await claude_cli_chat(PM_BATCH_SYSTEM, user_msg)
+            raw = await claude_cli_chat(PM_BATCH_SYSTEM, user_msg, timeout=240)
             raw = strip_markdown(raw)
             start, end = raw.find("["), raw.rfind("]") + 1
             decisions = json.loads(raw[start:end])
