@@ -11,7 +11,7 @@ from finance_agent.notifications.feishu import send_feishu_card, send_feishu_mes
 from finance_agent.backtest.engine import backfill_yesterday
 from finance_agent.alerts.news_monitor import run_news_scan
 from finance_agent.db.thesis_generator import generate_all_theses, generate_thesis_for
-from finance_agent.db.tracker import list_theses
+from finance_agent.db.tracker import list_theses, log_user_action, get_action_history
 from finance_agent.weekly.allocation_advisor import run_allocation_advisor
 from finance_agent.weekly.report_card import build_weekly_card
 from finance_agent.weekly.daily_followup import run_daily_followup
@@ -189,6 +189,43 @@ async def _monthly_review(skip_notify: bool):
     if not skip_notify:
         ok = await send_feishu_card(card)
         console.print("✅ 月度回顾推送成功" if ok else "❌ 月度回顾推送失败")
+
+
+@app.command("log-action")
+def log_action(
+    ticker: str = typer.Argument(..., help="股票代码，如 NVDA"),
+    action: str = typer.Argument(..., help="操作类型：BUY / SELL / TRIM / HOLD / SKIP"),
+    shares: float = typer.Option(None, "--shares", "-s", help="操作股数"),
+    price: float  = typer.Option(None, "--price",  "-p", help="操作价格"),
+    note: str     = typer.Option("",  "--note",   "-n", help="备注"),
+):
+    """记录实际操作（BUY/SELL/TRIM/HOLD/SKIP），与当日推荐关联"""
+    log_user_action(ticker=ticker, action=action, shares=shares,
+                    price=price, note=note, db_path=DB_PATH)
+    console.print(f"✅ 已记录：{ticker.upper()} {action.upper()}")
+
+
+@app.command("show-actions")
+def show_actions(
+    ticker: str = typer.Option("", "--ticker", "-t", help="只看某只股票，留空看全部"),
+    days:   int = typer.Option(30, "--days",   "-d", help="最近 N 天"),
+):
+    """展示最近的操作记录"""
+    rows = get_action_history(
+        ticker=ticker if ticker else None, days=days, db_path=DB_PATH
+    )
+    if not rows:
+        console.print(f"近 {days} 天无操作记录")
+        return
+    for r in rows:
+        parts = [f"[bold]{r['date']}[/bold]", r["ticker"], r["action"]]
+        if r["shares"]:
+            parts.append(f"{r['shares']}股")
+        if r["price"]:
+            parts.append(f"@{r['price']}")
+        if r["note"]:
+            parts.append(f"（{r['note']}）")
+        console.print("  ".join(parts))
 
 
 @app.command()
