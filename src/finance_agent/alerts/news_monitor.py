@@ -138,7 +138,8 @@ async def _send_alert(ticker: str, market: str, title: str, published: str,
 
 async def run_news_scan(impact_threshold: int = 7) -> int:
     """
-    扫描所有持仓的最新新闻，高影响的立即推送飞书。
+    扫描所有持仓（及其竞争对手）的最新新闻，高影响立即推送飞书。
+    peers 新闻以"持仓 X 的竞对 Y"形式标注，影响度阈值提高 1 分（减少噪音）。
     返回推送条数。
     """
     config_path = Path(__file__).parents[3] / "config" / "portfolio.yaml"
@@ -150,37 +151,57 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
     etf_skip = {"QQQM", "VOO", "SCHD", "DRAM"}
     holdings = [h for h in holdings if h["ticker"] not in etf_skip]
 
-    pushed = 0
+    # 构建扫描队列：(scan_ticker, scan_market, holding_ticker, is_peer)
+    scan_queue: list[tuple[str, str, str, bool]] = []
+    seen_tickers: set[str] = set()
     for item in holdings:
         ticker = item["ticker"]
         market = item["market"]
+        if ticker not in seen_tickers:
+            scan_queue.append((ticker, market, ticker, False))
+            seen_tickers.add(ticker)
+        for peer in item.get("peers", []):
+            if peer not in seen_tickers:
+                scan_queue.append((peer, market, ticker, True))
+                seen_tickers.add(peer)
 
-        fresh_news = _get_fresh_news(ticker, market, hours=2)
+    pushed = 0
+    for scan_ticker, market, holding_ticker, is_peer in scan_queue:
+        fresh_news = _get_fresh_news(scan_ticker, market, hours=2)
         if not fresh_news:
             continue
+
+        # peers 新闻阈值 +1，减少间接噪音
+        effective_threshold = impact_threshold + (1 if is_peer else 0)
 
         for news in fresh_news:
             key = news["key"]
             if key in _alerted:
-                continue  # 已推送过
+                continue
 
-            result = await _classify_news(ticker, news["title"], news["published"])
+            result = await _classify_news(scan_ticker, news["title"], news["published"])
             impact = result.get("impact", 0)
 
-            if impact >= impact_threshold:
+            if impact >= effective_threshold:
+                # peers 新闻标注来源，附注影响持仓
+                title_display = news["title"]
+                if is_peer:
+                    title_display = f"[竞对 {scan_ticker}] {title_display}"
                 await _send_alert(
-                    ticker=ticker,
+                    ticker=holding_ticker if is_peer else scan_ticker,
                     market=market,
-                    title=news["title"],
+                    title=title_display,
                     published=news["published"],
                     impact=impact,
                     sentiment=result.get("sentiment", "中性"),
-                    reason=result.get("reason", ""),
+                    reason=result.get("reason", "")
+                    + (f"（竞对 {scan_ticker} 动态，间接影响 {holding_ticker}）" if is_peer else ""),
                 )
                 _alerted.add(key)
                 pushed += 1
             else:
-                print(f"[Alert] {ticker} 新闻影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
+                src = f"{scan_ticker}（竞对）" if is_peer else scan_ticker
+                print(f"[Alert] {src} 影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
 
     if pushed == 0:
         print(f"[Alert] 本次扫描无高影响新闻（阈值={impact_threshold}）")

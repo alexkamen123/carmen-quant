@@ -27,6 +27,7 @@ class StockAnalysis(BaseModel):
     market: str
     signals: TechnicalSignals
     news: list[NewsItem] = Field(default_factory=list)
+    peer_news: list[NewsItem] = Field(default_factory=list)  # 竞争对手新闻
     earnings: EarningsSummary = Field(default_factory=EarningsSummary)
 
     # Portfolio metadata
