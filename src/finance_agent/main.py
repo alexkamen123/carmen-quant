@@ -15,6 +15,7 @@ from finance_agent.db.tracker import list_theses
 from finance_agent.weekly.allocation_advisor import run_allocation_advisor
 from finance_agent.weekly.report_card import build_weekly_card
 from finance_agent.weekly.daily_followup import run_daily_followup
+from finance_agent.monthly.review import run_monthly_review
 
 load_dotenv()
 
@@ -168,6 +169,26 @@ def show_theses():
     for r in rows:
         console.print(f"\n[bold]{r['ticker']}[/bold]（{r['market']}，更新：{r['updated_at'][:10]}）")
         console.print(f"  {r['preview']}...")
+
+
+@app.command("monthly-review")
+def monthly_review(
+    skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
+):
+    """生成上月投资回顾（准确率统计 + Claude 总结），推送飞书"""
+    asyncio.run(_monthly_review(skip_notify=skip_notify))
+
+
+async def _monthly_review(skip_notify: bool):
+    console.print("📆 开始月度投资回顾...")
+    card = await run_monthly_review(db_path_str=DB_PATH)
+    if card is None:
+        console.print("⚪ 上月无已回填数据，跳过月度回顾")
+        return
+    console.print("✅ 月度回顾已生成")
+    if not skip_notify:
+        ok = await send_feishu_card(card)
+        console.print("✅ 月度回顾推送成功" if ok else "❌ 月度回顾推送失败")
 
 
 @app.command()
