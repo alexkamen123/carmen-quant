@@ -43,6 +43,7 @@ class StockAnalysis(BaseModel):
     entry_hint: str = ""
     key_risk: str = ""
     one_line: str = ""
+    position_change: str = ""   # 仓位调整建议：减仓 / 维持 / 小加 / 大加
 
 
 class AgentState(BaseModel):
