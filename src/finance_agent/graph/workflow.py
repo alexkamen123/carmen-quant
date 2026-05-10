@@ -38,10 +38,18 @@ async def fetch_data_node(state: AgentState) -> AgentState:
             news = [NewsItem(**n) for n in news_raw]
             earnings_raw = await router.fetch_earnings(ticker, market)
             earnings = EarningsSummary(**{k: v for k, v in earnings_raw.items() if v is not None})
+            cost_basis = float(item.get("cost_basis") or 0.0)
+            current_price = float(signals.close) if signals else 0.0
+            unrealized_pnl_pct = (
+                round((current_price / cost_basis - 1) * 100, 1)
+                if cost_basis > 0 and current_price > 0 else None
+            )
             return StockAnalysis(
                 ticker=ticker, market=market, signals=signals, news=news, earnings=earnings,
                 shares=item.get("shares", 0.0),
                 sector=item.get("sector", ""),
+                cost_basis=cost_basis,
+                unrealized_pnl_pct=unrealized_pnl_pct,
             )
         except Exception as e:
             state.errors.append(f"{ticker}: {e}")

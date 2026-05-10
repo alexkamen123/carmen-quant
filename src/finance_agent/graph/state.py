@@ -30,8 +30,10 @@ class StockAnalysis(BaseModel):
     earnings: EarningsSummary = Field(default_factory=EarningsSummary)
 
     # Portfolio metadata
-    shares: float = 0.0         # 持仓股数
-    sector: str = ""            # 行业标签（来自 portfolio.yaml）
+    shares: float = 0.0              # 持仓股数
+    sector: str = ""                 # 行业标签（来自 portfolio.yaml）
+    cost_basis: float = 0.0          # 买入均价（来自 portfolio.yaml）
+    unrealized_pnl_pct: float | None = None   # 浮动盈亏 %（运行时计算）
 
     # Technical debate (DeepSeek)
     bull_thesis: str = ""
