@@ -156,9 +156,13 @@ async def format_report_node(state: AgentState) -> AgentState:
             except ValueError:
                 pass
 
+        # 仓位建议标签
+        POS_EMOJI = {"减仓": "🔽", "维持": "➡️", "小加": "🔼", "大加": "⏫"}
+        pos_icon = next((v for k, v in POS_EMOJI.items() if k in (s.position_change or "")), "➡️")
+
         # 主推荐块
         main_md_lines = [
-            f"**{emoji} {s.ticker}**　{s.recommendation}　{conf}",
+            f"**{emoji} {s.ticker}**　{s.recommendation}　{conf}　{pos_icon} {s.position_change or '维持'}",
             f"{s.one_line}",
         ]
         if earnings_alert:

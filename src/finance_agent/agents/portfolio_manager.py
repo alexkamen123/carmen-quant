@@ -36,11 +36,12 @@ def _sector_summary(stocks: list[StockAnalysis]) -> str:
 
 def _parse_decision(d: dict) -> dict:
     return {
-        "recommendation": d.get("recommendation", "观望"),
-        "confidence":     d.get("confidence", "低"),
-        "entry_hint":     d.get("entry_hint", ""),
-        "key_risk":       d.get("key_risk", ""),
-        "one_line":       d.get("one_line", ""),
+        "recommendation":  d.get("recommendation", "观望"),
+        "confidence":      d.get("confidence", "低"),
+        "position_change": d.get("position_change", "维持"),
+        "entry_hint":      d.get("entry_hint", ""),
+        "key_risk":        d.get("key_risk", ""),
+        "one_line":        d.get("one_line", ""),
     }
 
 
@@ -69,18 +70,24 @@ async def run_portfolio_manager_batch(
         return [result_map[s.ticker] for s in stocks]
 
     # 构建批量 prompt
-    blocks = [
-        PM_BATCH_STOCK_TEMPLATE.format(
+    blocks = []
+    for s in needs_pm:
+        val = s.shares * s.signals.close if s.shares > 0 and s.signals else 0.0
+        pct = round(val / total_value * 100, 1) if total_value > 0 else 0.0
+        blocks.append(PM_BATCH_STOCK_TEMPLATE.format(
             ticker=s.ticker,
             market=MARKET_LABEL.get(s.market, s.market),
+            position_pct=pct,
+            shares=s.shares,
+            current_price=round(s.signals.close, 2) if s.signals else "N/A",
             signals_str=s.signals.to_prompt_str(),
             fundamental_view=s.earnings.fundamental_view or "暂无基本面数据",
             bull_thesis=s.bull_thesis or "无",
             bear_thesis=s.bear_thesis or "无",
             next_earnings_date=s.earnings.next_earnings_date or "未知",
-        )
-        for s in needs_pm
-    ]
+        ))
+    # 计算总持仓市值（全部股票，含 ETF）用于仓位比例
+    total_value = sum(s.shares * s.signals.close for s in stocks if s.shares > 0 and s.signals)
     sector_str = _sector_summary(stocks)
     print(f"[PM] 持仓集中度：{sector_str}")
 

@@ -61,6 +61,7 @@ PM_SYSTEM = """你是一位家庭财富管理顾问，帮助一位普通投资�
 {
   "recommendation": "买入" | "持有" | "减仓" | "观望" | "卖出",
   "confidence": "高" | "中" | "低",
+  "position_change": "减仓" | "维持" | "小加（+5~10%）" | "大加（+10%以上）",
   "entry_hint": "具体的进场价位或止损建议（一句话）",
   "key_risk": "最需要警惕的一个风险点（一句话）",
   "one_line": "给非专业投资者的一句话总结"
@@ -91,6 +92,7 @@ PM_BATCH_SYSTEM = """你是一位家庭财富管理顾问，帮助一位普通�
     "ticker": "股票代码",
     "recommendation": "买入" | "持有" | "减仓" | "观望" | "卖出",
     "confidence": "高" | "中" | "低",
+    "position_change": "减仓" | "维持" | "小加（+5~10%）" | "大加（+10%以上）",
     "entry_hint": "具体的进场价位或止损建议（一句话）",
     "key_risk": "最需要警惕的一个风险点（一句话）",
     "one_line": "给非专业投资者的一句话总结"
@@ -112,6 +114,7 @@ PM_BATCH_USER = """【今日宏观背景】
 请结合宏观背景与持仓集中度，输出包含所有股票决策的 JSON 数组。"""
 
 PM_BATCH_STOCK_TEMPLATE = """--- {ticker}（{market}市场）---
+【当前仓位】{position_pct}%（持股 {shares} 股，现价约 {current_price}）
 【技术面】{signals_str}
 【基本面】{fundamental_view}
 【多头】{bull_thesis}
