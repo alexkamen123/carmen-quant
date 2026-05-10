@@ -253,7 +253,9 @@ async def format_report_node(state: AgentState) -> AgentState:
     elements.append({"tag": "hr"})
     elements.append({
         "tag": "note",
-        "elements": [{"tag": "plain_text", "content": "以上仅供参考，操作前请自行判断"}],
+        "elements": [{"tag": "plain_text",
+                       "content": "以上仅供参考，操作前请自行判断。"
+                                  "如实际操作，可运行 finance-agent log-action TICKER BUY/SELL 记录"}],
     })
 
     # 宏观 + 集中度放在卡片最顶部

@@ -240,6 +240,69 @@ def list_theses(db_path: str | Path | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+# ── 用户操作记录 ─────────────────────────────────────────────
+
+_CREATE_ACTIONS_SQL = """
+CREATE TABLE IF NOT EXISTS user_actions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    date        TEXT NOT NULL,
+    ticker      TEXT NOT NULL,
+    action      TEXT NOT NULL,   -- BUY / SELL / TRIM / HOLD / SKIP
+    shares      REAL,            -- 操作股数（可选）
+    price       REAL,            -- 操作价格（可选）
+    note        TEXT,            -- 备注
+    rec_date    TEXT,            -- 对应哪天的推荐（空=当天）
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_actions_ticker ON user_actions(ticker);
+CREATE INDEX IF NOT EXISTS idx_actions_date   ON user_actions(date);
+"""
+
+
+def log_user_action(ticker: str, action: str,
+                    shares: float | None = None,
+                    price: float | None = None,
+                    note: str = "",
+                    rec_date: str = "",
+                    db_path: str | Path | None = None) -> None:
+    """记录用户的实际操作（BUY/SELL/TRIM/HOLD/SKIP）"""
+    p = _resolve_db(db_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with _conn(p) as con:
+        con.executescript(_CREATE_ACTIONS_SQL)
+        today = datetime.today().strftime("%Y-%m-%d")
+        con.execute(
+            "INSERT INTO user_actions(date, ticker, action, shares, price, note, rec_date) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (today, ticker.upper(), action.upper(), shares, price, note, rec_date or today),
+        )
+    print(f"[UserAction] 已记录：{ticker} {action}" +
+          (f" {shares}股" if shares else "") +
+          (f" @{price}" if price else ""))
+
+
+def get_action_history(ticker: str | None = None,
+                       days: int = 30,
+                       db_path: str | Path | None = None) -> list[dict]:
+    """获取操作历史，ticker=None 则返回全部"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    since = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
+    with _conn(p) as con:
+        con.executescript(_CREATE_ACTIONS_SQL)
+        if ticker:
+            rows = con.execute(
+                "SELECT * FROM user_actions WHERE ticker=? AND date>=? ORDER BY date DESC",
+                (ticker.upper(), since),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM user_actions WHERE date>=? ORDER BY date DESC",
+                (since,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ── 准确率统计摘要 ────────────────────────────────────────────
 
 def accuracy_summary(days: int = 30, db_path: str | Path | None = None) -> str:
