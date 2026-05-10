@@ -47,8 +47,22 @@ async def fetch_data_node(state: AgentState) -> AgentState:
                 round((current_price / cost_basis - 1) * 100, 1)
                 if cost_basis > 0 and current_price > 0 else None
             )
+            # 竞争对手新闻（取各 peer 最新 2 条，最多 3 个 peer）
+            peer_news: list[NewsItem] = []
+            for peer in item.get("peers", [])[:3]:
+                try:
+                    peer_raw = await router.fetch_news(peer, market, limit=2)
+                    for n in peer_raw:
+                        peer_news.append(NewsItem(
+                            title=f"[{peer}] {n['title']}",
+                            summary=n.get("summary", ""),
+                            published=n.get("published", ""),
+                        ))
+                except Exception:
+                    pass
             return StockAnalysis(
-                ticker=ticker, market=market, signals=signals, news=news, earnings=earnings,
+                ticker=ticker, market=market, signals=signals,
+                news=news, peer_news=peer_news, earnings=earnings,
                 shares=item.get("shares", 0.0),
                 sector=item.get("sector", ""),
                 cost_basis=cost_basis,

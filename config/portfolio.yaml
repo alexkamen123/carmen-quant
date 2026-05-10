@@ -5,6 +5,7 @@ holdings:
     shares: 3.04
     cost_basis: 194.82
     sector: 半导体/AI算力
+    peers: ["AMD", "INTC", "TSM"]   # 竞争对手，新闻一并扫描
     notes: "AI算力核心持仓"
 
   - ticker: GOOGL
@@ -12,6 +13,7 @@ holdings:
     shares: 1
     cost_basis: 312.38
     sector: 互联网/AI
+    peers: ["MSFT", "META", "AMZN"]
     notes: ""
 
   - ticker: QQQM
@@ -42,6 +44,7 @@ holdings:
     shares: 1
     cost_basis: 46.43
     sector: 半导体/AI算力
+    peers: ["MU", "NVDA"]
     notes: "Roundhill内存芯片ETF"
 
   - ticker: MU
@@ -49,6 +52,7 @@ holdings:
     shares: 0.1533
     cost_basis: 651.99
     sector: 半导体/AI算力
+    peers: ["NVDA", "AMD", "AMAT"]
     notes: "美光科技，零碎股"
 
   # ── 港股 ──────────────────────────────────────────────
@@ -57,6 +61,7 @@ holdings:
     shares: 3
     cost_basis: 541.50
     sector: 互联网/AI
+    peers: ["09988", "09618", "01810"]   # BABA, JD, 小米
     notes: "腾讯控股"
 
   - ticker: "02513"
@@ -64,6 +69,7 @@ holdings:
     shares: 1
     cost_basis: 933.00
     sector: 互联网/AI
+    peers: ["00700", "09988"]
     notes: "智谱AI-H"
 
 watchlist: []

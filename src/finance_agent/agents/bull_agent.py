@@ -24,9 +24,14 @@ async def deepseek_chat(system: str, user: str) -> str:
 
 
 async def run_bull_analysis(analysis: StockAnalysis) -> StockAnalysis:
-    news_str = "\n".join(
-        f"- {n.title}" for n in analysis.news
-    ) or "暂无新闻"
+    news_str = "\n".join(f"- {n.title}" for n in analysis.news) or "暂无新闻"
+    peer_news_str = (
+        "\n".join(f"- {n.title}" for n in analysis.peer_news)
+        if analysis.peer_news else ""
+    )
+    if peer_news_str:
+        news_str += f"\n\n【竞争对手动态】\n{peer_news_str}"
+
     fundamental_view = analysis.earnings.fundamental_view or "暂无基本面数据"
 
     user_msg = BULL_USER.format(
@@ -35,5 +40,4 @@ async def run_bull_analysis(analysis: StockAnalysis) -> StockAnalysis:
         news_str=news_str,
     )
     thesis = await deepseek_chat(BULL_SYSTEM, user_msg)
-    # 返回更新后的对象（Pydantic immutable，用 model_copy）
     return analysis.model_copy(update={"bull_thesis": thesis})
