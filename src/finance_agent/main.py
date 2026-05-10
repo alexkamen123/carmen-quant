@@ -9,6 +9,9 @@ from finance_agent.graph.workflow import run_workflow
 from finance_agent.storage.db import init_db, save_daily_signals
 from finance_agent.notifications.feishu import send_feishu_card, send_feishu_message
 from finance_agent.backtest.engine import backfill_yesterday
+from finance_agent.alerts.news_monitor import run_news_scan
+from finance_agent.weekly.allocation_advisor import run_allocation_advisor
+from finance_agent.weekly.report_card import build_weekly_card
 
 load_dotenv()
 
@@ -55,6 +58,40 @@ async def _run(skip_notify: bool, backfill: bool):
         else:
             ok = await send_feishu_message(state.report_text)
         console.print("✅ 飞书推送成功" if ok else "❌ 飞书推送失败")
+
+
+@app.command("news-scan")
+def news_scan(
+    threshold: int = typer.Option(7, "--threshold", "-t", help="影响度阈值（>= 此值才推送）"),
+):
+    """扫描持仓新闻，高影响立即推送飞书提醒"""
+    pushed = asyncio.run(run_news_scan(impact_threshold=threshold))
+    console.print(f"{'✅' if pushed else '⚪'} 扫描完成，推送 {pushed} 条高影响新闻")
+
+
+@app.command("weekly-report")
+def weekly_report(
+    skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
+):
+    """运行周度配置建议（配置诊断 → 对冲选品 → 机会筛选）"""
+    asyncio.run(_weekly_report(skip_notify=skip_notify))
+
+
+async def _weekly_report(skip_notify: bool):
+    console.print("📊 开始周度配置建议分析...")
+    result = await run_allocation_advisor()
+
+    diagnosis = result.get("diagnosis", {})
+    console.print(f"[诊断] {diagnosis.get('concentration_risk', '')}")
+    console.print(f"[宏观] {diagnosis.get('macro_risk', '')}")
+    console.print(f"[对冲方向] {len(diagnosis.get('hedge_directions', []))} 个")
+    console.print(f"[对冲品种] {sum(len(b.get('instruments', [])) for b in result.get('hedge_instruments', []))} 个")
+    console.print(f"[机会筛选] {len(result.get('opportunities', []))} 只（初筛 {result.get('candidates_screened', 0)} 只）")
+
+    if not skip_notify:
+        card = build_weekly_card(result)
+        ok = await send_feishu_card(card)
+        console.print("✅ 周度报告推送成功" if ok else "❌ 周度报告推送失败")
 
 
 @app.command()
