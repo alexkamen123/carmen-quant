@@ -45,6 +45,7 @@ class AgentState(BaseModel):
     date: str = ""
     stocks: list[StockAnalysis] = Field(default_factory=list)
     current_index: int = 0
+    macro_summary: str = ""      # 宏观背景一行文字，注入 PM prompt
     report_text: str = ""
     report_card: dict = Field(default_factory=dict)   # 飞书卡片 JSON
     errors: list[str] = Field(default_factory=list)

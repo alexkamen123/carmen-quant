@@ -13,6 +13,7 @@ from finance_agent.agents.bull_agent import run_bull_analysis
 from finance_agent.agents.bear_agent import run_bear_analysis
 from finance_agent.agents.portfolio_manager import run_portfolio_manager_batch
 from finance_agent.agents.fundamental_analyst import run_fundamental_analysis
+from finance_agent.data.macro import fetch_macro_context
 
 router = DataRouter()
 
@@ -41,9 +42,17 @@ async def fetch_data_node(state: AgentState) -> AgentState:
             state.errors.append(f"{ticker}: {e}")
             return None
 
-    results = await asyncio.gather(*[fetch_one(h) for h in all_holdings])
-    stocks = [r for r in results if r is not None]
-    return state.model_copy(update={"stocks": stocks, "date": datetime.today().strftime("%Y-%m-%d")})
+    stock_results, macro = await asyncio.gather(
+        asyncio.gather(*[fetch_one(h) for h in all_holdings]),
+        fetch_macro_context(),
+    )
+    stocks = [r for r in stock_results if r is not None]
+    print(f"[Macro] {macro.to_prompt_str()}")
+    return state.model_copy(update={
+        "stocks": stocks,
+        "date": datetime.today().strftime("%Y-%m-%d"),
+        "macro_summary": macro.to_prompt_str(),
+    })
 
 
 async def fundamentals_node(state: AgentState) -> AgentState:
@@ -81,7 +90,9 @@ async def debate_node(state: AgentState) -> AgentState:
 
 async def decision_node(state: AgentState) -> AgentState:
     """Portfolio Manager 批量裁决：1 次 Claude 调用处理所有股票"""
-    updated_stocks = await run_portfolio_manager_batch(state.stocks)
+    updated_stocks = await run_portfolio_manager_batch(
+        state.stocks, macro_summary=state.macro_summary
+    )
     return state.model_copy(update={"stocks": updated_stocks})
 
 
@@ -174,13 +185,24 @@ async def format_report_node(state: AgentState) -> AgentState:
         "elements": [{"tag": "plain_text", "content": "以上仅供参考，操作前请自行判断"}],
     })
 
+    # 宏观摘要放在卡片最顶部
+    macro_elements: list[dict] = []
+    if state.macro_summary:
+        macro_elements = [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"🌍 **宏观**｜{state.macro_summary}"},
+            },
+            {"tag": "hr"},
+        ]
+
     report_card = {
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": f"📊 卡门智投日报 · {state.date}"},
             "template": TEMPLATE.get(dominant, "blue"),
         },
-        "elements": elements,
+        "elements": macro_elements + elements,
     }
 
     return state.model_copy(update={"report_text": report_text, "report_card": report_card})

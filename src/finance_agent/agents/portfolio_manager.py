@@ -22,7 +22,10 @@ def _parse_decision(d: dict) -> dict:
     }
 
 
-async def run_portfolio_manager_batch(stocks: list[StockAnalysis]) -> list[StockAnalysis]:
+async def run_portfolio_manager_batch(
+    stocks: list[StockAnalysis],
+    macro_summary: str = "",
+) -> list[StockAnalysis]:
     """
     一次 Claude CLI 调用处理所有非 ETF 股票的 PM 裁决。
     失败时逐只降级到 DeepSeek。
@@ -56,6 +59,7 @@ async def run_portfolio_manager_batch(stocks: list[StockAnalysis]) -> list[Stock
         for s in needs_pm
     ]
     user_msg = PM_BATCH_USER.format(
+        macro_summary=macro_summary or "暂无宏观数据",
         n=len(needs_pm),
         stocks_block="\n\n".join(blocks),
     )
