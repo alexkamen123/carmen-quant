@@ -1,44 +1,15 @@
 # src/finance_agent/agents/portfolio_manager.py
 import asyncio
 import json
-import os
-import re
-import subprocess
 from finance_agent.graph.state import StockAnalysis
 from finance_agent.agents.prompts import (
     PM_SYSTEM, PM_USER,
     PM_BATCH_SYSTEM, PM_BATCH_USER, PM_BATCH_STOCK_TEMPLATE,
 )
 from finance_agent.agents.bull_agent import deepseek_chat
+from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli, strip_markdown
 
 MARKET_LABEL = {"us": "美股", "hk": "港股", "cn": "A股"}
-
-
-async def _claude_cli_chat(system: str, user: str) -> str:
-    """
-    通过 claude -p 子进程调用 Claude（走 Claude Code 路径，Pro 订阅不受 API 限速）。
-    使用 run_in_executor 包住同步 subprocess.run，避免 event loop 问题。
-    """
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: subprocess.run(
-            ["claude", "-p", user,
-             "--system-prompt", system,
-             "--output-format", "text"],
-            capture_output=True, text=True, timeout=120,
-        )
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"claude CLI exit {result.returncode}: {result.stderr[:200]}")
-    return result.stdout.strip()
-
-
-def _strip_markdown(text: str) -> str:
-    """去掉模型输出的 markdown 代码块包裹"""
-    text = re.sub(r"^```(?:json)?\s*", "", text.strip())
-    text = re.sub(r"\s*```$", "", text)
-    return text.strip()
 
 
 def _parse_decision(d: dict) -> dict:
@@ -92,13 +63,10 @@ async def run_portfolio_manager_batch(stocks: list[StockAnalysis]) -> list[Stock
     decisions: list[dict] = []
 
     # 优先 claude CLI（Pro 订阅路径，无 API 限速）
-    has_claude = bool(
-        os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
-    )
-    if has_claude:
+    if has_claude_cli():
         try:
-            raw = await _claude_cli_chat(PM_BATCH_SYSTEM, user_msg)
-            raw = _strip_markdown(raw)
+            raw = await claude_cli_chat(PM_BATCH_SYSTEM, user_msg)
+            raw = strip_markdown(raw)
             start, end = raw.find("["), raw.rfind("]") + 1
             decisions = json.loads(raw[start:end])
             print(f"[PM] Claude CLI 批量裁决成功（{len(decisions)} 只）")
