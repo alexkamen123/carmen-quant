@@ -10,6 +10,9 @@ on:
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read      # dawidd6/action-download-artifact 列举历史 artifact 需要
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +30,7 @@ jobs:
 
       # ── 恢复上一次的 SQLite 历史数据 ──────────────────────────
       - name: 恢复历史数据库
+        continue-on-error: true   # 首次运行无 artifact 时跳过，不中断流程
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: daily_analysis.yml
