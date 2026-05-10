@@ -25,6 +25,32 @@ jobs:
       - name: 安装 Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
+      # ── 恢复上一次的 SQLite 历史数据 ──────────────────────────
+      - name: 恢复历史数据库
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: daily_analysis.yml
+          name_is_regexp: true
+          name: "agent-db-.*"
+          path: data/
+          if_no_artifact_found: ignore
+          search_artifacts: true
+
+      # artifact 下载后可能在子目录，统一移到 data/agent.db
+      - name: 整理数据库路径
+        run: |
+          mkdir -p data
+          # 找到任意 agent.db 并移到正确位置（artifact 可能有嵌套目录）
+          found=$(find data -name "agent.db" | head -1)
+          if [ -n "$found" ] && [ "$found" != "data/agent.db" ]; then
+            mv "$found" data/agent.db
+            echo "已恢复历史数据库：$found"
+          elif [ -f "data/agent.db" ]; then
+            echo "历史数据库已就位"
+          else
+            echo "无历史数据库，本次为首次运行"
+          fi
+
       - name: 运行每日分析
         env:
           CLAUDE_CODE_OAUTH_TOKEN:  ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -33,9 +59,11 @@ jobs:
           FEISHU_WEBHOOK_SECRET:    ${{ secrets.FEISHU_WEBHOOK_SECRET }}
         run: finance-agent run
 
+      # ── 上传本次生成的数据库（含今日新记录）──────────────────
       - name: 上传 SQLite 数据库（保留历史）
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: agent-db-${{ github.run_number }}
           path: data/agent.db
-          retention-days: 30
+          retention-days: 60

@@ -12,6 +12,7 @@ from finance_agent.signals.technical import calculate_signals
 from finance_agent.agents.bull_agent import run_bull_analysis
 from finance_agent.agents.bear_agent import run_bear_analysis
 from finance_agent.agents.portfolio_manager import run_portfolio_manager_batch, _sector_summary
+from finance_agent.db.tracker import save_recommendations, fill_7d_returns, accuracy_summary
 from finance_agent.agents.fundamental_analyst import run_fundamental_analysis
 from finance_agent.data.macro import fetch_macro_context
 
@@ -194,7 +195,14 @@ async def format_report_node(state: AgentState) -> AgentState:
         if i < len(state.stocks) - 1:
             elements.append({"tag": "hr"})
 
-    # 底部提示
+    # 底部：历史准确率 + 错误提示 + 免责声明
+    acc = accuracy_summary(days=30)
+    if acc:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "note",
+            "elements": [{"tag": "plain_text", "content": f"📊 {acc}"}],
+        })
     if state.errors:
         elements.append({"tag": "hr"})
         elements.append({
@@ -234,6 +242,27 @@ async def format_report_node(state: AgentState) -> AgentState:
     return state.model_copy(update={"report_text": report_text, "report_card": report_card})
 
 
+async def track_node(state: AgentState) -> AgentState:
+    """保存当日推荐到 SQLite，并回填 10 天前的历史记录"""
+    # 先回填历史（7 个交易日 ≈ 10 日历日）
+    await fill_7d_returns()
+
+    # 保存今日推荐
+    records = [
+        {
+            "ticker":          s.ticker,
+            "recommendation":  s.recommendation,
+            "confidence":      s.confidence,
+            "position_change": s.position_change,
+            "price_at_rec":    s.signals.close if s.signals else None,
+        }
+        for s in state.stocks
+        if s.recommendation  # 跳过没有裁决的股票
+    ]
+    save_recommendations(state.date, records)
+    return state
+
+
 # ─── 构建图 ──────────────────────────────────────────────
 
 def build_graph(checkpointer=None):
@@ -243,13 +272,15 @@ def build_graph(checkpointer=None):
     builder.add_node("debate",       debate_node)
     builder.add_node("decision",     decision_node)
     builder.add_node("format",       format_report_node)
+    builder.add_node("track",        track_node)
 
     builder.set_entry_point("fetch_data")
     builder.add_edge("fetch_data",   "fundamentals")
     builder.add_edge("fundamentals", "debate")
     builder.add_edge("debate",       "decision")
     builder.add_edge("decision",     "format")
-    builder.add_edge("format",        END)
+    builder.add_edge("format",       "track")
+    builder.add_edge("track",         END)
 
     return builder.compile(checkpointer=checkpointer)
 
