@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date as date_type
 import pandas as pd
 import akshare as ak
 import yfinance as yf
@@ -92,10 +92,29 @@ class AkShareProvider(DataProvider):
         gross_margins = safe("grossMargins")
         gross_margin = round(gross_margins * 100, 1) if gross_margins is not None else None
 
+        # 下次财报日期（港股同样走 yfinance calendar）
+        next_earnings_date = ""
+        try:
+            calendar = await loop.run_in_executor(None, lambda: stock.calendar)
+            if isinstance(calendar, dict):
+                dates = calendar.get("Earnings Date", [])
+            elif hasattr(calendar, "loc"):
+                dates = list(calendar.loc["Earnings Date"]) if "Earnings Date" in calendar.index else []
+            else:
+                dates = []
+            today = datetime.today().date()
+            future = sorted([d.date() if hasattr(d, "date") else d for d in dates if d is not None])
+            future = [d for d in future if d >= today]
+            if future:
+                next_earnings_date = str(future[0])
+        except Exception:
+            pass
+
         return {
             "revenue_growth_yoy": rev_growth,
             "gross_margin": gross_margin,
             "pe_ratio": safe("trailingPE"),
             "ps_ratio": safe("priceToSalesTrailing12Months"),
             "debt_to_equity": safe("debtToEquity"),
+            "next_earnings_date": next_earnings_date,
         }

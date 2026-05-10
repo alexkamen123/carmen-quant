@@ -17,6 +17,7 @@ class EarningsSummary(BaseModel):
     pe_ratio: float | None = None              # 市盈率
     ps_ratio: float | None = None              # 市销率
     debt_to_equity: float | None = None        # 资产负债率
+    next_earnings_date: str = ""               # 下次财报日期 "YYYY-MM-DD"，空字符串表示未知
     fundamental_view: str = ""                 # Claude 的基本面一段话判断
 
 

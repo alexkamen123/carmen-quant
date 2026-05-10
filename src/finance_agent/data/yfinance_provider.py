@@ -30,7 +30,7 @@ class YFinanceProvider(DataProvider):
         return df[["open", "high", "low", "close", "volume"]].tail(days)
 
     async def fetch_earnings(self, ticker: str) -> dict:
-        """获取基本面数据：营收增速、毛利率、PE、PS、负债率"""
+        """获取基本面数据：营收增速、毛利率、PE、PS、负债率、下次财报日期"""
         loop = asyncio.get_event_loop()
         stock = await loop.run_in_executor(None, lambda: yf.Ticker(ticker))
 
@@ -54,12 +54,34 @@ class YFinanceProvider(DataProvider):
         if rev_growth is not None:
             rev_growth = round(rev_growth * 100, 1)  # 转成百分比
 
+        # 下次财报日期（取最近一个未来日期）
+        next_earnings_date = ""
+        try:
+            calendar = await loop.run_in_executor(None, lambda: stock.calendar)
+            # calendar 可能是 dict{"Earnings Date": [Timestamp, ...]} 或 DataFrame
+            if isinstance(calendar, dict):
+                dates = calendar.get("Earnings Date", [])
+            elif hasattr(calendar, "loc"):          # DataFrame 格式（旧版 yfinance）
+                dates = list(calendar.loc["Earnings Date"]) if "Earnings Date" in calendar.index else []
+            else:
+                dates = []
+            today = datetime.today().date()
+            future = sorted(
+                [d.date() if hasattr(d, "date") else d for d in dates if d is not None],
+            )
+            future = [d for d in future if d >= today]
+            if future:
+                next_earnings_date = str(future[0])
+        except Exception:
+            pass
+
         return {
             "revenue_growth_yoy": rev_growth,
             "gross_margin": round(safe("grossMargins", 0.01), 1) if safe("grossMargins") is not None else None,
             "pe_ratio": safe("trailingPE"),
             "ps_ratio": safe("priceToSalesTrailing12Months"),
             "debt_to_equity": safe("debtToEquity"),
+            "next_earnings_date": next_earnings_date,
         }
 
     async def fetch_news(self, ticker: str, limit: int = 5) -> list[dict]:

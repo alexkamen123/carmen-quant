@@ -77,6 +77,7 @@ async def run_portfolio_manager_batch(
             fundamental_view=s.earnings.fundamental_view or "暂无基本面数据",
             bull_thesis=s.bull_thesis or "无",
             bear_thesis=s.bear_thesis or "无",
+            next_earnings_date=s.earnings.next_earnings_date or "未知",
         )
         for s in needs_pm
     ]
