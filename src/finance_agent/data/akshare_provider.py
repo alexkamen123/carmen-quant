@@ -28,16 +28,41 @@ class AkShareProvider(DataProvider):
         loop = asyncio.get_event_loop()
 
         if ticker.isdigit() and len(ticker) <= 6:
-            # 港股
-            df = await loop.run_in_executor(
-                None,
-                lambda: ak.stock_hk_hist(
-                    symbol=ticker, period="daily",
-                    start_date=start, end_date=end, adjust="qfq"
+            # 港股：优先 AkShare，失败自动降级到 yfinance
+            try:
+                df = await loop.run_in_executor(
+                    None,
+                    lambda: ak.stock_hk_hist(
+                        symbol=ticker, period="daily",
+                        start_date=start, end_date=end, adjust="qfq"
+                    )
                 )
-            )
-            rename = {"日期": "date", "开盘": "open", "最高": "high",
-                      "最低": "low", "收盘": "close", "成交量": "volume"}
+                rename = {"日期": "date", "开盘": "open", "最高": "high",
+                          "最低": "low", "收盘": "close", "成交量": "volume"}
+                df = df.rename(columns=rename)
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.set_index("date").sort_index()
+                result = df[["open", "high", "low", "close", "volume"]].tail(days)
+                if len(result) >= 20:
+                    return result
+                raise ValueError(f"AkShare 数据不足 {len(result)} 条")
+            except Exception as e:
+                print(f"[AkShare] {ticker} 降级到 yfinance: {e}")
+                # 降级：yfinance 港股格式 0700.HK
+                yf_ticker = _to_yf_hk(ticker)
+                df_yf = await loop.run_in_executor(
+                    None,
+                    lambda: yf.download(yf_ticker, period=f"{days + 10}d",
+                                        progress=False, auto_adjust=True)
+                )
+                if df_yf.empty:
+                    raise ValueError(f"yfinance 也无法获取 {ticker} 数据")
+                if isinstance(df_yf.columns, pd.MultiIndex):
+                    df_yf.columns = [c[0].lower() for c in df_yf.columns]
+                else:
+                    df_yf.columns = [c.lower() for c in df_yf.columns]
+                df_yf.index = pd.to_datetime(df_yf.index)
+                return df_yf[["open", "high", "low", "close", "volume"]].tail(days)
         else:
             # A股
             df = await loop.run_in_executor(
@@ -49,11 +74,10 @@ class AkShareProvider(DataProvider):
             )
             rename = {"日期": "date", "开盘": "open", "最高": "high",
                       "最低": "low", "收盘": "close", "成交量": "volume"}
-
-        df = df.rename(columns=rename)
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.set_index("date").sort_index()
-        return df[["open", "high", "low", "close", "volume"]].tail(days)
+            df = df.rename(columns=rename)
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date").sort_index()
+            return df[["open", "high", "low", "close", "volume"]].tail(days)
 
     async def fetch_news(self, ticker: str, limit: int = 5) -> list[dict]:
         # 简化版：港股新闻获取，失败时返回空列表不影响主流程
