@@ -11,7 +11,7 @@ from finance_agent.data.router import DataRouter
 from finance_agent.signals.technical import calculate_signals
 from finance_agent.agents.bull_agent import run_bull_analysis
 from finance_agent.agents.bear_agent import run_bear_analysis
-from finance_agent.agents.portfolio_manager import run_portfolio_manager_batch
+from finance_agent.agents.portfolio_manager import run_portfolio_manager_batch, _sector_summary
 from finance_agent.agents.fundamental_analyst import run_fundamental_analysis
 from finance_agent.data.macro import fetch_macro_context
 
@@ -37,7 +37,11 @@ async def fetch_data_node(state: AgentState) -> AgentState:
             news = [NewsItem(**n) for n in news_raw]
             earnings_raw = await router.fetch_earnings(ticker, market)
             earnings = EarningsSummary(**{k: v for k, v in earnings_raw.items() if v is not None})
-            return StockAnalysis(ticker=ticker, market=market, signals=signals, news=news, earnings=earnings)
+            return StockAnalysis(
+                ticker=ticker, market=market, signals=signals, news=news, earnings=earnings,
+                shares=item.get("shares", 0.0),
+                sector=item.get("sector", ""),
+            )
         except Exception as e:
             state.errors.append(f"{ticker}: {e}")
             return None
@@ -185,14 +189,17 @@ async def format_report_node(state: AgentState) -> AgentState:
         "elements": [{"tag": "plain_text", "content": "以上仅供参考，操作前请自行判断"}],
     })
 
-    # 宏观摘要放在卡片最顶部
+    # 宏观 + 集中度放在卡片最顶部
     macro_elements: list[dict] = []
+    header_lines = []
     if state.macro_summary:
+        header_lines.append(f"🌍 **宏观**｜{state.macro_summary}")
+    sector_str = _sector_summary(state.stocks)
+    if sector_str and sector_str != "暂无持仓市值数据":
+        header_lines.append(f"📂 **集中度**｜{sector_str}")
+    if header_lines:
         macro_elements = [
-            {
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": f"🌍 **宏观**｜{state.macro_summary}"},
-            },
+            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(header_lines)}},
             {"tag": "hr"},
         ]
 

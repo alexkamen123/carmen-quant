@@ -12,6 +12,28 @@ from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli, 
 MARKET_LABEL = {"us": "美股", "hk": "港股", "cn": "A股"}
 
 
+def _sector_summary(stocks: list[StockAnalysis]) -> str:
+    """
+    按行业计算持仓市值占比，返回一行文字供 PM prompt 使用。
+    例如："半导体/AI算力 52% | 互联网/AI 30% | 宽基ETF 14% | 股息ETF 4%"
+    """
+    sector_value: dict[str, float] = {}
+    total = 0.0
+    for s in stocks:
+        if not s.sector or s.shares <= 0:
+            continue
+        price = s.signals.close if s.signals else 0.0
+        value = s.shares * price
+        sector_value[s.sector] = sector_value.get(s.sector, 0.0) + value
+        total += value
+
+    if total <= 0:
+        return "暂无持仓市值数据"
+
+    parts = sorted(sector_value.items(), key=lambda x: x[1], reverse=True)
+    return " | ".join(f"{sec} {val/total*100:.0f}%" for sec, val in parts)
+
+
 def _parse_decision(d: dict) -> dict:
     return {
         "recommendation": d.get("recommendation", "观望"),
@@ -58,8 +80,12 @@ async def run_portfolio_manager_batch(
         )
         for s in needs_pm
     ]
+    sector_str = _sector_summary(stocks)
+    print(f"[PM] 持仓集中度：{sector_str}")
+
     user_msg = PM_BATCH_USER.format(
         macro_summary=macro_summary or "暂无宏观数据",
+        sector_summary=sector_str,
         n=len(needs_pm),
         stocks_block="\n\n".join(blocks),
     )
