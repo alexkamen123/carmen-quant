@@ -115,4 +115,5 @@ PM_BATCH_STOCK_TEMPLATE = """--- {ticker}（{market}市场）---
 【技术面】{signals_str}
 【基本面】{fundamental_view}
 【多头】{bull_thesis}
-【空头】{bear_thesis}"""
+【空头】{bear_thesis}
+【下次财报】{next_earnings_date}"""

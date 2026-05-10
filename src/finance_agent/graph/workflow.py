@@ -1,6 +1,6 @@
 # src/finance_agent/graph/workflow.py
 import asyncio
-from datetime import datetime
+from datetime import datetime, date as date_type
 import yaml
 from pathlib import Path
 from langgraph.graph import StateGraph, END
@@ -143,11 +143,26 @@ async def format_report_node(state: AgentState) -> AgentState:
         conf  = CONF.get(s.confidence, "")
         is_etf = s.ticker in ("QQQM", "VOO")
 
+        # 财报预警（距今 ≤7 天）
+        earnings_alert = ""
+        ned = s.earnings.next_earnings_date
+        if ned:
+            try:
+                days_to_earnings = (datetime.strptime(ned, "%Y-%m-%d").date() - datetime.today().date()).days
+                if 0 <= days_to_earnings <= 3:
+                    earnings_alert = f"🔔 **财报预警**：{ned}（{days_to_earnings}天后）"
+                elif days_to_earnings <= 7:
+                    earnings_alert = f"📅 财报临近：{ned}（{days_to_earnings}天后）"
+            except ValueError:
+                pass
+
         # 主推荐块
         main_md_lines = [
             f"**{emoji} {s.ticker}**　{s.recommendation}　{conf}",
             f"{s.one_line}",
         ]
+        if earnings_alert:
+            main_md_lines.append(earnings_alert)
         if s.entry_hint:
             main_md_lines.append(f"📌 {s.entry_hint}")
         if s.key_risk:
