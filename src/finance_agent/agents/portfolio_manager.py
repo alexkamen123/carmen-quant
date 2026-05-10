@@ -1,7 +1,9 @@
 # src/finance_agent/agents/portfolio_manager.py
+import asyncio
 import json
 import os
-import anthropic
+import re
+import subprocess
 from finance_agent.graph.state import StockAnalysis
 from finance_agent.agents.prompts import (
     PM_SYSTEM, PM_USER,
@@ -12,20 +14,31 @@ from finance_agent.agents.bull_agent import deepseek_chat
 MARKET_LABEL = {"us": "美股", "hk": "港股", "cn": "A股"}
 
 
-async def _claude_chat(system: str, user: str, max_tokens: int = 1200) -> str:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
-    if api_key:
-        client = anthropic.AsyncAnthropic(api_key=api_key)
-    else:
-        client = anthropic.AsyncAnthropic(auth_token=oauth_token)
-    message = await client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user}],
+async def _claude_cli_chat(system: str, user: str) -> str:
+    """
+    通过 claude -p 子进程调用 Claude（走 Claude Code 路径，Pro 订阅不受 API 限速）。
+    使用 run_in_executor 包住同步 subprocess.run，避免 event loop 问题。
+    """
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: subprocess.run(
+            ["claude", "-p", user,
+             "--system-prompt", system,
+             "--output-format", "text"],
+            capture_output=True, text=True, timeout=120,
+        )
     )
-    return message.content[0].text.strip()
+    if result.returncode != 0:
+        raise RuntimeError(f"claude CLI exit {result.returncode}: {result.stderr[:200]}")
+    return result.stdout.strip()
+
+
+def _strip_markdown(text: str) -> str:
+    """去掉模型输出的 markdown 代码块包裹"""
+    text = re.sub(r"^```(?:json)?\s*", "", text.strip())
+    text = re.sub(r"\s*```$", "", text)
+    return text.strip()
 
 
 def _parse_decision(d: dict) -> dict:
@@ -40,54 +53,59 @@ def _parse_decision(d: dict) -> dict:
 
 async def run_portfolio_manager_batch(stocks: list[StockAnalysis]) -> list[StockAnalysis]:
     """
-    一次 Claude 调用处理所有非 ETF 股票的 PM 裁决。
+    一次 Claude CLI 调用处理所有非 ETF 股票的 PM 裁决。
     失败时逐只降级到 DeepSeek。
     """
-    # 分离需要 PM 决策的股票
     etf_tickers = {"QQQM", "VOO"}
     needs_pm = [s for s in stocks if s.ticker not in etf_tickers]
-    etf_stocks = [s for s in stocks if s.ticker in etf_tickers]
+    result_map: dict[str, StockAnalysis] = {}
 
     # ETF 直接标记
-    result_map: dict[str, StockAnalysis] = {}
-    for s in etf_stocks:
-        result_map[s.ticker] = s.model_copy(update={
-            "recommendation": "按计划定投",
-            "confidence": "高",
-            "one_line": f"{s.ticker} 按月定投计划执行，无需额外操作",
-        })
+    for s in stocks:
+        if s.ticker in etf_tickers:
+            result_map[s.ticker] = s.model_copy(update={
+                "recommendation": "按计划定投",
+                "confidence": "高",
+                "one_line": f"{s.ticker} 按月定投计划执行，无需额外操作",
+            })
 
     if not needs_pm:
         return [result_map[s.ticker] for s in stocks]
 
     # 构建批量 prompt
-    blocks = []
-    for s in needs_pm:
-        blocks.append(PM_BATCH_STOCK_TEMPLATE.format(
+    blocks = [
+        PM_BATCH_STOCK_TEMPLATE.format(
             ticker=s.ticker,
             market=MARKET_LABEL.get(s.market, s.market),
             signals_str=s.signals.to_prompt_str(),
             fundamental_view=s.earnings.fundamental_view or "暂无基本面数据",
             bull_thesis=s.bull_thesis or "无",
             bear_thesis=s.bear_thesis or "无",
-        ))
+        )
+        for s in needs_pm
+    ]
     user_msg = PM_BATCH_USER.format(
         n=len(needs_pm),
         stocks_block="\n\n".join(blocks),
     )
 
-    has_claude = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
     decisions: list[dict] = []
 
+    # 优先 claude CLI（Pro 订阅路径，无 API 限速）
+    has_claude = bool(
+        os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
+    )
     if has_claude:
         try:
-            raw = await _claude_chat(PM_BATCH_SYSTEM, user_msg, max_tokens=200 * len(needs_pm))
+            raw = await _claude_cli_chat(PM_BATCH_SYSTEM, user_msg)
+            raw = _strip_markdown(raw)
             start, end = raw.find("["), raw.rfind("]") + 1
             decisions = json.loads(raw[start:end])
+            print(f"[PM] Claude CLI 批量裁决成功（{len(decisions)} 只）")
         except Exception as e:
-            print(f"[PM] Claude 批量调用失败，逐只降级到 DeepSeek: {e}")
+            print(f"[PM] Claude CLI 失败，降级到 DeepSeek: {e}")
 
-    # Claude 失败或未配置 → DeepSeek 逐只处理
+    # 降级：DeepSeek 逐只处理
     if not decisions:
         for s in needs_pm:
             user_msg_single = PM_USER.format(
@@ -106,7 +124,6 @@ async def run_portfolio_manager_batch(stocks: list[StockAnalysis]) -> list[Stock
                 print(f"[PM] DeepSeek 也失败 {s.ticker}: {e2}")
                 decisions.append({"ticker": s.ticker})
 
-    # 将决策写回 StockAnalysis
     decision_by_ticker = {d.get("ticker", ""): d for d in decisions}
     for s in needs_pm:
         d = decision_by_ticker.get(s.ticker, {})
