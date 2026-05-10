@@ -1,12 +1,22 @@
 # .github/workflows/news_alert.yml
 name: 盘中新闻扫描
 
+# 覆盖两个市场时段：
+#   港股时段：北京 09:00-16:00 = UTC 01:00-08:00
+#   美股时段：北京 21:00-06:00(次日) = UTC 13:00-22:00
+#   （含美股盘前 04:00 EST = UTC 09:00 = 北京 17:00，由美股段首触覆盖）
+#
+# 注意：美股新闻无需港股时段扫描，港股新闻无需美股时段扫描。
+# yfinance news API 会返回各自市场的新闻，两段 cron 共用同一 job 即可。
+
 on:
   schedule:
-    # 北京时间 09:00-17:00 = UTC 01:00-09:00，每小时整点扫描
-    # 09:00, 10:00, 11:00, 13:00, 14:00, 15:00, 16:00, 17:00 BJ
-    - cron: "0 1-9 * * 1-5"
-  workflow_dispatch:   # 允许手动触发测试
+    # 港股时段：UTC 01-08，每小时整点（周一到周五）
+    - cron: "0 1-8 * * 1-5"
+    # 美股时段：UTC 13-22，每小时整点（周一到周五）
+    # 注：UTC 22 = 北京次日 06:00，覆盖美股盘后
+    - cron: "0 13-22 * * 1-5"
+  workflow_dispatch:
     inputs:
       threshold:
         description: "影响度阈值（默认 7）"
@@ -24,7 +34,7 @@ jobs:
       - name: 安装 Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: "pip"
 
       - name: 安装依赖
