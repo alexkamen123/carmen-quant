@@ -1,8 +1,7 @@
 # src/finance_agent/agents/fundamental_analyst.py
-import os
-import anthropic
 from finance_agent.graph.state import StockAnalysis, EarningsSummary
 from finance_agent.agents.prompts import FUNDAMENTAL_SYSTEM, FUNDAMENTAL_USER
+from finance_agent.agents.bull_agent import deepseek_chat
 
 MARKET_LABEL = {"us": "美股", "hk": "港股", "cn": "A股"}
 
@@ -43,26 +42,10 @@ async def run_fundamental_analysis(analysis: StockAnalysis) -> StockAnalysis:
         news_str=news_str,
     )
 
-    # 优先 API key，其次 OAuth token
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
-
     try:
-        if api_key:
-            client = anthropic.AsyncAnthropic(api_key=api_key)
-        else:
-            client = anthropic.AsyncAnthropic(auth_token=oauth_token)
-
-        message = await client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=400,
-            system=FUNDAMENTAL_SYSTEM,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-        view = message.content[0].text.strip()
+        view = await deepseek_chat(FUNDAMENTAL_SYSTEM, user_msg)
     except Exception:
-        # 降级：直接展示原始财务数字（不显示错误信息）
-        view = financials_str
+        view = financials_str  # 降级：展示原始财务数字
 
     return analysis.model_copy(update={
         "earnings": analysis.earnings.model_copy(update={"fundamental_view": view})

@@ -11,7 +11,7 @@ from finance_agent.data.router import DataRouter
 from finance_agent.signals.technical import calculate_signals
 from finance_agent.agents.bull_agent import run_bull_analysis
 from finance_agent.agents.bear_agent import run_bear_analysis
-from finance_agent.agents.portfolio_manager import run_portfolio_manager
+from finance_agent.agents.portfolio_manager import run_portfolio_manager_batch
 from finance_agent.agents.fundamental_analyst import run_fundamental_analysis
 
 router = DataRouter()
@@ -47,22 +47,20 @@ async def fetch_data_node(state: AgentState) -> AgentState:
 
 
 async def fundamentals_node(state: AgentState) -> AgentState:
-    """用 Claude 分析每只股票基本面（串行 + 间隔，避免 Pro 限速）"""
-    updated = []
-    needs_claude = [s for s in state.stocks if s.ticker not in ("QQQM", "VOO")]
-    for analysis in state.stocks:
-        if analysis.ticker in ("QQQM", "VOO"):
-            updated.append(analysis.model_copy(update={
+    """用 DeepSeek 分析每只股票基本面（并行，无限速问题）"""
+    etf_tickers = {"QQQM", "VOO"}
+
+    async def process_one(analysis: StockAnalysis) -> StockAnalysis:
+        if analysis.ticker in etf_tickers:
+            return analysis.model_copy(update={
                 "earnings": analysis.earnings.model_copy(
                     update={"fundamental_view": "宽基 ETF，按定投计划执行"}
                 )
-            }))
-        else:
-            updated.append(await run_fundamental_analysis(analysis))
-            # 串行调用，防止同一会话并发触发限速
-            if analysis != needs_claude[-1]:
-                await asyncio.sleep(1)
-    return state.model_copy(update={"stocks": updated})
+            })
+        return await run_fundamental_analysis(analysis)
+
+    updated = await asyncio.gather(*[process_one(s) for s in state.stocks])
+    return state.model_copy(update={"stocks": list(updated)})
 
 
 async def debate_node(state: AgentState) -> AgentState:
@@ -83,22 +81,8 @@ async def debate_node(state: AgentState) -> AgentState:
 
 
 async def decision_node(state: AgentState) -> AgentState:
-    """Portfolio Manager 对每只股票做最终裁决"""
-    updated_stocks = []
-    needs_pm = [s for s in state.stocks if s.ticker not in ("QQQM", "VOO")]
-    for analysis in state.stocks:
-        if analysis.ticker in ("QQQM", "VOO"):
-            updated = analysis.model_copy(update={
-                "recommendation": "按计划定投",
-                "confidence": "高",
-                "one_line": f"{analysis.ticker} 按月定投计划执行，无需额外操作",
-            })
-        else:
-            updated = await run_portfolio_manager(analysis)
-            # 串行调用，防止同一会话并发触发限速
-            if analysis != needs_pm[-1]:
-                await asyncio.sleep(1)
-        updated_stocks.append(updated)
+    """Portfolio Manager 批量裁决：1 次 Claude 调用处理所有股票"""
+    updated_stocks = await run_portfolio_manager_batch(state.stocks)
     return state.model_copy(update={"stocks": updated_stocks})
 
 

@@ -81,3 +81,31 @@ PM_USER = """股票：{ticker}（{market}市场）
 {bear_thesis}
 
 请综合技术面和基本面，给出最终操作建议。"""
+
+PM_BATCH_SYSTEM = """你是一位家庭财富管理顾问，帮助一位普通投资者管理港股和美股持仓。
+你已经看到了每只股票多空双方的分析，现在需要对所有股票逐一给出最终操作建议。
+
+输出格式（严格按此 JSON 数组输出，不要有其他内容）：
+[
+  {
+    "ticker": "股票代码",
+    "recommendation": "买入" | "持有" | "减仓" | "观望" | "卖出",
+    "confidence": "高" | "中" | "低",
+    "entry_hint": "具体的进场价位或止损建议（一句话）",
+    "key_risk": "最需要警惕的一个风险点（一句话）",
+    "one_line": "给非专业投资者的一句话总结"
+  },
+  ...
+]"""
+
+PM_BATCH_USER = """请对以下 {n} 只股票逐一给出最终操作建议：
+
+{stocks_block}
+
+请输出包含所有股票决策的 JSON 数组。"""
+
+PM_BATCH_STOCK_TEMPLATE = """--- {ticker}（{market}市场）---
+【技术面】{signals_str}
+【基本面】{fundamental_view}
+【多头】{bull_thesis}
+【空头】{bear_thesis}"""
