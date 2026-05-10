@@ -1,16 +1,17 @@
-# .github/workflows/weekly_report.yml
-name: 周度配置建议（完整三步）
+# .github/workflows/daily_followup.yml
+name: 每日配置跟进（周二到周五）
 
 on:
   schedule:
-    # 每周一北京时间 09:30 = UTC 01:30
-    - cron: "30 1 * * 1"
+    # 周二到周五北京时间 09:30 = UTC 01:30
+    - cron: "30 1 * * 2-5"
   workflow_dispatch:
 
 jobs:
-  weekly-report:
+  daily-followup:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
     steps:
       - uses: actions/checkout@v4
@@ -27,21 +28,21 @@ jobs:
       - name: 安装 Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: 运行周度完整分析
+      # 恢复周一生成的周报 JSON
+      - name: 恢复周报数据
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: weekly_report.yml
+          name: weekly-latest
+          path: data/
+          if_no_artifact_found: ignore
+          search_artifacts: true
+
+      - name: 运行每日跟进
         env:
           CLAUDE_CODE_OAUTH_TOKEN:  ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           DEEPSEEK_API_KEY:         ${{ secrets.DEEPSEEK_API_KEY }}
           FEISHU_WEBHOOK_URL:       ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET:    ${{ secrets.FEISHU_WEBHOOK_SECRET }}
-        run: |
-          mkdir -p data
-          finance-agent weekly-report
-
-      - name: 上传周报数据（供每日跟进读取）
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: weekly-latest
-          path: data/weekly_latest.json
-          retention-days: 7
-          overwrite: true
+        run: finance-agent daily-followup

@@ -16,9 +16,21 @@ import pandas as pd
 import yaml
 import yfinance as yf
 
-from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli
+from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli, strip_markdown
 from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.data.macro import fetch_macro_context
+
+
+async def _claude_json(system: str, user: str, timeout: int = 120,
+                       array: bool = False) -> str:
+    """优先 Claude，失败降级 DeepSeek；返回原始字符串供调用方解析。"""
+    try:
+        if has_claude_cli():
+            return strip_markdown(await claude_cli_chat(system, user, timeout=timeout))
+        raise RuntimeError("无 Claude CLI")
+    except Exception as e:
+        print(f"[AllocationAdvisor] Claude 失败，降级 DeepSeek: {e}")
+        return await deepseek_chat(system, user)
 
 
 # ── Prompts ──────────────────────────────────────────────────────────────────
@@ -70,7 +82,9 @@ HEDGE_SYSTEM = """你是一位专注 ETF 和全球资产配置的投顾。
   }
 ]"""
 
-HEDGE_USER = """针对以下对冲方向，推荐具体可交易品种：
+HEDGE_USER = """当前宏观环境：{macro_summary}
+
+针对以下对冲方向，推荐具体可交易品种：
 
 {directions_str}
 
@@ -230,35 +244,30 @@ async def run_allocation_advisor() -> dict[str, Any]:
         macro_summary=macro_summary,
         holdings_str="\n".join(holdings_lines),
     )
-    try:
-        if has_claude_cli():
-            raw = await claude_cli_chat(DIAG_SYSTEM, diag_user, timeout=90)
-        else:
-            raise RuntimeError("无 Claude CLI")
-    except Exception as e:
-        print(f"[AllocationAdvisor] Claude 失败，降级 DeepSeek: {e}")
-        raw = await deepseek_chat(DIAG_SYSTEM, diag_user)
-
+    raw = await _claude_json(DIAG_SYSTEM, diag_user, timeout=90)
     start, end = raw.find("{"), raw.rfind("}") + 1
     diagnosis: dict = json.loads(raw[start:end]) if start >= 0 else {}
     hedge_directions = diagnosis.get("hedge_directions", [])
 
-    # ── Step 2: 对冲选品 ──
+    # ── Step 2: 对冲选品（Claude，需要宏观判断能力）──
     print("[AllocationAdvisor] Step 2: 对冲选品...")
     directions_str = "\n".join(
-        f"- {d['direction']}（urgency={d['urgency']}）：{d['rationale']}"
+        f"- {d['direction']}（urgency={d.get('urgency', '中')}）：{d.get('rationale', '')}"
         for d in hedge_directions
     )
-    hedge_user = HEDGE_USER.format(directions_str=directions_str)
+    hedge_user = HEDGE_USER.format(
+        directions_str=directions_str,
+        macro_summary=macro_summary,
+    )
+    hedge_instruments: list[dict] = []
     try:
-        raw2 = await deepseek_chat(HEDGE_SYSTEM, hedge_user)
+        raw2 = await _claude_json(HEDGE_SYSTEM, hedge_user, timeout=90, array=True)
         start2, end2 = raw2.find("["), raw2.rfind("]") + 1
-        hedge_instruments: list[dict] = json.loads(raw2[start2:end2]) if start2 >= 0 else []
+        hedge_instruments = json.loads(raw2[start2:end2]) if start2 >= 0 else []
     except Exception as e:
-        print(f"[AllocationAdvisor] 对冲选品失败: {e}")
-        hedge_instruments = []
+        print(f"[AllocationAdvisor] 对冲选品解析失败: {e}")
 
-    # ── Step 3: 机会筛选 ──
+    # ── Step 3: 机会筛选（技术初筛 → Claude 精选）──
     print("[AllocationAdvisor] Step 3: 市场机会筛选...")
     all_candidates: list[dict] = []
     loop = asyncio.get_event_loop()
@@ -283,17 +292,33 @@ async def run_allocation_advisor() -> dict[str, Any]:
             macro_summary=macro_summary,
         )
         try:
-            raw3 = await deepseek_chat(SCREEN_SYSTEM, screen_user)
+            raw3 = await _claude_json(SCREEN_SYSTEM, screen_user, timeout=90, array=True)
             start3, end3 = raw3.find("["), raw3.rfind("]") + 1
             opportunities = json.loads(raw3[start3:end3]) if start3 >= 0 else []
         except Exception as e:
-            print(f"[AllocationAdvisor] 机会筛选 LLM 失败: {e}")
+            print(f"[AllocationAdvisor] 机会筛选解析失败: {e}")
 
-    return {
+    result: dict[str, Any] = {
+        "date": __import__("datetime").date.today().isoformat(),
         "sector_summary": sector_summary,
         "macro_summary": macro_summary,
         "diagnosis": diagnosis,
         "hedge_instruments": hedge_instruments,
         "opportunities": opportunities,
         "candidates_screened": len(all_candidates),
+        # 跟进用：本次推荐的所有 instrument tickers
+        "watch_tickers": list({
+            ins["ticker"]
+            for block in hedge_instruments
+            for ins in block.get("instruments", [])
+        } | {op["ticker"] for op in opportunities}),
     }
+
+    # 持久化到 data/ 供每日跟进读取
+    import datetime as _dt
+    Path("data").mkdir(exist_ok=True)
+    out_path = Path("data/weekly_latest.json")
+    out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2))
+    print(f"[AllocationAdvisor] 结果已保存到 {out_path}")
+
+    return result

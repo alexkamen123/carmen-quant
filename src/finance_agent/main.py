@@ -12,6 +12,7 @@ from finance_agent.backtest.engine import backfill_yesterday
 from finance_agent.alerts.news_monitor import run_news_scan
 from finance_agent.weekly.allocation_advisor import run_allocation_advisor
 from finance_agent.weekly.report_card import build_weekly_card
+from finance_agent.weekly.daily_followup import run_daily_followup
 
 load_dotenv()
 
@@ -92,6 +93,27 @@ async def _weekly_report(skip_notify: bool):
         card = build_weekly_card(result)
         ok = await send_feishu_card(card)
         console.print("✅ 周度报告推送成功" if ok else "❌ 周度报告推送失败")
+
+
+@app.command("daily-followup")
+def daily_followup(
+    skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
+):
+    """周二到周五：基于周一周报做轻量跟进（价格变化 + 是否还有机会）"""
+    asyncio.run(_daily_followup(skip_notify=skip_notify))
+
+
+async def _daily_followup(skip_notify: bool):
+    console.print("📌 开始每日配置跟进...")
+    text = await run_daily_followup()
+    if text is None:
+        console.print("⚪ 无周报数据，跳过今日跟进")
+        return
+    console.print(text)
+    if not skip_notify:
+        from finance_agent.notifications.feishu import send_feishu_message
+        ok = await send_feishu_message(text)
+        console.print("✅ 跟进消息推送成功" if ok else "❌ 跟进消息推送失败")
 
 
 @app.command()
