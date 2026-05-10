@@ -1,48 +1,44 @@
-# 持仓配置文件
-# 复制此文件，填入你自己的股票代码和持仓信息
-#
-# market 字段：us = 美股，hk = 港股，cn = A股
-# is_dca = true：定投标的，跳过 Bull/Bear 辩论，直接建议按计划执行
-# cost_basis：成本价（选填，暂未用于计算，仅做记录）
-
 holdings:
   - ticker: NVDA
     market: us
-    shares: 10
+    shares: 2
     cost_basis: null
-    notes: "AI算力"
+    notes: "AI算力核心持仓"
 
   - ticker: AAPL
     market: us
-    shares: 5
+    shares: 1
+    cost_basis: null
+
+  - ticker: GOOGL
+    market: us
+    shares: 1
     cost_basis: null
 
   - ticker: QQQM
     market: us
-    shares: 5
+    shares: 1
     cost_basis: null
     is_dca: true
-    notes: "纳斯达克100 ETF，定投"
 
   - ticker: VOO
     market: us
-    shares: 5
-    cost_basis: null
+    shares: 0
     is_dca: true
-    notes: "标普500 ETF，定投"
 
   - ticker: "00700"
     market: hk
-    shares: 100
+    shares: 3
     cost_basis: null
     notes: "腾讯控股"
 
-# watchlist：观察名单，会拉取数据和分析但不计入持仓统计
-watchlist:
-  - ticker: GOOGL
-    market: us
-    notes: "谷歌，考虑建仓"
+  - ticker: "02513"
+    market: hk
+    shares: 1
+    cost_basis: null
+    notes: "智谱AI"
 
+watchlist:
   - ticker: MU
     market: us
     notes: "美光科技，考虑建仓"
