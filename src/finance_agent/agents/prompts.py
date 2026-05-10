@@ -101,11 +101,15 @@ PM_BATCH_SYSTEM = """你是一位家庭财富管理顾问，帮助一位普通�
 PM_BATCH_USER = """【今日宏观背景】
 {macro_summary}
 
+【当前持仓集中度】
+{sector_summary}
+（集中度超过50%的行业需在相关股票的 key_risk 中提示集中风险）
+
 请对以下 {n} 只股票逐一给出最终操作建议：
 
 {stocks_block}
 
-请结合宏观背景（VIX高时整体偏保守，大盘跌时提高风险权重），输出包含所有股票决策的 JSON 数组。"""
+请结合宏观背景与持仓集中度，输出包含所有股票决策的 JSON 数组。"""
 
 PM_BATCH_STOCK_TEMPLATE = """--- {ticker}（{market}市场）---
 【技术面】{signals_str}

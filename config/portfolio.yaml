@@ -2,19 +2,23 @@ holdings:
   # ── 美股 ──────────────────────────────────────────────
   - ticker: NVDA
     market: us
-    shares: 3.04        # 汇丰 3 股 + 盈立零碎 0.04 股
-    cost_basis: 194.82  # 加权均价
+    shares: 3.04
+    cost_basis: 194.82
+    sector: 半导体/AI算力
     notes: "AI算力核心持仓"
 
   - ticker: GOOGL
     market: us
     shares: 1
     cost_basis: 312.38
+    sector: 互联网/AI
+    notes: ""
 
   - ticker: QQQM
     market: us
     shares: 1
     cost_basis: 276.50
+    sector: 宽基ETF
     is_dca: true
     notes: "纳指100 ETF，定投"
 
@@ -22,6 +26,7 @@ holdings:
     market: us
     shares: 0.5004
     cost_basis: 676.98
+    sector: 宽基ETF
     is_dca: true
     notes: "标普500 ETF，零碎定投"
 
@@ -29,18 +34,21 @@ holdings:
     market: us
     shares: 1
     cost_basis: 31.64
+    sector: 股息ETF
     notes: "Schwab美股股息ETF"
 
   - ticker: DRAM
     market: us
     shares: 1
     cost_basis: 46.43
+    sector: 半导体/AI算力
     notes: "Roundhill内存芯片ETF"
 
   - ticker: MU
     market: us
     shares: 0.1533
     cost_basis: 651.99
+    sector: 半导体/AI算力
     notes: "美光科技，零碎股"
 
   # ── 港股 ──────────────────────────────────────────────
@@ -48,12 +56,14 @@ holdings:
     market: hk
     shares: 3
     cost_basis: 541.50
+    sector: 互联网/AI
     notes: "腾讯控股"
 
   - ticker: "02513"
     market: hk
     shares: 1
     cost_basis: 933.00
+    sector: 互联网/AI
     notes: "智谱AI-H"
 
 watchlist: []

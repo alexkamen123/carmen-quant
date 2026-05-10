@@ -28,6 +28,10 @@ class StockAnalysis(BaseModel):
     news: list[NewsItem] = Field(default_factory=list)
     earnings: EarningsSummary = Field(default_factory=EarningsSummary)
 
+    # Portfolio metadata
+    shares: float = 0.0         # 持仓股数
+    sector: str = ""            # 行业标签（来自 portfolio.yaml）
+
     # Technical debate (DeepSeek)
     bull_thesis: str = ""
     bear_thesis: str = ""
