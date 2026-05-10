@@ -69,6 +69,11 @@ async def run_portfolio_manager_batch(
     if not needs_pm:
         return [result_map[s.ticker] for s in stocks]
 
+    # 计算总持仓市值（全部股票，含 ETF）用于仓位比例——必须在 blocks 循环之前
+    total_value = sum(s.shares * s.signals.close for s in stocks if s.shares > 0 and s.signals)
+    sector_str = _sector_summary(stocks)
+    print(f"[PM] 持仓集中度：{sector_str}")
+
     # 构建批量 prompt
     blocks = []
     for s in needs_pm:
@@ -86,10 +91,6 @@ async def run_portfolio_manager_batch(
             bear_thesis=s.bear_thesis or "无",
             next_earnings_date=s.earnings.next_earnings_date or "未知",
         ))
-    # 计算总持仓市值（全部股票，含 ETF）用于仓位比例
-    total_value = sum(s.shares * s.signals.close for s in stocks if s.shares > 0 and s.signals)
-    sector_str = _sector_summary(stocks)
-    print(f"[PM] 持仓集中度：{sector_str}")
 
     user_msg = PM_BATCH_USER.format(
         macro_summary=macro_summary or "暂无宏观数据",
