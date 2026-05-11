@@ -255,11 +255,13 @@ async def run_allocation_advisor() -> dict[str, Any]:
                 price = h.get("cost_basis", 0)
         except Exception:
             price = h.get("cost_basis", 0)
-        value = shares * price
-        sector_value[sector] = sector_value.get(sector, 0.0) + value
-        total_value += value
+        # 统一换算为美元（港元 ÷7.8，人民币 ÷7.2）
+        _FX = {"us": 1.0, "hk": 1 / 7.8, "cn": 1 / 7.2}
+        usd_value = shares * price * _FX.get(market, 1.0)
+        sector_value[sector] = sector_value.get(sector, 0.0) + usd_value
+        total_value += usd_value
         holdings_lines.append(
-            f"  {ticker}（{sector}）{shares}股 × {price:.2f} ≈ {value:.0f}"
+            f"  {ticker}（{sector}）{shares}股 × {price:.2f} ≈ ${usd_value:.0f}"
         )
 
     sector_summary = " | ".join(
@@ -278,7 +280,7 @@ async def run_allocation_advisor() -> dict[str, Any]:
         macro_summary=macro_summary,
         holdings_str="\n".join(holdings_lines),
     )
-    raw = await _claude_json(DIAG_SYSTEM, diag_user, timeout=90)
+    raw = await _claude_json(DIAG_SYSTEM, diag_user, timeout=150)
     start, end = raw.find("{"), raw.rfind("}") + 1
     diagnosis: dict = json.loads(raw[start:end]) if start >= 0 else {}
     hedge_directions = diagnosis.get("hedge_directions", [])
@@ -295,7 +297,7 @@ async def run_allocation_advisor() -> dict[str, Any]:
     )
     hedge_instruments: list[dict] = []
     try:
-        raw2 = await _claude_json(HEDGE_SYSTEM, hedge_user, timeout=90, array=True)
+        raw2 = await _claude_json(HEDGE_SYSTEM, hedge_user, timeout=150, array=True)
         start2, end2 = raw2.find("["), raw2.rfind("]") + 1
         hedge_instruments = json.loads(raw2[start2:end2]) if start2 >= 0 else []
     except Exception as e:
@@ -327,7 +329,7 @@ async def run_allocation_advisor() -> dict[str, Any]:
             macro_summary=macro_summary,
         )
         try:
-            raw3 = await _claude_json(SCREEN_SYSTEM, screen_user, timeout=90, array=True)
+            raw3 = await _claude_json(SCREEN_SYSTEM, screen_user, timeout=150, array=True)
             start3, end3 = raw3.find("["), raw3.rfind("]") + 1
             opportunities = json.loads(raw3[start3:end3]) if start3 >= 0 else []
         except Exception as e:
