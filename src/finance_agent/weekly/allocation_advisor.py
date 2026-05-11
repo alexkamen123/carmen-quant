@@ -97,11 +97,17 @@ HEDGE_USER = """当前宏观环境：{macro_summary}
 SCREEN_SYSTEM = """你是一位量化选股分析师，专注寻找超卖但基本面扎实的机会。
 根据提供的候选标的数据，筛选出最值得关注的 3-5 只。
 
+⚠️ 重要约束：必须结合【当前持仓集中度】做组合适配性判断：
+- 若候选标的与已重仓板块高度重叠（如组合已超配科技，则科技类新增标的应降权或标注风险）
+- 对冲类品种（黄金/债券/防御板块）在高集中度组合中应优先推荐
+- 每个推荐必须说明是否与当前持仓形成分散还是叠加集中
+
 输出格式（严格 JSON 数组）：
 [
   {
     "ticker": "代码",
     "reason": "选中理由（技术面+基本面各一点，不超过 40 字）",
+    "portfolio_fit": "分散风险" | "叠加集中（谨慎）",
     "signal_strength": "强" | "中",
     "suggested_position": "轻仓试探（<3%）" | "标准配置（3-5%）"
   }
@@ -114,7 +120,11 @@ SCREEN_USER = """以下是从市场中初筛的候选标的（RSI<45，有一定
 
 当前宏观环境：{macro_summary}
 
-请从中选出 3-5 只最值得关注的机会，说明理由。"""
+【当前持仓集中度】：{sector_summary}
+【最大集中风险】：{concentration_risk}
+
+请结合持仓集中度，从中选出 3-5 只最值得关注的机会。
+若科技/AI板块已严重超配，科技类标的须标注"叠加集中（谨慎）"并降低建议仓位。"""
 
 
 # ── 候选池定义（可扩展）────────────────────────────────────────────────────
@@ -327,6 +337,8 @@ async def run_allocation_advisor() -> dict[str, Any]:
         screen_user = SCREEN_USER.format(
             candidates_str=candidates_str,
             macro_summary=macro_summary,
+            sector_summary=sector_summary,
+            concentration_risk=diagnosis.get("concentration_risk", "暂无"),
         )
         try:
             raw3 = await _claude_json(SCREEN_SYSTEM, screen_user, timeout=150, array=True)
