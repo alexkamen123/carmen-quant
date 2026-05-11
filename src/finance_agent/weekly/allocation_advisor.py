@@ -182,7 +182,7 @@ def _quick_screen(tickers: list[str], market: str = "us") -> list[dict]:
             rs = gain / loss.replace(0, float("nan"))
             rsi = (100 - 100 / (1 + rs)).iloc[-1]
 
-            if rsi > 45:
+            if rsi > 48:
                 continue  # 不超卖，跳过
 
             # 成交量（近5日均量 vs 前20日均量，排除量能大幅萎缩）
@@ -240,10 +240,34 @@ def _quick_screen(tickers: list[str], market: str = "us") -> list[dict]:
 
 # ── 三步主流程 ────────────────────────────────────────────────────────────────
 
-async def run_allocation_advisor() -> dict[str, Any]:
+def _current_iso_week() -> str:
+    """返回当前 ISO 年周字符串，如 '2026-W20'，用于周报版本锁定。"""
+    import datetime as _dt
+    today = _dt.date.today()
+    iso = today.isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
     """
     执行完整三步配置建议流程，返回结构化结果供飞书卡片使用。
+
+    force=True：忽略本周已有缓存，强制重新生成。
+    force=False（默认）：同一 ISO 周内若已有缓存，直接返回缓存，保证口径一致。
     """
+    # ── 周报结果锁定：同周复用缓存 ────────────────────────────────────────────
+    out_path = Path("data/weekly_latest.json")
+    current_week = _current_iso_week()
+    if not force and out_path.exists():
+        try:
+            cached = json.loads(out_path.read_text())
+            if cached.get("iso_week") == current_week:
+                print(f"[AllocationAdvisor] ✅ 本周缓存命中（{current_week}），直接复用。"
+                      f"如需重跑请加 --force。")
+                return cached
+        except Exception:
+            pass  # 缓存损坏则重新生成
+
     config_path = Path(__file__).parents[3] / "config" / "portfolio.yaml"
     with open(config_path) as f:
         portfolio = yaml.safe_load(f)
@@ -356,6 +380,7 @@ async def run_allocation_advisor() -> dict[str, Any]:
 
     result: dict[str, Any] = {
         "date": __import__("datetime").date.today().isoformat(),
+        "iso_week": current_week,
         "sector_summary": sector_summary,
         "macro_summary": macro_summary,
         "diagnosis": diagnosis,

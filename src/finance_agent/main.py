@@ -80,14 +80,15 @@ def news_scan(
 @app.command("weekly-report")
 def weekly_report(
     skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
+    force: bool = typer.Option(False, "--force", "-f", help="强制重新生成（忽略本周缓存）"),
 ):
     """运行周度配置建议（配置诊断 → 对冲选品 → 机会筛选）"""
-    asyncio.run(_weekly_report(skip_notify=skip_notify))
+    asyncio.run(_weekly_report(skip_notify=skip_notify, force=force))
 
 
-async def _weekly_report(skip_notify: bool):
+async def _weekly_report(skip_notify: bool, force: bool = False):
     console.print("📊 开始周度配置建议分析...")
-    result = await run_allocation_advisor()
+    result = await run_allocation_advisor(force=force)
 
     diagnosis = result.get("diagnosis", {})
     console.print(f"[诊断] {diagnosis.get('concentration_risk', '')}")
