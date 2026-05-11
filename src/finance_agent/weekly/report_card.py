@@ -78,9 +78,11 @@ def build_weekly_card(result: dict) -> dict:
         opp_lines = [f"**🎯 当前机会（从 {candidates_screened} 只候选中筛出）**"]
         for op in opportunities:
             sig_emoji = SIGNAL_EMOJI.get(op.get("signal_strength", "中"), "✨")
+            fit = op.get("portfolio_fit", "")
+            fit_tag = f"　⚠️ **{fit}**" if "叠加" in fit else (f"　✅ {fit}" if fit else "")
             opp_lines.append(
                 f"{sig_emoji} **{op['ticker']}** — {op.get('reason', '')}\n"
-                f"　　建议仓位：{op.get('suggested_position', '')}"
+                f"　　建议仓位：{op.get('suggested_position', '')}{fit_tag}"
             )
         elements.append({
             "tag": "div",
