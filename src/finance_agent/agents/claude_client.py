@@ -8,24 +8,39 @@ import re
 import subprocess
 
 
-async def claude_cli_chat(system: str, user: str, timeout: int = 120) -> str:
+async def claude_cli_chat(system: str, user: str, timeout: int = 120,
+                          max_retries: int = 2) -> str:
     """
     异步调用 Claude CLI（claude -p）。
     使用 run_in_executor 包住同步 subprocess.run，避免 event loop 阻塞。
+    exit 1 且 stderr 为空时（偶发冷启动/网络抖动）自动重试，最多 max_retries 次。
     """
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: subprocess.run(
+
+    def _run() -> subprocess.CompletedProcess:
+        return subprocess.run(
             ["claude", "-p", user,
              "--system-prompt", system,
              "--output-format", "text"],
             capture_output=True, text=True, timeout=timeout,
         )
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"claude CLI exit {result.returncode}: {result.stderr[:200]}")
-    return result.stdout.strip()
+
+    last_err: Exception | None = None
+    for attempt in range(max_retries + 1):
+        result = await loop.run_in_executor(None, _run)
+        if result.returncode == 0:
+            return result.stdout.strip()
+        last_err = RuntimeError(
+            f"claude CLI exit {result.returncode}: {result.stderr[:200]}"
+        )
+        # 有实质性错误信息就直接抛，不再重试（不是偶发抖动）
+        if result.stderr.strip():
+            raise last_err
+        # stderr 为空的偶发失败 → 等一会儿重试
+        if attempt < max_retries:
+            await asyncio.sleep(3 * (attempt + 1))  # 3s, 6s
+
+    raise last_err  # type: ignore[misc]
 
 
 def has_claude_cli() -> bool:
