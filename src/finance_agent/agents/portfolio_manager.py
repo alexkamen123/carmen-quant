@@ -11,10 +11,20 @@ from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli, 
 
 MARKET_LABEL = {"us": "美股", "hk": "港股", "cn": "A股"}
 
+# 各市场换算为美元的汇率因子（港元/人民币 → 美元）
+_FX_TO_USD = {"us": 1.0, "hk": 1 / 7.8, "cn": 1 / 7.2}
+
+
+def _usd_value(s: StockAnalysis) -> float:
+    """将单只股票的市值统一换算为美元"""
+    price = s.signals.close if s.signals else 0.0
+    fx = _FX_TO_USD.get(s.market, 1.0)
+    return s.shares * price * fx
+
 
 def _sector_summary(stocks: list[StockAnalysis]) -> str:
     """
-    按行业计算持仓市值占比，返回一行文字供 PM prompt 使用。
+    按行业计算持仓市值占比（统一换算为美元），返回一行文字供 PM prompt 使用。
     例如："半导体/AI算力 52% | 互联网/AI 30% | 宽基ETF 14% | 股息ETF 4%"
     """
     sector_value: dict[str, float] = {}
@@ -22,8 +32,7 @@ def _sector_summary(stocks: list[StockAnalysis]) -> str:
     for s in stocks:
         if not s.sector or s.shares <= 0:
             continue
-        price = s.signals.close if s.signals else 0.0
-        value = s.shares * price
+        value = _usd_value(s)
         sector_value[s.sector] = sector_value.get(s.sector, 0.0) + value
         total += value
 
@@ -69,15 +78,15 @@ async def run_portfolio_manager_batch(
     if not needs_pm:
         return [result_map[s.ticker] for s in stocks]
 
-    # 计算总持仓市值（全部股票，含 ETF）用于仓位比例——必须在 blocks 循环之前
-    total_value = sum(s.shares * s.signals.close for s in stocks if s.shares > 0 and s.signals)
+    # 计算总持仓市值（统一换算为美元，含 ETF）用于仓位比例——必须在 blocks 循环之前
+    total_value = sum(_usd_value(s) for s in stocks if s.shares > 0 and s.signals)
     sector_str = _sector_summary(stocks)
     print(f"[PM] 持仓集中度：{sector_str}")
 
     # 构建批量 prompt
     blocks = []
     for s in needs_pm:
-        val = s.shares * s.signals.close if s.shares > 0 and s.signals else 0.0
+        val = _usd_value(s) if s.shares > 0 and s.signals else 0.0
         pct = round(val / total_value * 100, 1) if total_value > 0 else 0.0
         # 成本/盈亏字符串
         if s.cost_basis and s.cost_basis > 0:
