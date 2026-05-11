@@ -16,6 +16,7 @@ from finance_agent.db.tracker import (
     save_recommendations, fill_7d_returns, accuracy_summary,
     load_all_theses,
 )
+from finance_agent.notifications.glossary import build_glossary_element
 from finance_agent.agents.fundamental_analyst import run_fundamental_analysis
 from finance_agent.data.macro import fetch_macro_context
 
@@ -218,24 +219,36 @@ async def format_report_node(state: AgentState) -> AgentState:
             "text": {"tag": "lark_md", "content": "\n".join(main_md_lines)},
         })
 
-        # 辩论 + 基本面块（非 ETF）
+        # 辩论 + 基本面块（非 ETF，精简为 1-2 行）
         if s.bull_thesis and not is_etf:
             debate_lines = []
+            # 基本面：只取第一句（截到第一个句号/换行）
             fv = s.earnings.fundamental_view
             if fv and "宽基" not in fv and "暂无" not in fv:
-                debate_lines.append(f"📈 **基本面**：{fv}")
-            debate_lines.append(f"🐂 **多方**：{s.bull_thesis}")
-            debate_lines.append(f"🐻 **空方**：{s.bear_thesis}")
-            elements.append({
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": "\n".join(debate_lines)},
-            })
+                fv_short = fv.split("。")[0].split("\n")[0][:60]
+                debate_lines.append(f"📈 {fv_short}")
+            # 多空：各取第一条论点，合并一行
+            def _first_point(text: str) -> str:
+                """提取第一条编号论点或第一句，截到 30 字"""
+                import re
+                m = re.search(r"(?:^|\n)\s*[1１]\s*[\.．、:：]?\s*(.+)", text)
+                s_ = m.group(1).strip() if m else text.split("\n")[0]
+                return s_[:30]
+            bull_short = _first_point(s.bull_thesis)
+            bear_short = _first_point(s.bear_thesis or "")
+            if bull_short or bear_short:
+                debate_lines.append(f"🐂 {bull_short}　｜　🐻 {bear_short}")
+            if debate_lines:
+                elements.append({
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": "\n".join(debate_lines)},
+                })
 
         # 分隔线（最后一只不加）
         if i < len(state.stocks) - 1:
             elements.append({"tag": "hr"})
 
-    # 底部：历史准确率 + 错误提示 + 免责声明
+    # 底部：历史准确率 + 错误提示 + 名词解释 + 免责声明
     acc = accuracy_summary(days=30)
     if acc:
         elements.append({"tag": "hr"})
@@ -250,6 +263,16 @@ async def format_report_node(state: AgentState) -> AgentState:
             "elements": [{"tag": "plain_text",
                           "content": f"⚙️ 数据获取失败：{', '.join(state.errors)}"}],
         })
+    # 名词解释：把整张卡片的文字拼在一起，检测出现了哪些术语
+    full_text = " ".join(
+        s.one_line + " " + (s.bull_thesis or "") + " " + (s.bear_thesis or "") +
+        " " + (s.entry_hint or "") + " " + (s.key_risk or "")
+        for s in state.stocks
+    ) + " " + (state.macro_summary or "")
+    glossary_el = build_glossary_element(full_text, max_terms=5)
+    if glossary_el:
+        elements.append({"tag": "hr"})
+        elements.append(glossary_el)
     elements.append({"tag": "hr"})
     elements.append({
         "tag": "note",

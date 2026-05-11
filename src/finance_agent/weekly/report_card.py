@@ -2,6 +2,7 @@
 """
 将 allocation_advisor 的结构化结果渲染成飞书卡片。
 """
+from finance_agent.notifications.glossary import build_glossary_element
 
 URGENCY_EMOJI = {"高": "🔴", "中": "🟡", "低": "🟢"}
 SIGNAL_EMOJI = {"强": "🔥", "中": "✨"}
@@ -100,6 +101,23 @@ def build_weekly_card(result: dict) -> dict:
             },
         })
         elements.append({"tag": "hr"})
+
+    # ── 名词解释 ──────────────────────────────────────────────────────────────
+    full_text = (
+        sector_summary + " " + concentration_risk + " " + macro_risk + " "
+        + " ".join(d.get("direction", "") + " " + d.get("rationale", "") for d in hedge_directions)
+        + " ".join(
+            ins.get("rationale", "") + " " + ins.get("entry_hint", "")
+            for block in hedge_instruments for ins in block.get("instruments", [])
+        )
+        + " ".join(
+            op.get("reason", "") + " " + op.get("portfolio_fit", "")
+            for op in opportunities
+        )
+    )
+    glossary_el = build_glossary_element(full_text, max_terms=4)
+    if glossary_el:
+        elements.append(glossary_el)
 
     # ── 免责声明 ──────────────────────────────────────────────────────────────
     elements.append({
