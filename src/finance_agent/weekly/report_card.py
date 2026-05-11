@@ -5,6 +5,7 @@
 
 URGENCY_EMOJI = {"高": "🔴", "中": "🟡", "低": "🟢"}
 SIGNAL_EMOJI = {"强": "🔥", "中": "✨"}
+TYPE_TAG = {"防御/对冲型": "🛡️ 防御/对冲", "成长型": "📈 成长", "ETF/宽基": "📦 ETF/宽基"}
 
 
 def build_weekly_card(result: dict) -> dict:
@@ -78,10 +79,11 @@ def build_weekly_card(result: dict) -> dict:
         opp_lines = [f"**🎯 当前机会（从 {candidates_screened} 只候选中筛出）**"]
         for op in opportunities:
             sig_emoji = SIGNAL_EMOJI.get(op.get("signal_strength", "中"), "✨")
+            type_tag = TYPE_TAG.get(op.get("type", ""), "")
             fit = op.get("portfolio_fit", "")
             fit_tag = f"　⚠️ **{fit}**" if "叠加" in fit else (f"　✅ {fit}" if fit else "")
             opp_lines.append(
-                f"{sig_emoji} **{op['ticker']}** — {op.get('reason', '')}\n"
+                f"{sig_emoji} **{op['ticker']}**　{type_tag} — {op.get('reason', '')}\n"
                 f"　　建议仓位：{op.get('suggested_position', '')}{fit_tag}"
             )
         elements.append({
