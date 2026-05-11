@@ -1,0 +1,155 @@
+# src/finance_agent/alerts/earnings_trigger.py
+"""
+财报季事件驱动预警：每日检查持仓股的近期财报日期，
+7 天内触发飞书预警卡片，供提前做深度分析。
+
+港股财报日 yfinance 支持不稳定，暂只覆盖美股。
+"""
+import asyncio
+import datetime
+from pathlib import Path
+from typing import Optional
+
+import yaml
+import yfinance as yf
+
+from finance_agent.notifications.feishu import send_feishu_card
+
+EARNINGS_WINDOW_DAYS = 7  # 提前几天触发预警
+
+
+def get_next_earnings(ticker: str) -> Optional[datetime.date]:
+    """
+    通过 yfinance 获取美股下次财报日期。
+    calendar API 在不同版本返回格式不一，做兼容处理。
+    """
+    try:
+        t = yf.Ticker(ticker)
+        cal = t.calendar
+
+        if cal is None:
+            return None
+
+        # yfinance ≥0.2: calendar 是 dict，key 为 "Earnings Date"
+        if isinstance(cal, dict):
+            dates = cal.get("Earnings Date", [])
+        # 旧版：DataFrame，index 含 "Earnings Date"
+        elif hasattr(cal, "loc"):
+            try:
+                dates = cal.loc["Earnings Date"]
+            except KeyError:
+                return None
+        else:
+            return None
+
+        if not hasattr(dates, "__iter__"):
+            dates = [dates]
+
+        today = datetime.date.today()
+        for d in dates:
+            # 统一转为 date 对象
+            if hasattr(d, "date"):          # Timestamp / datetime
+                d = d.date()
+            if isinstance(d, datetime.date) and d >= today:
+                return d
+
+        return None
+    except Exception:
+        return None
+
+
+async def check_and_alert_earnings(push: bool = True) -> list[dict]:
+    """
+    扫描所有美股持仓，返回 7 天内有财报的标的列表。
+    push=True 时推送飞书预警。
+    """
+    config_path = Path(__file__).parents[3] / "config" / "portfolio.yaml"
+    with open(config_path) as f:
+        portfolio = yaml.safe_load(f)
+
+    holdings = [h for h in portfolio.get("holdings", []) if h.get("market", "us") == "us"]
+    today = datetime.date.today()
+    upcoming: list[dict] = []
+
+    loop = asyncio.get_event_loop()
+    for h in holdings:
+        ticker = h["ticker"]
+        # is_dca ETF 也扫一下，财报周期不重要但成分股财报可能影响
+        earnings_date = await loop.run_in_executor(None, get_next_earnings, ticker)
+        if earnings_date is None:
+            continue
+
+        days_until = (earnings_date - today).days
+        if 0 <= days_until <= EARNINGS_WINDOW_DAYS:
+            upcoming.append({
+                "ticker": ticker,
+                "earnings_date": earnings_date.isoformat(),
+                "days_until": days_until,
+                "sector": h.get("sector", ""),
+                "shares": h.get("shares", 0),
+                "cost_basis": h.get("cost_basis", 0),
+                "notes": h.get("notes", ""),
+            })
+            print(f"[EarningsTrigger] {ticker} 财报在 {days_until} 天后 ({earnings_date})")
+
+    if not upcoming:
+        print("[EarningsTrigger] 未来 7 天内无持仓股财报")
+        return []
+
+    # 按紧迫程度排序
+    upcoming.sort(key=lambda x: x["days_until"])
+
+    if push:
+        await _push_earnings_alert(upcoming)
+
+    return upcoming
+
+
+async def _push_earnings_alert(upcoming: list[dict]) -> None:
+    """构建并推送财报预警飞书卡片"""
+    elements: list[dict] = []
+
+    for item in upcoming:
+        days = item["days_until"]
+        if days == 0:
+            urgency, day_str = "🔴", "今天"
+        elif days == 1:
+            urgency, day_str = "🔴", "明天"
+        elif days <= 3:
+            urgency, day_str = "🟡", f"{days} 天后"
+        else:
+            urgency, day_str = "🟢", f"{days} 天后"
+
+        content_lines = [
+            f"{urgency} **{item['ticker']}**　{item['sector']}",
+            f"　　财报日期：**{item['earnings_date']}**（{day_str}）",
+            f"　　持仓：{item['shares']} 股 · 均价 ${item['cost_basis']}",
+        ]
+        if item["notes"]:
+            content_lines.append(f"　　_{item['notes']}_")
+
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "\n".join(content_lines)},
+        })
+        elements.append({"tag": "hr"})
+
+    elements.append({
+        "tag": "note",
+        "elements": [{"tag": "plain_text",
+                      "content": "财报前后波动通常较大，注意仓位管理。"
+                                 "建议提前用 equity-research:earnings 做深度预分析。"}],
+    })
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text",
+                      "content": f"📅 卡门智投 · 财报预警（{len(upcoming)} 只）"},
+            "template": "orange",
+        },
+        "elements": elements,
+    }
+
+    ok = await send_feishu_card(card)
+    print(f"[EarningsTrigger] 飞书推送{'✅' if ok else '❌'}")

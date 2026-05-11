@@ -244,19 +244,34 @@ def list_theses(db_path: str | Path | None = None) -> list[dict]:
 
 _CREATE_ACTIONS_SQL = """
 CREATE TABLE IF NOT EXISTS user_actions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    date        TEXT NOT NULL,
-    ticker      TEXT NOT NULL,
-    action      TEXT NOT NULL,   -- BUY / SELL / TRIM / HOLD / SKIP
-    shares      REAL,            -- 操作股数（可选）
-    price       REAL,            -- 操作价格（可选）
-    note        TEXT,            -- 备注
-    rec_date    TEXT,            -- 对应哪天的推荐（空=当天）
-    created_at  TEXT DEFAULT (datetime('now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    date          TEXT NOT NULL,
+    ticker        TEXT NOT NULL,
+    action        TEXT NOT NULL,   -- BUY / SELL / TRIM / HOLD / SKIP
+    shares        REAL,            -- 操作股数（可选）
+    price         REAL,            -- 操作价格（可选）
+    note          TEXT,            -- 备注
+    rec_date      TEXT,            -- 对应哪天的推荐（空=当天）
+    actual_return REAL,            -- BUY 操作 7 天后的实际涨跌幅（%），自动回填
+    created_at    TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_actions_ticker ON user_actions(ticker);
 CREATE INDEX IF NOT EXISTS idx_actions_date   ON user_actions(date);
 """
+
+_MIGRATE_ACTIONS_SQL = """
+ALTER TABLE user_actions ADD COLUMN actual_return REAL;
+"""
+
+
+def _migrate_actions_table(con: sqlite3.Connection) -> None:
+    """为已存在的 user_actions 表补充新列（向后兼容）"""
+    existing_cols = {row[1] for row in con.execute("PRAGMA table_info(user_actions)").fetchall()}
+    if "actual_return" not in existing_cols:
+        try:
+            con.execute("ALTER TABLE user_actions ADD COLUMN actual_return REAL")
+        except sqlite3.OperationalError:
+            pass  # 并发写入时可能已存在，忽略
 
 
 def log_user_action(ticker: str, action: str,
@@ -270,6 +285,7 @@ def log_user_action(ticker: str, action: str,
     p.parent.mkdir(parents=True, exist_ok=True)
     with _conn(p) as con:
         con.executescript(_CREATE_ACTIONS_SQL)
+        _migrate_actions_table(con)
         today = datetime.today().strftime("%Y-%m-%d")
         con.execute(
             "INSERT INTO user_actions(date, ticker, action, shares, price, note, rec_date) "
@@ -327,3 +343,132 @@ def accuracy_summary(days: int = 30, db_path: str | Path | None = None) -> str:
     wrong   = sum(1 for r in rows if r["outcome"] == "错误")
     pct = round(correct / (correct + wrong) * 100) if (correct + wrong) > 0 else 0
     return f"近{days}天推荐准确率：{pct}%（{correct}✅ {wrong}❌ {total - correct - wrong}➖，共{total}条）"
+
+
+# ── 用户反馈闭环 ──────────────────────────────────────────────
+
+async def backfill_action_returns(db_path: str | Path | None = None) -> int:
+    """
+    回填 BUY 操作 7 天后的实际涨跌幅（actual_return）。
+    - 找出 7+ 天前、actual_return 为空的 BUY 记录
+    - 用 yfinance 拉取操作当天收盘价 → 当前价，计算涨跌幅
+    - 只计算到操作日后第 7 个交易日（近似用 period='10d'）
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    cutoff = (datetime.today() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    with _conn(p) as con:
+        _migrate_actions_table(con)
+        pending = con.execute(
+            "SELECT id, ticker, date, price FROM user_actions "
+            "WHERE action = 'BUY' AND actual_return IS NULL AND date <= ?",
+            (cutoff,),
+        ).fetchall()
+
+    if not pending:
+        return 0
+
+    loop = asyncio.get_event_loop()
+    filled = 0
+
+    for row in pending:
+        row_id, ticker, buy_date, entry_price = row["id"], row["ticker"], row["date"], row["price"]
+        try:
+            # 用 yfinance 拉 buy_date 之后的价格序列
+            df = await loop.run_in_executor(
+                None,
+                lambda t=ticker, d=buy_date: yf.download(
+                    t, start=d, period="15d", progress=False, auto_adjust=True
+                )
+            )
+            if df.empty:
+                continue
+
+            if hasattr(df.columns, "levels"):  # MultiIndex
+                df.columns = [c[0].lower() for c in df.columns]
+            else:
+                df.columns = [c.lower() for c in df.columns]
+
+            # 以操作日收盘价为基准（若用户记录了 price 则优先用）
+            base = float(entry_price) if entry_price else float(df["close"].iloc[0])
+            # 取第 7 个交易日（或最后一天）收盘价
+            target_idx = min(6, len(df) - 1)
+            target_price = float(df["close"].iloc[target_idx])
+            ret = round((target_price - base) / base * 100, 2)
+
+            with _conn(p) as con:
+                _migrate_actions_table(con)
+                con.execute(
+                    "UPDATE user_actions SET actual_return = ? WHERE id = ?",
+                    (ret, row_id),
+                )
+            filled += 1
+            print(f"[FeedbackLoop] {ticker} BUY@{base:.2f} → 7d {ret:+.1f}%")
+        except Exception as e:
+            print(f"[FeedbackLoop] {ticker} 回填失败: {e}")
+
+    if filled:
+        print(f"[FeedbackLoop] 回填 {filled} 条用户操作涨跌记录")
+    return filled
+
+
+def get_feedback_accuracy(db_path: str | Path | None = None) -> dict:
+    """
+    计算用户操作准确率，返回结构化统计：
+      bought  — 实际执行买入的操作，有多少盈利
+      skipped — 标记 SKIP/HOLD 但模型推荐买入的，实际涨了多少（错过机会）
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+
+    def _stats(rows: list) -> dict:
+        total = len(rows)
+        if total == 0:
+            return {"total": 0, "wins": 0, "win_rate": 0.0, "avg_return": 0.0}
+        wins = sum(1 for r in rows if (r["actual_return"] or 0) > 0)
+        avg = sum((r["actual_return"] or 0) for r in rows) / total
+        return {
+            "total": total,
+            "wins": wins,
+            "win_rate": round(wins / total * 100, 1),
+            "avg_return": round(avg, 2),
+        }
+
+    with _conn(p) as con:
+        _migrate_actions_table(con)
+        bought = con.execute(
+            "SELECT actual_return FROM user_actions "
+            "WHERE action = 'BUY' AND actual_return IS NOT NULL"
+        ).fetchall()
+        skipped = con.execute(
+            "SELECT actual_return FROM user_actions "
+            "WHERE action IN ('SKIP', 'HOLD') AND actual_return IS NOT NULL"
+        ).fetchall()
+
+    return {
+        "bought": _stats(bought),
+        "skipped": _stats(skipped),
+    }
+
+
+def feedback_summary(db_path: str | Path | None = None) -> str:
+    """
+    返回一行反馈闭环摘要文字，供注入飞书卡片或月度回顾。
+    示例：「实际买入 8 次：胜率 75% · 均盈 +3.2%；跳过 5 次：其中 3 次事后涨了」
+    """
+    s = get_feedback_accuracy(db_path)
+    b, k = s["bought"], s["skipped"]
+
+    parts = []
+    if b["total"] > 0:
+        parts.append(
+            f"实际买入 {b['total']} 次：胜率 {b['win_rate']}% · 均{'+' if b['avg_return'] >= 0 else ''}{b['avg_return']}%"
+        )
+    if k["total"] > 0:
+        missed = k["wins"]
+        parts.append(
+            f"跳过/观望 {k['total']} 次：其中 {missed} 次事后上涨（错过机会）"
+        )
+
+    return "；".join(parts) if parts else ""

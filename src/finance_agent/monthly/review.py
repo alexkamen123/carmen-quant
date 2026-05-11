@@ -18,7 +18,7 @@ from pathlib import Path
 
 from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli
 from finance_agent.agents.bull_agent import deepseek_chat
-from finance_agent.db.tracker import _resolve_db, _CREATE_SQL
+from finance_agent.db.tracker import _resolve_db, _CREATE_SQL, feedback_summary, backfill_action_returns
 
 
 REVIEW_SYSTEM = """你是一位家庭投资组合的月度复盘顾问。
@@ -42,6 +42,9 @@ REVIEW_USER = """上月（{month}）推荐统计：
 
 错误的推荐（样本）：
 {wrong_samples}
+
+【用户实际操作反馈】：
+{feedback_summary}
 
 当前持仓的 Thesis 状态：
 {thesis_notes}
@@ -144,12 +147,16 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> dict | None:
     """
     db_path = _resolve_db(db_path_str)
 
+    # 先回填本月内 BUY 操作的 7 日涨跌（异步，给反馈统计提供数据）
+    await backfill_action_returns(db_path)
+
     stats = _get_last_month_stats(db_path)
     if stats.get("empty"):
         print(f"[MonthlyReview] 上月（{stats.get('month', '?')}）无已回填推荐数据，跳过")
         return None
 
     thesis_notes = _get_thesis_notes(db_path)
+    fb_summary = feedback_summary(db_path) or "暂无足够操作记录"
 
     user_msg = REVIEW_USER.format(
         month=stats["month"],
@@ -157,6 +164,7 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> dict | None:
         ticker_acc=stats["ticker_acc"],
         correct_samples=stats["correct_samples"],
         wrong_samples=stats["wrong_samples"],
+        feedback_summary=fb_summary,
         thesis_notes=thesis_notes,
     )
 
@@ -185,6 +193,14 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> dict | None:
                         f"**整体准确率：** {stats['overall_acc']}\n\n"
                         f"**各股票：**\n{stats['ticker_acc']}"
                     ),
+                },
+            },
+            {"tag": "hr"},
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"🔁 **你的操作 vs 模型**\n\n{fb_summary}",
                 },
             },
             {"tag": "hr"},

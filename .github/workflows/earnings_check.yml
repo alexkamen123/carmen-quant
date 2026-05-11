@@ -1,0 +1,45 @@
+name: Earnings Check
+
+on:
+  schedule:
+    # 每天北京时间 08:30（UTC 00:30）运行，开盘前知晓财报日
+    - cron: "30 0 * * 1-5"
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  earnings-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Restore DB artifact
+        uses: actions/cache@v4
+        with:
+          path: data/agent.db
+          key: agent-db-${{ github.run_id }}
+          restore-keys: agent-db-
+
+      - name: Run earnings check
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+        run: uv run finance-agent earnings-check
+
+      - name: Save DB artifact
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/agent.db
+          key: agent-db-${{ github.run_id }}
