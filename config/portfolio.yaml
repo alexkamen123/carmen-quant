@@ -49,11 +49,11 @@ holdings:
 
   - ticker: MU
     market: us
-    shares: 0.1533
-    cost_basis: 651.99
+    shares: 1.1533
+    cost_basis: 762.84
     sector: 半导体/AI算力
     peers: ["NVDA", "AMD", "AMAT"]
-    notes: "美光科技，零碎股"
+    notes: "美光科技；2026-05-11 加仓1股@780，加权均价762.84"
 
   # ── 港股 ──────────────────────────────────────────────
   - ticker: "00700"
