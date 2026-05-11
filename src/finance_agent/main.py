@@ -11,7 +11,11 @@ from finance_agent.notifications.feishu import send_feishu_card, send_feishu_mes
 from finance_agent.backtest.engine import backfill_yesterday
 from finance_agent.alerts.news_monitor import run_news_scan
 from finance_agent.db.thesis_generator import generate_all_theses, generate_thesis_for
-from finance_agent.db.tracker import list_theses, log_user_action, get_action_history
+from finance_agent.db.tracker import (
+    list_theses, log_user_action, get_action_history,
+    backfill_action_returns, get_feedback_accuracy, feedback_summary,
+)
+from finance_agent.alerts.earnings_trigger import check_and_alert_earnings
 from finance_agent.weekly.allocation_advisor import run_allocation_advisor
 from finance_agent.weekly.report_card import build_weekly_card
 from finance_agent.weekly.daily_followup import run_daily_followup
@@ -234,6 +238,60 @@ def backfill_only():
     """仅回填昨日胜率，不运行新分析"""
     asyncio.run(backfill_yesterday(DB_PATH))
     console.print("✅ 胜率回填完成")
+
+
+@app.command("earnings-check")
+def earnings_check(
+    skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
+):
+    """检查持仓股近 7 天内是否有财报，有则推送飞书预警"""
+    asyncio.run(_earnings_check(skip_notify=skip_notify))
+
+
+async def _earnings_check(skip_notify: bool):
+    console.print("📅 检查持仓股财报日期...")
+    upcoming = await check_and_alert_earnings(push=not skip_notify)
+    if not upcoming:
+        console.print("✅ 未来 7 天内无持仓股财报")
+    else:
+        for item in upcoming:
+            console.print(
+                f"  🔔 [bold]{item['ticker']}[/bold] 财报：{item['earnings_date']} "
+                f"（{item['days_until']} 天后）"
+            )
+
+
+@app.command("feedback-stats")
+def feedback_stats():
+    """查看用户实际操作的胜率反馈（BUY 操作 7 日后盈亏）"""
+    asyncio.run(_feedback_stats())
+
+
+async def _feedback_stats():
+    console.print("🔁 回填操作涨跌数据...")
+    filled = await backfill_action_returns(db_path=DB_PATH)
+    if filled:
+        console.print(f"  回填了 {filled} 条记录")
+
+    s = get_feedback_accuracy(db_path=DB_PATH)
+    b, k = s["bought"], s["skipped"]
+
+    console.print("\n[bold]📊 操作反馈统计[/bold]")
+    if b["total"] > 0:
+        console.print(
+            f"  买入 {b['total']} 次 → 胜率 {b['win_rate']}%，平均 {b['avg_return']:+.2f}%"
+        )
+    else:
+        console.print("  暂无已回填的 BUY 操作")
+
+    if k["total"] > 0:
+        console.print(
+            f"  跳过/观望 {k['total']} 次 → 其中 {k['wins']} 次事后上涨（错过机会）"
+        )
+
+    summary = feedback_summary(db_path=DB_PATH)
+    if summary:
+        console.print(f"\n  {summary}")
 
 
 if __name__ == "__main__":
