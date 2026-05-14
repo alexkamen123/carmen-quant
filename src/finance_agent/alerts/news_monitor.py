@@ -20,6 +20,7 @@ import yfinance as yf
 
 from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.notifications.feishu import send_feishu_card
+from finance_agent.db.tracker import _resolve_db, _conn, init_db
 
 # ── 东方财富域名需直连，不走本地代理 ─────────────────────────────────────
 _EASTMONEY_HOSTS = "eastmoney.com,push2his.eastmoney.com,datacenter-web.eastmoney.com,np-weblist.eastmoney.com"
@@ -160,6 +161,46 @@ def _get_macro_news(hours: int = 2) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 今日推荐缓存（用于信号冲突检测）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_today_recs() -> dict[str, str]:
+    """从 SQLite 加载今日 PM 裁决，返回 {ticker: recommendation}"""
+    try:
+        db_path = _resolve_db(None)
+        init_db(db_path)
+        today = datetime.now(_BJT).strftime("%Y-%m-%d")
+        with _conn(db_path) as con:
+            rows = con.execute(
+                "SELECT ticker, recommendation FROM recommendations WHERE date = ?", (today,)
+            ).fetchall()
+        return {r["ticker"]: r["recommendation"] for r in rows}
+    except Exception as e:
+        print(f"[Alert] 加载今日推荐失败（信号冲突检测跳过）: {e}")
+        return {}
+
+
+_BEARISH_RECS = {"减仓", "卖出"}
+_BULLISH_RECS = {"买入"}
+
+
+def _conflict_label(ticker: str, sentiment: str, today_recs: dict[str, str]) -> str:
+    """
+    返回冲突标签字符串，无冲突时返回空字符串。
+    利好新闻 + 今日减仓/卖出 → "⚠️ 信号冲突"
+    利空新闻 + 今日买入     → "⚠️ 信号冲突"
+    """
+    rec = today_recs.get(ticker, "")
+    if not rec:
+        return ""
+    if sentiment == "利好" and rec in _BEARISH_RECS:
+        return f"⚠️ **信号冲突**：今日裁决「{rec}」，但出现利好消息，建议重新评估后再执行"
+    if sentiment == "利空" and rec in _BULLISH_RECS:
+        return f"⚠️ **信号冲突**：今日裁决「{rec}」，但出现利空消息，注意止损"
+    return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DeepSeek 评分
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -238,41 +279,56 @@ async def _classify_macro_news(title: str, published: str, summary: str) -> dict
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _send_stock_alert(ticker: str, market: str, title: str, published: str,
-                            impact: int, sentiment: str, reason: str) -> None:
+                            impact: int, sentiment: str, reason: str,
+                            conflict: str = "") -> None:
     SENT_EMOJI = {"利好": "🟢", "利空": "🔴", "中性": "⚪"}
     IMPACT_BAR = "🔥" * min(impact // 2, 5)
     market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
 
+    # 有信号冲突时 header 固定用橙色，标题加标记
+    has_conflict = bool(conflict)
+    header_title = f"{'⚠️ 信号冲突 · ' if has_conflict else '⚡ 持仓快讯 · '}{ticker}（{market_label}）"
+    header_color = "orange" if has_conflict else (
+        "red" if sentiment == "利空" else ("green" if sentiment == "利好" else "blue")
+    )
+
+    elements = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
+                    f"**{title}**\n"
+                    f"🕐 {published}"
+                ),
+            },
+        },
+        {"tag": "hr"},
+        {"tag": "div", "text": {"tag": "lark_md", "content": f"💡 {reason}"}},
+    ]
+    if conflict:
+        elements += [
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": conflict}},
+        ]
+    elements += [
+        {"tag": "hr"},
+        {"tag": "note", "elements": [{"tag": "plain_text",
+                                      "content": "以上为 AI 快速判断，仅供参考，请自行核实原文"}]},
+    ]
+
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text",
-                      "content": f"⚡ 持仓快讯 · {ticker}（{market_label}）"},
-            "template": "red" if sentiment == "利空" else (
-                "green" if sentiment == "利好" else "blue"
-            ),
+            "title": {"tag": "plain_text", "content": header_title},
+            "template": header_color,
         },
-        "elements": [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": (
-                        f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
-                        f"**{title}**\n"
-                        f"🕐 {published}"
-                    ),
-                },
-            },
-            {"tag": "hr"},
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"💡 {reason}"}},
-            {"tag": "hr"},
-            {"tag": "note", "elements": [{"tag": "plain_text",
-                                          "content": "以上为 AI 快速判断，仅供参考，请自行核实原文"}]},
-        ],
+        "elements": elements,
     }
     await send_feishu_card(card)
-    print(f"[Alert] 已推送 {ticker} 快讯：{title[:40]}... (影响度={impact}, {sentiment})")
+    conflict_tag = " [冲突!]" if has_conflict else ""
+    print(f"[Alert] 已推送 {ticker} 快讯{conflict_tag}：{title[:40]}... (影响度={impact}, {sentiment})")
 
 
 async def _send_macro_alert(title: str, published: str, impact: int, sentiment: str,
@@ -343,6 +399,9 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                 seen_tickers.add(peer)
 
     pushed = 0
+    today_recs = _load_today_recs()
+    if today_recs:
+        print(f"[Alert] 加载今日推荐（信号冲突检测）：{today_recs}")
 
     # ── 1. 个股扫描 ──────────────────────────────────────────────────────────
     for scan_ticker, market, holding_ticker, is_peer in scan_queue:
@@ -362,20 +421,26 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                 news.get("summary", "")
             )
             impact = result.get("impact", 0)
+            sentiment = result.get("sentiment", "中性")
 
             if impact >= effective_threshold:
                 title_display = news["title"]
                 if is_peer:
                     title_display = f"[竞对 {scan_ticker}] {title_display}"
+                # 仅对直接持仓做信号冲突检测（竞对新闻不冲突）
+                conflict = "" if is_peer else _conflict_label(
+                    holding_ticker, sentiment, today_recs
+                )
                 await _send_stock_alert(
                     ticker=holding_ticker if is_peer else scan_ticker,
                     market=market,
                     title=title_display,
                     published=news["published"],
                     impact=impact,
-                    sentiment=result.get("sentiment", "中性"),
+                    sentiment=sentiment,
                     reason=result.get("reason", "")
                     + (f"（竞对 {scan_ticker} 动态，间接影响 {holding_ticker}）" if is_peer else ""),
+                    conflict=conflict,
                 )
                 _alerted.add(key)
                 pushed += 1
