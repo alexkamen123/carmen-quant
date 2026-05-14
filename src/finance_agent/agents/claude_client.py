@@ -41,8 +41,7 @@ async def _claude_cli_subprocess(system: str, user: str, timeout: int = 120,
         return subprocess.run(
             ["claude", "-p", user,
              "--system-prompt", system,
-             "--output-format", "text",
-             "--dangerously-skip-permissions"],
+             "--output-format", "text"],
             capture_output=True, text=True, timeout=timeout,
         )
 
