@@ -19,6 +19,7 @@ import yfinance as yf
 from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli, strip_markdown
 from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.data.macro import fetch_macro_context
+from finance_agent.db.tracker import weekly_accuracy_summary
 
 
 async def _claude_json(system: str, user: str, timeout: int = 120,
@@ -383,6 +384,14 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
         except Exception as e:
             print(f"[AllocationAdvisor] 机会筛选解析失败: {e}")
 
+    # ── 上周复盘统计 ──
+    weekly_stats = weekly_accuracy_summary()
+    if weekly_stats.get("available"):
+        print(f"[AllocationAdvisor] 近期复盘：{weekly_stats['period']} "
+              f"胜率={weekly_stats['win_rate']}%（{weekly_stats['correct']}/{weekly_stats['total']}）")
+    else:
+        print("[AllocationAdvisor] 近期复盘：暂无已回填数据")
+
     result: dict[str, Any] = {
         "date": __import__("datetime").date.today().isoformat(),
         "iso_week": current_week,
@@ -392,6 +401,7 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
         "hedge_instruments": hedge_instruments,
         "opportunities": opportunities,
         "candidates_screened": len(all_candidates),
+        "weekly_stats": weekly_stats,
         # 跟进用：本次推荐的所有 instrument tickers
         "watch_tickers": list({
             ins["ticker"]

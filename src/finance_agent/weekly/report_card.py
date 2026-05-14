@@ -102,6 +102,36 @@ def build_weekly_card(result: dict) -> dict:
         })
         elements.append({"tag": "hr"})
 
+    # ── 近期复盘 ──────────────────────────────────────────────────────────────
+    weekly_stats = result.get("weekly_stats", {})
+    if weekly_stats.get("available"):
+        ws = weekly_stats
+        REC_EMOJI = {"买入": "🟢", "持有": "🟡", "观望": "🟡",
+                     "减仓": "🟠", "卖出": "🔴", "按计划定投": "⬜"}
+        recap_lines = [
+            f"**📊 近期复盘**（{ws['period']}）",
+            f"胜率 **{ws['win_rate']}%**　✅ {ws['correct']} 正确　❌ {ws['wrong']} 错误　共 {ws['total']} 条",
+        ]
+        if ws.get("best"):
+            b = ws["best"]
+            sign = "+" if b["ret"] > 0 else ""
+            recap_lines.append(
+                f"✅ 最准：**{b['ticker']}** {REC_EMOJI.get(b['rec'], '⬜')}{b['rec']}"
+                f" → 实际 {sign}{b['ret']:.1f}%"
+            )
+        if ws.get("worst"):
+            w = ws["worst"]
+            sign = "+" if w["ret"] > 0 else ""
+            recap_lines.append(
+                f"❌ 最偏：**{w['ticker']}** {REC_EMOJI.get(w['rec'], '⬜')}{w['rec']}"
+                f" → 实际 {sign}{w['ret']:.1f}%"
+            )
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "\n".join(recap_lines)},
+        })
+        elements.append({"tag": "hr"})
+
     # ── 名词解释 ──────────────────────────────────────────────────────────────
     full_text = (
         sector_summary + " " + concentration_risk + " " + macro_risk + " "
