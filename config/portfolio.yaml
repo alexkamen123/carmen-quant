@@ -64,12 +64,4 @@ holdings:
     peers: ["09988", "09618", "01810"]   # BABA, JD, 小米
     notes: "腾讯控股"
 
-  - ticker: "02513"
-    market: hk
-    shares: 1
-    cost_basis: 933.00
-    sector: 互联网/AI
-    peers: ["00700", "09988"]
-    notes: "智谱AI-H"
-
 watchlist: []
