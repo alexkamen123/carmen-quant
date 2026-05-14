@@ -11,6 +11,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+import yaml
 import yfinance as yf
 import pandas as pd
 
@@ -24,21 +25,62 @@ FOLLOWUP_SYSTEM = """你是家庭投资组合的每日跟进助手。
 基于本周周一的配置建议，结合今日的价格变动，给出简短跟进意见。
 
 要求：
-- 纯文字，2-4 句话，不超过 100 字
-- 说明推荐品种本周表现（涨了/跌了多少）
-- 机会是否还在/是否已错过
+- 纯文字，2-4 句话，不超过 120 字
+- 先说持仓里本周涨跌最显著的 1-2 只
+- 说明推荐品种机会是否还在/是否已错过
 - 是否有新增超卖机会需要关注
 - 语气轻松，像朋友提醒而非正式报告"""
 
 FOLLOWUP_USER = """周一（{report_date}）的配置建议摘要：
 {recommendation_summary}
 
-今日各推荐品种表现：
+持仓本周表现（周一→今日）：
+{holdings_changes}
+
+推荐品种本周表现：
 {price_changes}
 
 今日技术初筛新增机会：{new_opportunities}
 
-请给出 2-4 句跟进意见。"""
+请给出 2-4 句跟进意见，重点说持仓里变化最大的标的和机会是否还在。"""
+
+
+def _fetch_holdings_performance() -> list[dict]:
+    """拉取实际持仓本周一到今日的价格变化，附带未实现盈亏。"""
+    config_path = Path(__file__).parents[3] / "config" / "portfolio.yaml"
+    with open(config_path) as f:
+        portfolio = yaml.safe_load(f)
+
+    results = []
+    for item in portfolio.get("holdings", []):
+        ticker = item["ticker"]
+        market = item.get("market", "us")
+        shares = item.get("shares", 0)
+        cost = item.get("cost_basis", 0)
+        try:
+            yf_ticker = f"{int(ticker):04d}.HK" if market == "hk" else ticker
+            df = yf.download(yf_ticker, period="7d", progress=False, auto_adjust=True)
+            if df.empty or len(df) < 2:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [c[0].lower() for c in df.columns]
+            else:
+                df.columns = [c.lower() for c in df.columns]
+            close = df["close"].dropna()
+            price_start = float(close.iloc[0])
+            price_now = float(close.iloc[-1])
+            pct = (price_now / price_start - 1) * 100
+            # cost_basis 与 price 同币种，直接比较
+            unrealized_pnl = (price_now - cost) / cost * 100 if cost else 0
+            results.append({
+                "ticker": ticker,
+                "pct_change": round(pct, 1),
+                "price_now": round(price_now, 2),
+                "unrealized_pnl": round(unrealized_pnl, 1),
+            })
+        except Exception as e:
+            print(f"[Followup] {ticker} 持仓价格拉取失败: {e}")
+    return sorted(results, key=lambda x: x["pct_change"])
 
 
 def _fetch_price_changes(tickers: list[str]) -> list[dict]:
@@ -88,8 +130,18 @@ async def run_daily_followup() -> str | None:
     hedge_instruments = weekly.get("hedge_instruments", [])
     opportunities = weekly.get("opportunities", [])
 
-    # ── 推荐品种价格变化 ──
+    # ── 持仓本周表现 ──
     loop = asyncio.get_event_loop()
+    holdings_perf = await loop.run_in_executor(None, _fetch_holdings_performance)
+    if holdings_perf:
+        holdings_str = "  ".join(
+            f"{c['ticker']} {'+' if c['pct_change'] >= 0 else ''}{c['pct_change']}%"
+            for c in holdings_perf
+        )
+    else:
+        holdings_str = "（无法获取）"
+
+    # ── 推荐品种价格变化 ──
     price_changes = await loop.run_in_executor(None, _fetch_price_changes, watch_tickers)
 
     if not price_changes:
@@ -131,6 +183,7 @@ async def run_daily_followup() -> str | None:
     user_msg = FOLLOWUP_USER.format(
         report_date=report_date,
         recommendation_summary=rec_summary,
+        holdings_changes=holdings_str,
         price_changes=price_change_str,
         new_opportunities=new_opp_str,
     )
@@ -147,7 +200,8 @@ async def run_daily_followup() -> str | None:
     output = (
         f"📌 卡门智投 · {today} 配置跟进\n\n"
         f"{comment.strip()}\n\n"
-        f"价格变化：\n{price_change_str}\n"
+        f"持仓本周：{holdings_str}\n"
+        f"推荐品种：\n{price_change_str}\n"
         f"新增超卖：{new_opp_str}"
     )
     return output
