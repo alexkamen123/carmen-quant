@@ -247,6 +247,27 @@ MACRO_USER = """宏观新闻标题：{title}
 
 请评估这条宏观新闻对中国港股市场的影响。"""
 
+US_MACRO_SYSTEM = """你是一个美股市场宏观新闻影响评估助手。
+根据提供的新闻标题，评估对美股市场的整体影响。
+
+严格按以下 JSON 格式输出（不要有其他内容）：
+{
+  "impact": 1-10,
+  "sentiment": "利好" | "利空" | "中性",
+  "affected_sectors": ["半导体/AI算力", "互联网/AI", "宽基ETF"],
+  "reason": "一句话说明为什么这条新闻重要（或不重要）"
+}
+
+impact 评分标准：
+8-10: 极重要（Fed 加息/降息决定、CPI 大幅超预期、标普/纳指单日跌超 2%、芯片出口管制）
+5-7:  中等影响（经济数据小幅超预期、分析师集体调级、板块轮动）
+1-4:  低影响（个股财报、常规声明、重申评级）"""
+
+US_MACRO_USER = """美股宏观新闻标题：{title}
+发布时间：{published}
+
+请评估这条宏观新闻对美股市场（尤其是科技/半导体/AI板块）的影响。"""
+
 
 async def _classify_stock_news(ticker: str, title: str, published: str, summary: str = "") -> dict:
     summary_line = f"摘要：{summary}" if summary else ""
@@ -267,6 +288,18 @@ async def _classify_macro_news(title: str, published: str, summary: str) -> dict
         raw = await deepseek_chat(
             MACRO_SYSTEM,
             MACRO_USER.format(title=title, published=published, summary=summary),
+        )
+        start, end = raw.find("{"), raw.rfind("}") + 1
+        return json.loads(raw[start:end])
+    except Exception:
+        return {"impact": 0, "sentiment": "中性", "affected_sectors": [], "reason": "解析失败"}
+
+
+async def _classify_us_macro_news(title: str, published: str) -> dict:
+    try:
+        raw = await deepseek_chat(
+            US_MACRO_SYSTEM,
+            US_MACRO_USER.format(title=title, published=published),
         )
         start, end = raw.find("{"), raw.rfind("}") + 1
         return json.loads(raw[start:end])
@@ -366,6 +399,80 @@ async def _send_macro_alert(title: str, published: str, impact: int, sentiment: 
     }
     await send_feishu_card(card)
     print(f"[Alert] 已推送宏观快讯：{title[:40]}... (影响度={impact}, {sentiment})")
+
+
+US_MACRO_PROXIES = ["SPY", "QQQ"]  # S&P500 + 纳指科技
+
+
+def _get_us_macro_news(hours: int = 2) -> list[dict]:
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    seen: set[str] = set()
+    fresh: list[dict] = []
+    for sym in US_MACRO_PROXIES:
+        try:
+            news_raw = yf.Ticker(sym).news or []
+            for item in news_raw:
+                content = item.get("content", item)  # new API nests under "content"
+                title = content.get("title") or item.get("title", "")
+                if not title:
+                    continue
+                # Try new ISO format first, then legacy unix timestamp
+                pub_date_str = content.get("pubDate") or content.get("displayTime", "")
+                if pub_date_str:
+                    pub_dt = datetime.fromisoformat(pub_date_str.replace("Z", "+00:00"))
+                else:
+                    ts = item.get("providerPublishTime", 0)
+                    if not ts:
+                        continue
+                    pub_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                key = f"us_macro:{hash(title)}"
+                if pub_dt >= cutoff and key not in seen:
+                    seen.add(key)
+                    fresh.append({
+                        "title": title,
+                        "published": pub_dt.astimezone(_BJT).strftime("%m-%d %H:%M"),
+                        "key": key,
+                    })
+        except Exception as e:
+            print(f"[Alert] 美股宏观新闻拉取失败 {sym}: {e}")
+    return fresh
+
+
+async def _send_us_macro_alert(title: str, published: str, impact: int, sentiment: str,
+                               affected_sectors: list, reason: str) -> None:
+    SENT_EMOJI = {"利好": "🟢", "利空": "🔴", "中性": "⚪"}
+    IMPACT_BAR = "🔥" * min(impact // 2, 5)
+    sectors_str = "、".join(affected_sectors) if affected_sectors else "科技/半导体"
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "📈 美股宏观 · 科技/半导体影响"},
+            "template": "red" if sentiment == "利空" else (
+                "green" if sentiment == "利好" else "blue"
+            ),
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
+                        f"**{title}**\n"
+                        f"🕐 {published}   📌 涉及板块：{sectors_str}"
+                    ),
+                },
+            },
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"💡 {reason}"}},
+            {"tag": "hr"},
+            {"tag": "note", "elements": [{"tag": "plain_text",
+                                          "content": "美股宏观快讯 · AI 快速判断，仅供参考"}]},
+        ],
+    }
+    await send_feishu_card(card)
+    print(f"[Alert] 已推送美股宏观快讯：{title[:40]}... (影响度={impact}, {sentiment})")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -476,6 +583,31 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                 pushed += 1
             else:
                 print(f"[Alert] 宏观 影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
+
+    # ── 3. 美股宏观快讯扫描 ──────────────────────────────────────────────────
+    has_us = any(h["market"] == "us" for h in holdings)
+    if has_us:
+        us_macro_news = _get_us_macro_news(hours=2)
+        print(f"[Alert] 美股宏观快讯：获取到 {len(us_macro_news)} 条（2小时内）")
+        for news in us_macro_news:
+            key = news["key"]
+            if key in _alerted:
+                continue
+            result = await _classify_us_macro_news(news["title"], news["published"])
+            impact = result.get("impact", 0)
+            if impact >= impact_threshold:
+                await _send_us_macro_alert(
+                    title=news["title"],
+                    published=news["published"],
+                    impact=impact,
+                    sentiment=result.get("sentiment", "中性"),
+                    affected_sectors=result.get("affected_sectors", []),
+                    reason=result.get("reason", ""),
+                )
+                _alerted.add(key)
+                pushed += 1
+            else:
+                print(f"[Alert] 美股宏观 影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
 
     if pushed == 0:
         print(f"[Alert] 本次扫描无高影响新闻（阈值={impact_threshold}）")
