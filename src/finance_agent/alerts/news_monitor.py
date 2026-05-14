@@ -31,8 +31,35 @@ if "eastmoney.com" not in _current_no_proxy:
 # ── 北京时区 ──────────────────────────────────────────────────────────────
 _BJT = timezone(timedelta(hours=8))
 
-# ── 已推送记录（防重，内存级，每次进程重置可接受）──────────────────────────
-_alerted: set[str] = set()
+
+_CREATE_ALERTED_SQL = """
+CREATE TABLE IF NOT EXISTS news_alerted (
+    key   TEXT NOT NULL,
+    date  TEXT NOT NULL,
+    PRIMARY KEY (key, date)
+);
+CREATE INDEX IF NOT EXISTS idx_alerted_date ON news_alerted(date);
+"""
+
+
+def _load_alerted(date_str: str, db_path=None) -> set[str]:
+    p = _resolve_db(db_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with _conn(p) as con:
+        con.executescript(_CREATE_ALERTED_SQL)
+        rows = con.execute(
+            "SELECT key FROM news_alerted WHERE date = ?", (date_str,)
+        ).fetchall()
+    return {r["key"] for r in rows}
+
+
+def _save_alerted(key: str, date_str: str, db_path=None) -> None:
+    p = _resolve_db(db_path)
+    with _conn(p) as con:
+        con.execute(
+            "INSERT OR IGNORE INTO news_alerted (key, date) VALUES (?, ?)",
+            (key, date_str),
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -505,6 +532,8 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                 scan_queue.append((peer, market, ticker, True))
                 seen_tickers.add(peer)
 
+    today_str = datetime.now(_BJT).strftime("%Y-%m-%d")
+    alerted = _load_alerted(today_str)
     pushed = 0
     today_recs = _load_today_recs()
     if today_recs:
@@ -520,7 +549,7 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
 
         for news in fresh_news:
             key = news["key"]
-            if key in _alerted:
+            if key in alerted:
                 continue
 
             result = await _classify_stock_news(
@@ -549,7 +578,8 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                     + (f"（竞对 {scan_ticker} 动态，间接影响 {holding_ticker}）" if is_peer else ""),
                     conflict=conflict,
                 )
-                _alerted.add(key)
+                alerted.add(key)
+                _save_alerted(key, today_str)
                 pushed += 1
             else:
                 src = f"{scan_ticker}（竞对）" if is_peer else scan_ticker
@@ -564,7 +594,7 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
         print(f"[Alert] 全球快讯：获取到 {len(macro_news)} 条（2小时内）")
         for news in macro_news:
             key = news["key"]
-            if key in _alerted:
+            if key in alerted:
                 continue
             result = await _classify_macro_news(
                 news["title"], news["published"], news.get("summary", "")
@@ -579,7 +609,8 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                     affected_sectors=result.get("affected_sectors", []),
                     reason=result.get("reason", ""),
                 )
-                _alerted.add(key)
+                alerted.add(key)
+                _save_alerted(key, today_str)
                 pushed += 1
             else:
                 print(f"[Alert] 宏观 影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
@@ -591,7 +622,7 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
         print(f"[Alert] 美股宏观快讯：获取到 {len(us_macro_news)} 条（2小时内）")
         for news in us_macro_news:
             key = news["key"]
-            if key in _alerted:
+            if key in alerted:
                 continue
             result = await _classify_us_macro_news(news["title"], news["published"])
             impact = result.get("impact", 0)
@@ -604,7 +635,8 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                     affected_sectors=result.get("affected_sectors", []),
                     reason=result.get("reason", ""),
                 )
-                _alerted.add(key)
+                alerted.add(key)
+                _save_alerted(key, today_str)
                 pushed += 1
             else:
                 print(f"[Alert] 美股宏观 影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
