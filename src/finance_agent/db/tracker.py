@@ -345,6 +345,89 @@ def accuracy_summary(days: int = 30, db_path: str | Path | None = None) -> str:
     return f"近{days}天推荐准确率：{pct}%（{correct}✅ {wrong}❌ {total - correct - wrong}➖，共{total}条）"
 
 
+# ── 周度准确率统计（方案 B）─────────────────────────────────────
+
+def weekly_accuracy_summary(db_path: str | Path | None = None) -> dict:
+    """
+    查询最近 14 天内已回填 return_7d 的推荐记录，计算方案 B 胜率。
+
+    方案 B 判定规则：
+      买入 / 加仓 → return_7d > 0 为正确
+      减仓 / 卖出 → return_7d < 0 为正确
+      持有 / 观望 → return_7d >= -2.0% 为正确（持有期间没显著亏损）
+
+    返回 dict：
+      available: bool
+      period: "MM-DD ~ MM-DD"
+      total, correct, wrong, win_rate
+      best:  {"ticker", "rec", "ret"}  — 正确中涨跌最大的
+      worst: {"ticker", "rec", "ret"}  — 错误中涨跌最大的
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    since = (datetime.today() - timedelta(days=14)).strftime("%Y-%m-%d")
+
+    with _conn(p) as con:
+        rows = con.execute(
+            "SELECT ticker, recommendation, position_change, return_7d, date "
+            "FROM recommendations "
+            "WHERE date >= ? AND return_7d IS NOT NULL "
+            "ORDER BY date",
+            (since,),
+        ).fetchall()
+
+    if not rows:
+        return {"available": False}
+
+    results = []
+    for r in rows:
+        rec = r["recommendation"] or ""
+        pc  = r["position_change"] or ""
+        ret = r["return_7d"]
+
+        bullish = rec == "买入" or pc.startswith(("大加", "小加"))
+        bearish = rec in ("减仓", "卖出") or pc.startswith("减仓")
+
+        if bullish:
+            outcome = "正确" if ret > 0 else "错误"
+        elif bearish:
+            outcome = "正确" if ret < 0 else "错误"
+        else:  # 持有 / 观望 / ETF定投
+            outcome = "正确" if ret >= -2.0 else "错误"
+
+        results.append({
+            "ticker":  r["ticker"],
+            "rec":     rec,
+            "ret":     ret,
+            "outcome": outcome,
+            "date":    r["date"],
+        })
+
+    total   = len(results)
+    correct = sum(1 for r in results if r["outcome"] == "正确")
+    wrong   = sum(1 for r in results if r["outcome"] == "错误")
+    win_rate = round(correct / total * 100) if total > 0 else 0
+
+    correct_list = [r for r in results if r["outcome"] == "正确"]
+    wrong_list   = [r for r in results if r["outcome"] == "错误"]
+    best  = max(correct_list, key=lambda r: abs(r["ret"]), default=None)
+    worst = max(wrong_list,   key=lambda r: abs(r["ret"]), default=None)
+
+    dates  = sorted({r["date"] for r in results})
+    period = f"{dates[0][5:]} ~ {dates[-1][5:]}" if dates else ""
+
+    return {
+        "available": True,
+        "period":    period,
+        "total":     total,
+        "correct":   correct,
+        "wrong":     wrong,
+        "win_rate":  win_rate,
+        "best":      best,
+        "worst":     worst,
+    }
+
+
 # ── 用户反馈闭环 ──────────────────────────────────────────────
 
 async def backfill_action_returns(db_path: str | Path | None = None) -> int:
