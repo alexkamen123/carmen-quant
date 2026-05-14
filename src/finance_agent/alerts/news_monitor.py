@@ -428,22 +428,31 @@ async def _send_macro_alert(title: str, published: str, impact: int, sentiment: 
     print(f"[Alert] 已推送宏观快讯：{title[:40]}... (影响度={impact}, {sentiment})")
 
 
-US_MACRO_PROXIES = ["SPY", "QQQ"]  # S&P500 + 纳指科技
+# 用于从全球快讯中预筛出美股/宏观相关条目，节省 DeepSeek 调用
+_US_MACRO_KEYWORDS = [
+    "美联储", "Fed", "CPI", "关税", "贸易战", "特朗普", "纳指", "标普",
+    "纳斯达克", "半导体", "芯片", "美股", "美元", "降息", "加息", "通胀",
+    "非农", "就业", "GDP", "英伟达", "NVIDIA", "谷歌", "苹果", "科技股",
+    "博通", "台积电", "出口管制", "制裁", "贸易协议",
+]
 
 
 def _get_us_macro_news(hours: int = 2) -> list[dict]:
+    """
+    从 Yahoo Finance 拉取 SPY / QQQ 相关新闻作为美股宏观代理。
+    SPY → 标普/宏观经济/Fed/CPI；QQQ → 纳指/科技/AI/芯片
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     seen: set[str] = set()
     fresh: list[dict] = []
-    for sym in US_MACRO_PROXIES:
+    for sym in ["SPY", "QQQ"]:
         try:
             news_raw = yf.Ticker(sym).news or []
             for item in news_raw:
-                content = item.get("content", item)  # new API nests under "content"
+                content = item.get("content", item)
                 title = content.get("title") or item.get("title", "")
                 if not title:
                     continue
-                # Try new ISO format first, then legacy unix timestamp
                 pub_date_str = content.get("pubDate") or content.get("displayTime", "")
                 if pub_date_str:
                     pub_dt = datetime.fromisoformat(pub_date_str.replace("Z", "+00:00"))
@@ -461,7 +470,7 @@ def _get_us_macro_news(hours: int = 2) -> list[dict]:
                         "key": key,
                     })
         except Exception as e:
-            print(f"[Alert] 美股宏观新闻拉取失败 {sym}: {e}")
+            print(f"[Alert] 美股新闻拉取失败 {sym}: {e}")
     return fresh
 
 
@@ -585,13 +594,11 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                 src = f"{scan_ticker}（竞对）" if is_peer else scan_ticker
                 print(f"[Alert] {src} 影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
 
-    # ── 2. 宏观快讯扫描 ───────────────────────────────────────────────────────
-    # 只在持仓含港股/A股时运行宏观扫描（美股纯仓位不需要）
+    # ── 2. 港股/A股宏观快讯（东方财富全球快讯，中文，阈值7）────────────────
     has_hk_cn = any(h["market"] in ("hk", "cn") for h in holdings)
     if has_hk_cn:
-        macro_threshold = impact_threshold  # 宏观用相同阈值
         macro_news = _get_macro_news(hours=2)
-        print(f"[Alert] 全球快讯：获取到 {len(macro_news)} 条（2小时内）")
+        print(f"[Alert] 全球快讯（港股视角）：{len(macro_news)} 条（2小时内）")
         for news in macro_news:
             key = news["key"]
             if key in alerted:
@@ -600,11 +607,9 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                 news["title"], news["published"], news.get("summary", "")
             )
             impact = result.get("impact", 0)
-            if impact >= macro_threshold:
+            if impact >= impact_threshold:
                 await _send_macro_alert(
-                    title=news["title"],
-                    published=news["published"],
-                    impact=impact,
+                    title=news["title"], published=news["published"], impact=impact,
                     sentiment=result.get("sentiment", "中性"),
                     affected_sectors=result.get("affected_sectors", []),
                     reason=result.get("reason", ""),
@@ -613,24 +618,22 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                 _save_alerted(key, today_str)
                 pushed += 1
             else:
-                print(f"[Alert] 宏观 影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
+                print(f"[Alert] 港股宏观 影响度={impact}，跳过：{news['title'][:50]}")
 
-    # ── 3. 美股宏观快讯扫描 ──────────────────────────────────────────────────
+    # ── 3. 美股宏观快讯（Yahoo Finance SPY+QQQ，英文，阈值6）──────────────
     has_us = any(h["market"] == "us" for h in holdings)
     if has_us:
         us_macro_news = _get_us_macro_news(hours=2)
-        print(f"[Alert] 美股宏观快讯：获取到 {len(us_macro_news)} 条（2小时内）")
+        print(f"[Alert] 美股快讯（Yahoo Finance）：{len(us_macro_news)} 条（2小时内）")
         for news in us_macro_news:
             key = news["key"]
             if key in alerted:
                 continue
             result = await _classify_us_macro_news(news["title"], news["published"])
             impact = result.get("impact", 0)
-            if impact >= impact_threshold:
+            if impact >= 6:
                 await _send_us_macro_alert(
-                    title=news["title"],
-                    published=news["published"],
-                    impact=impact,
+                    title=news["title"], published=news["published"], impact=impact,
                     sentiment=result.get("sentiment", "中性"),
                     affected_sectors=result.get("affected_sectors", []),
                     reason=result.get("reason", ""),
@@ -639,7 +642,7 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                 _save_alerted(key, today_str)
                 pushed += 1
             else:
-                print(f"[Alert] 美股宏观 影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
+                print(f"[Alert] 美股宏观 影响度={impact}，跳过：{news['title'][:50]}")
 
     if pushed == 0:
         print(f"[Alert] 本次扫描无高影响新闻（阈值={impact_threshold}）")
