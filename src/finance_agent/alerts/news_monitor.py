@@ -1,12 +1,12 @@
 # src/finance_agent/alerts/news_monitor.py
 """
-盘中新闻扫描：每小时检查持仓股票的最新新闻，
+盘中新闻扫描：每 2 小时检查持仓股票的最新新闻，
 对"高影响"新闻（DeepSeek 评分 >= 7）立即推送飞书提醒。
 
-轻量设计：
-- 只用 yfinance 拉新闻（不跑完整 pipeline）
-- 只用 DeepSeek 快速分类（便宜且快，无限速）
-- 2小时内发布的新闻才处理（避免重复告警）
+新闻源：
+- 美股：yfinance（Yahoo Finance 英文新闻流）
+- 港股/A 股：AkShare 东方财富（中文新闻，覆盖更全）
+- 宏观：AkShare 全球财经快讯（东方财富 np-weblist），需 NO_PROXY 绕过代理
 """
 import asyncio
 import json
@@ -14,14 +14,154 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import akshare as ak
 import yaml
 import yfinance as yf
 
 from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.notifications.feishu import send_feishu_card
 
-# ── 已推送记录（防重，内存级，每次 CI run 重置是可接受的）─────────
-_alerted: set[str] = set()   # key = f"{ticker}:{news_url_or_title_hash}"
+# ── 东方财富域名需直连，不走本地代理 ─────────────────────────────────────
+_EASTMONEY_HOSTS = "eastmoney.com,push2his.eastmoney.com,datacenter-web.eastmoney.com,np-weblist.eastmoney.com"
+_current_no_proxy = os.environ.get("NO_PROXY", "")
+if "eastmoney.com" not in _current_no_proxy:
+    os.environ["NO_PROXY"] = f"{_current_no_proxy},{_EASTMONEY_HOSTS}".strip(",")
+
+# ── 北京时区 ──────────────────────────────────────────────────────────────
+_BJT = timezone(timedelta(hours=8))
+
+# ── 已推送记录（防重，内存级，每次进程重置可接受）──────────────────────────
+_alerted: set[str] = set()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 新闻拉取
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_fresh_news_us(ticker: str, hours: int = 2) -> list[dict]:
+    """美股：yfinance Yahoo Finance 新闻"""
+    try:
+        stock = yf.Ticker(ticker)
+        news_raw = stock.news or []
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        fresh = []
+        for item in news_raw:
+            ts = item.get("providerPublishTime", 0)
+            if not ts:
+                continue
+            pub_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            if pub_dt >= cutoff:
+                fresh.append({
+                    "title": item.get("title", ""),
+                    "url": item.get("link", ""),
+                    "published": pub_dt.astimezone(_BJT).strftime("%m-%d %H:%M"),
+                    "key": f"{ticker}:{hash(item.get('title', ''))}",
+                })
+        return fresh
+    except Exception as e:
+        print(f"[Alert] yfinance 新闻拉取失败 {ticker}: {e}")
+        return []
+
+
+def _get_fresh_news_hk_cn(ticker: str, hours: int = 2) -> list[dict]:
+    """港股/A股：AkShare 东方财富个股新闻（中文，覆盖更全）"""
+    try:
+        df = ak.stock_news_em(symbol=ticker)
+        if df.empty:
+            return []
+        cutoff_bjt = datetime.now(_BJT) - timedelta(hours=hours)
+        fresh = []
+        for _, row in df.iterrows():
+            try:
+                pub_str = str(row.get("发布时间", ""))
+                if not pub_str or pub_str == "nan":
+                    continue
+                pub_dt = datetime.strptime(pub_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=_BJT)
+                if pub_dt >= cutoff_bjt:
+                    title = str(row.get("新闻标题", ""))
+                    fresh.append({
+                        "title": title,
+                        "url": str(row.get("新闻链接", "")),
+                        "published": pub_dt.strftime("%m-%d %H:%M"),
+                        "key": f"{ticker}:{hash(title)}",
+                    })
+            except Exception:
+                continue
+        return fresh
+    except Exception as e:
+        print(f"[Alert] AkShare 新闻拉取失败 {ticker}: {e}")
+        return []
+
+
+def _get_fresh_news(ticker: str, market: str, hours: int = 2) -> list[dict]:
+    if market in ("hk", "cn"):
+        return _get_fresh_news_hk_cn(ticker, hours)
+    return _get_fresh_news_us(ticker, hours)
+
+
+def _get_macro_news(hours: int = 2) -> list[dict]:
+    """
+    全球财经快讯（东方财富）。
+    包含美联储、贸易政策、地缘政治等宏观事件，
+    是补捉"特朗普访华"类宏观消息的主要来源。
+    """
+    try:
+        df = ak.stock_info_global_em()
+        if df.empty:
+            return []
+
+        # 探测列名（东方财富接口偶尔调整列名）
+        col_time = next((c for c in df.columns if "时间" in c or "date" in c.lower()), None)
+        col_title = next((c for c in df.columns if "标题" in c or "title" in c.lower()), None)
+        col_summary = next((c for c in df.columns if "摘要" in c or "content" in c.lower() or "内容" in c), None)
+        if not col_title:
+            print(f"[Alert] 全球快讯列名未识别: {df.columns.tolist()}")
+            return []
+
+        cutoff_bjt = datetime.now(_BJT) - timedelta(hours=hours)
+        fresh = []
+        for _, row in df.iterrows():
+            try:
+                title = str(row.get(col_title, ""))
+                if not title or title == "nan":
+                    continue
+                time_str = str(row.get(col_time, "")) if col_time else ""
+                pub_dt = None
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%H:%M"):
+                    try:
+                        parsed = datetime.strptime(time_str, fmt)
+                        if fmt == "%H:%M":
+                            parsed = parsed.replace(
+                                year=datetime.now().year,
+                                month=datetime.now().month,
+                                day=datetime.now().day,
+                            )
+                        pub_dt = parsed.replace(tzinfo=_BJT)
+                        break
+                    except ValueError:
+                        continue
+
+                if pub_dt is None or pub_dt < cutoff_bjt:
+                    continue
+
+                summary = str(row.get(col_summary, "")) if col_summary else ""
+                fresh.append({
+                    "title": title,
+                    "summary": summary[:100],
+                    "published": pub_dt.strftime("%m-%d %H:%M"),
+                    "key": f"macro:{hash(title)}",
+                })
+            except Exception:
+                continue
+        return fresh
+    except Exception as e:
+        print(f"[Alert] 全球财经快讯拉取失败: {e}")
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DeepSeek 评分
+# ─────────────────────────────────────────────────────────────────────────────
 
 ALERT_SYSTEM = """你是一个股票新闻影响评估助手。
 根据提供的新闻标题，评估该新闻对指定股票的影响。
@@ -34,23 +174,46 @@ ALERT_SYSTEM = """你是一个股票新闻影响评估助手。
 }
 
 impact 评分标准：
-8-10: 极重要（财报超预期/暴雷、重大并购、监管处罚、CEO 离职）
+8-10: 极重要（财报超预期/暴雷、重大并购、监管处罚、CEO 离职、重大贸易/外交政策）
 5-7:  中等影响（行业政策变化、竞争对手动态、分析师调级）
 1-4:  低影响（一般行业新闻、重申评级、常规发布会）"""
 
-ALERT_USER = """股票：{ticker}
+ALERT_USER = """股票/资产：{ticker}
 新闻标题：{title}
 发布时间：{published}
+{summary_line}
+请评估这条新闻对 {ticker} 的影响程度。"""
 
-请评估这条新闻对 {ticker} 股票的影响程度。"""
+MACRO_SYSTEM = """你是一个宏观经济新闻影响评估助手。
+根据提供的宏观新闻，评估该新闻对中国港股/A股市场的整体影响。
+
+严格按以下 JSON 格式输出（不要有其他内容）：
+{
+  "impact": 1-10,
+  "sentiment": "利好" | "利空" | "中性",
+  "affected_sectors": ["科技", "消费", "金融"],
+  "reason": "一句话说明为什么这条新闻重要（或不重要）"
+}
+
+impact 评分标准：
+8-10: 极重要（中美关系重大转变、联储加息/降息、贸易战升级/缓和、重大外交事件）
+5-7:  中等影响（PMI 超预期、行业政策、外资流入流出）
+1-4:  低影响（常规数据发布、无实质影响的声明）"""
+
+MACRO_USER = """宏观新闻标题：{title}
+发布时间：{published}
+摘要：{summary}
+
+请评估这条宏观新闻对中国港股市场的影响。"""
 
 
-async def _classify_news(ticker: str, title: str, published: str) -> dict:
-    """用 DeepSeek 快速评估新闻影响，失败时返回低影响默认值"""
+async def _classify_stock_news(ticker: str, title: str, published: str, summary: str = "") -> dict:
+    summary_line = f"摘要：{summary}" if summary else ""
     try:
         raw = await deepseek_chat(
             ALERT_SYSTEM,
-            ALERT_USER.format(ticker=ticker, title=title, published=published),
+            ALERT_USER.format(ticker=ticker, title=title, published=published,
+                              summary_line=summary_line),
         )
         start, end = raw.find("{"), raw.rfind("}") + 1
         return json.loads(raw[start:end])
@@ -58,42 +221,24 @@ async def _classify_news(ticker: str, title: str, published: str) -> dict:
         return {"impact": 0, "sentiment": "中性", "reason": "解析失败"}
 
 
-def _get_fresh_news(ticker: str, market: str, hours: int = 2) -> list[dict]:
-    """
-    从 yfinance 拉最新新闻，只返回 hours 小时内发布的条目。
-    港股代码自动转换格式。
-    """
+async def _classify_macro_news(title: str, published: str, summary: str) -> dict:
     try:
-        if market == "hk" and ticker.isdigit():
-            yf_ticker = f"{int(ticker):04d}.HK"
-        else:
-            yf_ticker = ticker
-
-        stock = yf.Ticker(yf_ticker)
-        news_raw = getattr(stock, "news", None) or []
-
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        fresh = []
-        for item in news_raw:
-            ts = item.get("providerPublishTime", 0)
-            if not ts:
-                continue
-            pub_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-            if pub_dt >= cutoff:
-                fresh.append({
-                    "title": item.get("title", ""),
-                    "url": item.get("link", ""),
-                    "published": pub_dt.strftime("%H:%M UTC"),
-                    "key": f"{ticker}:{hash(item.get('title', ''))}"
-                })
-        return fresh
+        raw = await deepseek_chat(
+            MACRO_SYSTEM,
+            MACRO_USER.format(title=title, published=published, summary=summary),
+        )
+        start, end = raw.find("{"), raw.rfind("}") + 1
+        return json.loads(raw[start:end])
     except Exception:
-        return []
+        return {"impact": 0, "sentiment": "中性", "affected_sectors": [], "reason": "解析失败"}
 
 
-async def _send_alert(ticker: str, market: str, title: str, published: str,
-                      impact: int, sentiment: str, reason: str) -> None:
-    """发送飞书紧急提醒卡片"""
+# ─────────────────────────────────────────────────────────────────────────────
+# 飞书推送
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _send_stock_alert(ticker: str, market: str, title: str, published: str,
+                            impact: int, sentiment: str, reason: str) -> None:
     SENT_EMOJI = {"利好": "🟢", "利空": "🔴", "中性": "⚪"}
     IMPACT_BAR = "🔥" * min(impact // 2, 5)
     market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
@@ -120,26 +265,60 @@ async def _send_alert(ticker: str, market: str, title: str, published: str,
                 },
             },
             {"tag": "hr"},
-            {
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": f"💡 {reason}"},
-            },
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"💡 {reason}"}},
             {"tag": "hr"},
-            {
-                "tag": "note",
-                "elements": [{"tag": "plain_text",
-                              "content": "以上为 AI 快速判断，仅供参考，请自行核实原文"}],
-            },
+            {"tag": "note", "elements": [{"tag": "plain_text",
+                                          "content": "以上为 AI 快速判断，仅供参考，请自行核实原文"}]},
         ],
     }
     await send_feishu_card(card)
     print(f"[Alert] 已推送 {ticker} 快讯：{title[:40]}... (影响度={impact}, {sentiment})")
 
 
+async def _send_macro_alert(title: str, published: str, impact: int, sentiment: str,
+                            affected_sectors: list, reason: str) -> None:
+    SENT_EMOJI = {"利好": "🟢", "利空": "🔴", "中性": "⚪"}
+    IMPACT_BAR = "🔥" * min(impact // 2, 5)
+    sectors_str = "、".join(affected_sectors) if affected_sectors else "全市场"
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "🌐 宏观快讯 · 港股/A股影响"},
+            "template": "red" if sentiment == "利空" else (
+                "green" if sentiment == "利好" else "blue"
+            ),
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
+                        f"**{title}**\n"
+                        f"🕐 {published}   📌 涉及板块：{sectors_str}"
+                    ),
+                },
+            },
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"💡 {reason}"}},
+            {"tag": "hr"},
+            {"tag": "note", "elements": [{"tag": "plain_text",
+                                          "content": "宏观快讯 · AI 快速判断，仅供参考"}]},
+        ],
+    }
+    await send_feishu_card(card)
+    print(f"[Alert] 已推送宏观快讯：{title[:40]}... (影响度={impact}, {sentiment})")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 主入口
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def run_news_scan(impact_threshold: int = 7) -> int:
     """
-    扫描所有持仓（及其竞争对手）的最新新闻，高影响立即推送飞书。
-    peers 新闻以"持仓 X 的竞对 Y"形式标注，影响度阈值提高 1 分（减少噪音）。
+    扫描所有持仓（及竞争对手）+ 全球宏观快讯，高影响推送飞书。
     返回推送条数。
     """
     config_path = Path(__file__).parents[3] / "config" / "portfolio.yaml"
@@ -147,7 +326,6 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
         portfolio = yaml.safe_load(f)
 
     holdings = portfolio.get("holdings", []) + portfolio.get("watchlist", [])
-    # ETF 跳过（指数 ETF 一般没有个股突发新闻）
     etf_skip = {"QQQM", "VOO", "SCHD", "DRAM"}
     holdings = [h for h in holdings if h["ticker"] not in etf_skip]
 
@@ -155,8 +333,7 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
     scan_queue: list[tuple[str, str, str, bool]] = []
     seen_tickers: set[str] = set()
     for item in holdings:
-        ticker = item["ticker"]
-        market = item["market"]
+        ticker, market = item["ticker"], item["market"]
         if ticker not in seen_tickers:
             scan_queue.append((ticker, market, ticker, False))
             seen_tickers.add(ticker)
@@ -166,12 +343,13 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                 seen_tickers.add(peer)
 
     pushed = 0
+
+    # ── 1. 个股扫描 ──────────────────────────────────────────────────────────
     for scan_ticker, market, holding_ticker, is_peer in scan_queue:
         fresh_news = _get_fresh_news(scan_ticker, market, hours=2)
         if not fresh_news:
             continue
 
-        # peers 新闻阈值 +1，减少间接噪音
         effective_threshold = impact_threshold + (1 if is_peer else 0)
 
         for news in fresh_news:
@@ -179,15 +357,17 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
             if key in _alerted:
                 continue
 
-            result = await _classify_news(scan_ticker, news["title"], news["published"])
+            result = await _classify_stock_news(
+                scan_ticker, news["title"], news["published"],
+                news.get("summary", "")
+            )
             impact = result.get("impact", 0)
 
             if impact >= effective_threshold:
-                # peers 新闻标注来源，附注影响持仓
                 title_display = news["title"]
                 if is_peer:
                     title_display = f"[竞对 {scan_ticker}] {title_display}"
-                await _send_alert(
+                await _send_stock_alert(
                     ticker=holding_ticker if is_peer else scan_ticker,
                     market=market,
                     title=title_display,
@@ -202,6 +382,35 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
             else:
                 src = f"{scan_ticker}（竞对）" if is_peer else scan_ticker
                 print(f"[Alert] {src} 影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
+
+    # ── 2. 宏观快讯扫描 ───────────────────────────────────────────────────────
+    # 只在持仓含港股/A股时运行宏观扫描（美股纯仓位不需要）
+    has_hk_cn = any(h["market"] in ("hk", "cn") for h in holdings)
+    if has_hk_cn:
+        macro_threshold = impact_threshold  # 宏观用相同阈值
+        macro_news = _get_macro_news(hours=2)
+        print(f"[Alert] 全球快讯：获取到 {len(macro_news)} 条（2小时内）")
+        for news in macro_news:
+            key = news["key"]
+            if key in _alerted:
+                continue
+            result = await _classify_macro_news(
+                news["title"], news["published"], news.get("summary", "")
+            )
+            impact = result.get("impact", 0)
+            if impact >= macro_threshold:
+                await _send_macro_alert(
+                    title=news["title"],
+                    published=news["published"],
+                    impact=impact,
+                    sentiment=result.get("sentiment", "中性"),
+                    affected_sectors=result.get("affected_sectors", []),
+                    reason=result.get("reason", ""),
+                )
+                _alerted.add(key)
+                pushed += 1
+            else:
+                print(f"[Alert] 宏观 影响度={impact}，低于阈值，跳过：{news['title'][:50]}")
 
     if pushed == 0:
         print(f"[Alert] 本次扫描无高影响新闻（阈值={impact_threshold}）")
