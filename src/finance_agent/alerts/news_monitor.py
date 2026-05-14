@@ -4,9 +4,10 @@
 对"高影响"新闻（DeepSeek 评分 >= 7）立即推送飞书提醒。
 
 新闻源：
-- 美股：yfinance（Yahoo Finance 英文新闻流）
+- 美股个股：yfinance（Yahoo Finance）
+- 美股宏观：CNBC RSS（Markets + Tech，分钟级实时，需 User-Agent header）
 - 港股/A 股：AkShare 东方财富（中文新闻，覆盖更全）
-- 宏观：AkShare 全球财经快讯（东方财富 np-weblist），需 NO_PROXY 绕过代理
+- 港股宏观：AkShare 全球财经快讯（东方财富 np-weblist），需 NO_PROXY 绕过代理
 """
 import asyncio
 import json
@@ -15,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import akshare as ak
+import feedparser
+import httpx
 import yaml
 import yfinance as yf
 
@@ -428,39 +431,36 @@ async def _send_macro_alert(title: str, published: str, impact: int, sentiment: 
     print(f"[Alert] 已推送宏观快讯：{title[:40]}... (影响度={impact}, {sentiment})")
 
 
-# 用于从全球快讯中预筛出美股/宏观相关条目，节省 DeepSeek 调用
-_US_MACRO_KEYWORDS = [
-    "美联储", "Fed", "CPI", "关税", "贸易战", "特朗普", "纳指", "标普",
-    "纳斯达克", "半导体", "芯片", "美股", "美元", "降息", "加息", "通胀",
-    "非农", "就业", "GDP", "英伟达", "NVIDIA", "谷歌", "苹果", "科技股",
-    "博通", "台积电", "出口管制", "制裁", "贸易协议",
+_CNBC_RSS_FEEDS = [
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",  # Markets
+    "https://www.cnbc.com/id/19854910/device/rss/rss.html",   # Technology
 ]
+_RSS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+}
 
 
 def _get_us_macro_news(hours: int = 2) -> list[dict]:
     """
-    从 Yahoo Finance 拉取 SPY / QQQ 相关新闻作为美股宏观代理。
-    SPY → 标普/宏观经济/Fed/CPI；QQQ → 纳指/科技/AI/芯片
+    从 CNBC RSS（Markets + Technology）拉取美股宏观实时新闻。
+    分钟级更新，覆盖 Fed/CPI/贸易政策/科技股动态。
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     seen: set[str] = set()
     fresh: list[dict] = []
-    for sym in ["SPY", "QQQ"]:
+    for url in _CNBC_RSS_FEEDS:
         try:
-            news_raw = yf.Ticker(sym).news or []
-            for item in news_raw:
-                content = item.get("content", item)
-                title = content.get("title") or item.get("title", "")
+            resp = httpx.get(url, headers=_RSS_HEADERS, timeout=10, follow_redirects=True)
+            resp.raise_for_status()
+            feed = feedparser.parse(resp.content)
+            for entry in feed.entries:
+                title = entry.get("title", "").strip()
                 if not title:
                     continue
-                pub_date_str = content.get("pubDate") or content.get("displayTime", "")
-                if pub_date_str:
-                    pub_dt = datetime.fromisoformat(pub_date_str.replace("Z", "+00:00"))
-                else:
-                    ts = item.get("providerPublishTime", 0)
-                    if not ts:
-                        continue
-                    pub_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                pub = entry.get("published_parsed") or entry.get("updated_parsed")
+                if not pub:
+                    continue
+                pub_dt = datetime(*pub[:6], tzinfo=timezone.utc)
                 key = f"us_macro:{hash(title)}"
                 if pub_dt >= cutoff and key not in seen:
                     seen.add(key)
@@ -470,7 +470,7 @@ def _get_us_macro_news(hours: int = 2) -> list[dict]:
                         "key": key,
                     })
         except Exception as e:
-            print(f"[Alert] 美股新闻拉取失败 {sym}: {e}")
+            print(f"[Alert] CNBC RSS 拉取失败 {url}: {e}")
     return fresh
 
 
@@ -620,11 +620,11 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
             else:
                 print(f"[Alert] 港股宏观 影响度={impact}，跳过：{news['title'][:50]}")
 
-    # ── 3. 美股宏观快讯（Yahoo Finance SPY+QQQ，英文，阈值6）──────────────
+    # ── 3. 美股宏观快讯（CNBC RSS，分钟级实时，阈值6）────────────────────────
     has_us = any(h["market"] == "us" for h in holdings)
     if has_us:
         us_macro_news = _get_us_macro_news(hours=2)
-        print(f"[Alert] 美股快讯（Yahoo Finance）：{len(us_macro_news)} 条（2小时内）")
+        print(f"[Alert] 美股快讯（CNBC RSS）：{len(us_macro_news)} 条（2小时内）")
         for news in us_macro_news:
             key = news["key"]
             if key in alerted:
