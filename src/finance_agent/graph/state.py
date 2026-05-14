@@ -44,7 +44,8 @@ class StockAnalysis(BaseModel):
     bear_thesis: str = ""
 
     # Final decision (Claude)
-    recommendation: str = ""
+    recommendation: str = ""       # 长期（1-3月）建议
+    short_term_action: str = ""    # 短期（本周）执行建议，与长期不同时才有意义
     confidence: str = ""
     entry_hint: str = ""
     key_risk: str = ""

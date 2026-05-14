@@ -158,6 +158,8 @@ async def format_report_node(state: AgentState) -> AgentState:
         conf  = CONF.get(s.confidence, "")
         lines.append(f"\n{emoji} {s.ticker}  {s.recommendation} {conf}")
         lines.append(f"   {s.one_line}")
+        if s.short_term_action and s.short_term_action != "立即执行":
+            lines.append(f"   ⏱️  本周：{s.short_term_action}")
         if s.entry_hint:
             lines.append(f"   📌 {s.entry_hint}")
         if s.key_risk:
@@ -207,6 +209,9 @@ async def format_report_node(state: AgentState) -> AgentState:
             f"**{emoji} {s.ticker}**　{s.recommendation}　{conf}　{pos_icon} {s.position_change or '维持'}",
             f"{s.one_line}",
         ]
+        # 短期执行建议（只在与长期不一致时显示）
+        if s.short_term_action and s.short_term_action != "立即执行":
+            main_md_lines.append(f"⏱️ **本周操作：{s.short_term_action}**（长期建议仍为{s.recommendation}）")
         if earnings_alert:
             main_md_lines.append(earnings_alert)
         if s.entry_hint:

@@ -45,12 +45,13 @@ def _sector_summary(stocks: list[StockAnalysis]) -> str:
 
 def _parse_decision(d: dict) -> dict:
     return {
-        "recommendation":  d.get("recommendation", "观望"),
-        "confidence":      d.get("confidence", "低"),
-        "position_change": d.get("position_change", "维持"),
-        "entry_hint":      d.get("entry_hint", ""),
-        "key_risk":        d.get("key_risk", ""),
-        "one_line":        d.get("one_line", ""),
+        "recommendation":    d.get("recommendation", "观望"),
+        "short_term_action": d.get("short_term_action", "立即执行"),
+        "confidence":        d.get("confidence", "低"),
+        "position_change":   d.get("position_change", "维持"),
+        "entry_hint":        d.get("entry_hint", ""),
+        "key_risk":          d.get("key_risk", ""),
+        "one_line":          d.get("one_line", ""),
     }
 
 
