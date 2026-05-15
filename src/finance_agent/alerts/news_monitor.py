@@ -12,6 +12,7 @@
 import asyncio
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -66,6 +67,74 @@ def _save_alerted(key: str, date_str: str, db_path=None) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 新闻去重策略
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_dedup_seed(title: str) -> str:
+    """
+    从标题中提取关键要素用于去重。
+    优先提取：主要实体（公司名）+ 财务事件（IPO, earnings 等）。
+    例：
+      "Cerebras pops 68% in Nasdaq debut" + "pushing market cap to $95B"
+      → "cerebras nasdaq_debut"
+
+      "Cerebras almost doubles in Nasdaq debut, topping $100B market cap"
+      → "cerebras nasdaq_debut"
+    """
+    title_lower = title.lower()
+
+    # 提取首个大写词或公司名（通常是主要实体）
+    first_entity = ""
+    match = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', title)
+    if match:
+        first_entity = match.group(1).lower()
+
+    # 提取财务事件关键词（优先级高的事件）
+    events = {
+        'ipo': r'\b(ipo|goes public|debuts?|listing)\b',
+        'earnings': r'\b(earnings?|earnings?\s+(?:miss|beat|report)|quarterly\s+report)\b',
+        'acquisition': r'\b(acquisition|acquired|buys?|acquiring)\b',
+        'merger': r'\b(merger?|merges?|merged)\b',
+        'bankruptcy': r'\b(bankruptcy|bankrupt|files?|ch.*11)\b',
+        'dividend': r'\b(dividend|payout)\b',
+        'split': r'\b(stock\s+split|splits?)\b',
+        'restructure': r'\b(restructur|reorganiz|restructur)\b',
+    }
+
+    event_found = ""
+    for event_key, pattern in events.items():
+        if re.search(pattern, title_lower):
+            event_found = event_key
+            break
+
+    # 组合：实体 + 事件
+    if first_entity and event_found:
+        return f"{first_entity}:{event_found}"
+    elif first_entity:
+        return first_entity
+    else:
+        # 降级：使用标题前 20 个字符
+        return title[:20].lower().replace(" ", "_")
+
+
+def _make_dedup_key(prefix: str, title: str, published_date: str = "") -> str:
+    """
+    生成去重 key。
+    使用提取的关键要素 + 发布日期，而非原始标题的 hash。
+    这样相同事件（IPO、earnings 等）的不同报道会得到相同 key。
+    """
+    seed = _extract_dedup_seed(title)
+    seed_hash = hash(seed)
+
+    # 包含发布日期（月-日），确保同一天的相同事件被认为是重复
+    date_part = published_date[-5:] if published_date and '-' in published_date else ""
+
+    if date_part:
+        return f"{prefix}:{date_part}:{seed_hash}"
+    return f"{prefix}:{seed_hash}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 新闻拉取
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -82,11 +151,13 @@ def _get_fresh_news_us(ticker: str, hours: int = 2) -> list[dict]:
                 continue
             pub_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
             if pub_dt >= cutoff:
+                published = pub_dt.astimezone(_BJT).strftime("%m-%d %H:%M")
+                title = item.get("title", "")
                 fresh.append({
-                    "title": item.get("title", ""),
+                    "title": title,
                     "url": item.get("link", ""),
-                    "published": pub_dt.astimezone(_BJT).strftime("%m-%d %H:%M"),
-                    "key": f"{ticker}:{hash(item.get('title', ''))}",
+                    "published": published,
+                    "key": _make_dedup_key(ticker, title, published),
                 })
         return fresh
     except Exception as e:
@@ -110,11 +181,12 @@ def _get_fresh_news_hk_cn(ticker: str, hours: int = 2) -> list[dict]:
                 pub_dt = datetime.strptime(pub_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=_BJT)
                 if pub_dt >= cutoff_bjt:
                     title = str(row.get("新闻标题", ""))
+                    published = pub_dt.strftime("%m-%d %H:%M")
                     fresh.append({
                         "title": title,
                         "url": str(row.get("新闻链接", "")),
-                        "published": pub_dt.strftime("%m-%d %H:%M"),
-                        "key": f"{ticker}:{hash(title)}",
+                        "published": published,
+                        "key": _make_dedup_key(ticker, title, published),
                     })
             except Exception:
                 continue
@@ -176,11 +248,12 @@ def _get_macro_news(hours: int = 2) -> list[dict]:
                     continue
 
                 summary = str(row.get(col_summary, "")) if col_summary else ""
+                published = pub_dt.strftime("%m-%d %H:%M")
                 fresh.append({
                     "title": title,
                     "summary": summary[:100],
-                    "published": pub_dt.strftime("%m-%d %H:%M"),
-                    "key": f"macro:{hash(title)}",
+                    "published": published,
+                    "key": _make_dedup_key("macro", title, published),
                 })
             except Exception:
                 continue
@@ -461,12 +534,13 @@ def _get_us_macro_news(hours: int = 2) -> list[dict]:
                 if not pub:
                     continue
                 pub_dt = datetime(*pub[:6], tzinfo=timezone.utc)
-                key = f"us_macro:{hash(title)}"
+                published = pub_dt.astimezone(_BJT).strftime("%m-%d %H:%M")
+                key = _make_dedup_key("us_macro", title, published)
                 if pub_dt >= cutoff and key not in seen:
                     seen.add(key)
                     fresh.append({
                         "title": title,
-                        "published": pub_dt.astimezone(_BJT).strftime("%m-%d %H:%M"),
+                        "published": published,
                         "key": key,
                     })
         except Exception as e:
