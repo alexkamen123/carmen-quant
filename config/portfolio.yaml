@@ -2,11 +2,11 @@ holdings:
   # ── 美股 ──────────────────────────────────────────────
   - ticker: NVDA
     market: us
-    shares: 3.04
+    shares: 2.04
     cost_basis: 194.82
     sector: 半导体/AI算力
     peers: ["AMD", "INTC", "TSM"]   # 竞争对手，新闻一并扫描
-    notes: "AI算力核心持仓"
+    notes: "AI算力核心持仓；2026-05-14 减仓1股@236.00"
 
   - ticker: GOOGL
     market: us
@@ -56,6 +56,13 @@ holdings:
     notes: "美光科技；2026-05-11 加仓1股@780，加权均价762.84"
 
   # ── 港股 ──────────────────────────────────────────────
+  - ticker: "03032"
+    market: hk
+    shares: 200
+    cost_basis: 5.085
+    sector: 宽基ETF
+    notes: "恒生科技 ETF；2026-05-14 买入200股@5.085"
+
   - ticker: "00700"
     market: hk
     shares: 3
