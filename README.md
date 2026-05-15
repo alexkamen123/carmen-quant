@@ -67,7 +67,63 @@ Step 3 机会筛选           →  RSI<48 技术初筛 + 基本面双重过滤
 
 ---
 
-## 快速开始
+## ⚡ 5 分钟快速开始（推荐：GitHub Actions，无需本地环境）
+
+> 最简单的方式：Fork + 配置 3 个 secrets = 自动每天分析 + 飞书推送
+
+### Step 1. Fork 本仓库
+
+点击右上角 Fork 按钮，复制到你的账号下。
+
+### Step 2. 配置 3 个必填 Secrets
+
+**仓库首页 → Settings → Secrets and variables → Actions → New repository secret**
+
+| Secret | 说明 | 获取方式 |
+|--------|------|--------|
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | https://platform.deepseek.com/ |
+| `FEISHU_WEBHOOK_URL` | 飞书机器人 Webhook | 见下方[飞书配置](#飞书机器人配置) |
+| `DEEPSEEK_API_KEY` 或 `ANTHROPIC_API_KEY` | Claude 相关密钥（选其一） | 见下方[Claude 配置](#claude-oauth-token-获取) |
+
+### Step 3. 配置你的持仓
+
+编辑 `config/portfolio.yaml`，填入你的实际持仓：
+
+```yaml
+holdings:
+  - ticker: NVDA
+    market: us
+    shares: 3.04
+    cost_basis: 194.82  # 买入均价
+    sector: 半导体/AI算力
+    peers: ["AMD", "INTC"]
+
+  - ticker: "00700"
+    market: hk
+    shares: 3
+    cost_basis: 541.50
+    sector: 互联网/AI
+```
+
+提交后自动触发，**每个工作日 9 点和 21 点**飞书推送日报。
+
+### 📅 自动任务时间表
+
+| 任务 | 频率 | 北京时间 |
+|------|------|--------|
+| 持仓日报（港股场） | 工作日 | 09:00 |
+| 持仓日报（美股场） | 工作日 | 21:30 |
+| 周度配置建议 | 每周一 | 09:00 |
+| 每日跟进 | 周二至周五 | 09:00 |
+| 新闻实时预警 | 工作日 | 每 2 小时 |
+| 财报日期提醒 | 工作日 | 08:30 |
+| 月度回顾 | 每月 1 日 | 09:00 |
+
+---
+
+## 🔧 进阶：本地开发 / 自己迭代
+
+如果想在本地修改代码、使用 Claude Code Agent View 等高级功能：
 
 ### 1. 克隆 & 安装
 
@@ -82,86 +138,24 @@ uv sync
 
 ```bash
 cp .env.example .env
-# 填入 DEEPSEEK_API_KEY（必填）和其他可选项
+# 填入 DEEPSEEK_API_KEY、ANTHROPIC_API_KEY 或 CLAUDE_CODE_OAUTH_TOKEN
 ```
 
-### 3. 配置持仓
-
-编辑 `config/portfolio.yaml`，按以下格式填入你的持仓：
-
-```yaml
-holdings:
-  - ticker: NVDA
-    market: us          # us / hk / cn
-    shares: 3.04
-    cost_basis: 194.82  # 买入均价（美元）
-    sector: 半导体/AI算力
-    peers: ["AMD", "INTC"]   # 竞争对手，新闻一并监控
-    notes: "AI算力核心持仓"
-
-  - ticker: "00700"
-    market: hk
-    shares: 3
-    cost_basis: 541.50   # 港元均价
-    sector: 互联网/AI
-
-  - ticker: QQQM
-    market: us
-    shares: 1
-    cost_basis: 276.50
-    sector: 宽基ETF
-    is_dca: true         # 定投标的，跳过辩论直接建议按计划执行
-```
-
-### 4. 本地运行
+### 3. 本地测试运行
 
 ```bash
 # 日报分析（不发飞书）
-finance-agent analyze --skip-notify
+finance-agent run --skip-notify
 
 # 周度配置建议
 finance-agent weekly-report --skip-notify
 
-# 强制重跑周报（忽略本周缓存）
-finance-agent weekly-report --force
-
 # 新闻预警扫描
-finance-agent news-alert --skip-notify
+finance-agent news-scan --skip-notify
 
-# 财报日期检查
+# 财报检查
 finance-agent earnings-check --skip-notify
 ```
-
----
-
-## 自动化：GitHub Actions
-
-### 1. Fork 本仓库
-
-### 2. 配置 Secrets
-
-仓库 → Settings → Secrets and variables → Actions：
-
-| Secret | 说明 | 必填 |
-|--------|------|------|
-| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | ✅ |
-| `FEISHU_WEBHOOK_URL` | 飞书机器人 Webhook | ✅ |
-| `FEISHU_WEBHOOK_SECRET` | 飞书签名密钥（可选） | — |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Pro OAuth Token | — |
-| `ANTHROPIC_API_KEY` | Anthropic API Key | — |
-
-> Claude 相关密钥二选一即可。有 Claude Pro 订阅可用 OAuth Token 免额外费用。
-
-### 3. 已配置的自动任务
-
-| Workflow | 触发时间（北京时间） | 说明 |
-|----------|-------------------|------|
-| `daily_analysis.yml` | 工作日 09:00 & 21:30 | 港股场 + 美股场各一次日报 |
-| `weekly_report.yml` | 每周一 09:00 | 周度配置建议 |
-| `daily_followup.yml` | 周二至周五 09:00 | 轻量跟进 |
-| `news_alert.yml` | 工作日每 2 小时 | 新闻实时预警 |
-| `earnings_check.yml` | 工作日 08:30 | 财报日期预警 |
-| `monthly_review.yml` | 每月 1 日 09:00 | 月度回顾 |
 
 ---
 
