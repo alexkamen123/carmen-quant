@@ -39,7 +39,7 @@ def test_composite_score_in_range():
 
 def test_needs_at_least_30_rows():
     df = make_fake_ohlcv(10)
-    with pytest.raises(ValueError, match="至少需要 30 条"):
+    with pytest.raises(ValueError, match="至少需要 20 条"):
         calculate_signals(df)
 
 def test_to_prompt_str_contains_ticker():

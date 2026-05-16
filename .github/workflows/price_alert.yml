@@ -1,0 +1,52 @@
+# .github/workflows/price_alert.yml
+name: 盘中价格异动扫描
+
+# 覆盖两个市场交易时段（北京时间）：
+#   港股：09:30-16:00 BJ = UTC 01:30-08:00
+#   美股：21:30-04:00 BJ = UTC 13:30-20:00（盘前 16:00 BJ = UTC 08:00 起算）
+#
+# 每 5 分钟触发：用 5 个 cron 表达式模拟（Actions 最小粒度为 1 分钟，
+# 5 个 offset 轮换 → 每 5 分钟总有一个触发）
+# 港股段：UTC 01-08，offset 0/5/10/15/20/25/30/35/40/45/50/55 → 用 */5 实现
+# 注：GitHub Actions cron 支持 */5，即"每隔5分钟"
+
+on:
+  schedule:
+    # 港股交易时段：UTC 01:30-08:00，每 5 分钟（周一到周五）
+    - cron: "*/5 1-7 * * 1-5"
+    - cron: "*/5 8 * * 1-5"
+    # 美股盘前+正式交易时段：UTC 13:30-20:00，每 5 分钟（周一到周五）
+    - cron: "*/5 13-19 * * 1-5"
+    - cron: "*/5 20 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: "1小时跌幅阈值（默认 3.0%）"
+        required: false
+        default: "3.0"
+
+jobs:
+  price-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: 安装依赖
+        run: pip install -e .
+
+      - name: 扫描价格异动
+        env:
+          DEEPSEEK_API_KEY:      ${{ secrets.DEEPSEEK_API_KEY }}
+          FEISHU_WEBHOOK_URL:    ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
+        run: |
+          THRESHOLD=${{ github.event.inputs.threshold || '3.0' }}
+          finance-agent price-scan --threshold $THRESHOLD

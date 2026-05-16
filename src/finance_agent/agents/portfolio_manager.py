@@ -63,17 +63,16 @@ async def run_portfolio_manager_batch(
     一次 Claude CLI 调用处理所有非 ETF 股票的 PM 裁决。
     失败时逐只降级到 DeepSeek。
     """
-    etf_tickers = {"QQQM", "VOO"}
-    needs_pm = [s for s in stocks if s.ticker not in etf_tickers]
+    needs_pm = [s for s in stocks if not s.is_etf]
     result_map: dict[str, StockAnalysis] = {}
 
-    # ETF 直接标记
+    # ETF 直接标记（由 is_etf 字段决定，无需硬编码 ticker）
     for s in stocks:
-        if s.ticker in etf_tickers:
+        if s.is_etf:
             result_map[s.ticker] = s.model_copy(update={
                 "recommendation": "按计划定投",
                 "confidence": "高",
-                "one_line": f"{s.ticker} 按月定投计划执行，无需额外操作",
+                "one_line": f"{s.ticker} 按定投计划执行，无需额外操作",
             })
 
     if not needs_pm:
@@ -133,10 +132,12 @@ async def run_portfolio_manager_batch(
         except Exception as e:
             print(f"[PM] Claude CLI 失败，降级到 DeepSeek: {e}")
 
-    # 降级：DeepSeek 逐只处理
+    # 降级：DeepSeek 并行处理（比串行快 N 倍）
     if not decisions:
-        for s in needs_pm:
-            user_msg_single = PM_USER.format(
+        print(f"[PM] 降级到 DeepSeek 并行处理 {len(needs_pm)} 只股票...")
+
+        async def _deepseek_one(s: StockAnalysis) -> dict:
+            msg = PM_USER.format(
                 ticker=s.ticker,
                 market=MARKET_LABEL.get(s.market, s.market),
                 signals_str=s.signals.to_prompt_str(),
@@ -145,12 +146,24 @@ async def run_portfolio_manager_batch(
                 bear_thesis=s.bear_thesis or "无",
             )
             try:
-                raw = await deepseek_chat(PM_SYSTEM, user_msg_single)
+                raw = await deepseek_chat(PM_SYSTEM, msg)
                 start, end = raw.find("{"), raw.rfind("}") + 1
-                decisions.append({"ticker": s.ticker, **json.loads(raw[start:end])})
+                result = json.loads(raw[start:end])
+                print(f"[PM] DeepSeek 完成 {s.ticker}")
+                return {"ticker": s.ticker, **result}
             except Exception as e2:
-                print(f"[PM] DeepSeek 也失败 {s.ticker}: {e2}")
-                decisions.append({"ticker": s.ticker})
+                print(f"[PM] DeepSeek 也失败 {s.ticker}: {e2}，默认观望")
+                return {"ticker": s.ticker, "recommendation": "观望", "confidence": "低",
+                        "one_line": "数据处理异常，建议观望"}
+
+        sem = asyncio.Semaphore(3)
+
+        async def _deepseek_one_limited(s: StockAnalysis) -> dict:
+            async with sem:
+                return await _deepseek_one(s)
+
+        decisions = list(await asyncio.gather(*[_deepseek_one_limited(s) for s in needs_pm]))
+        print(f"[PM] DeepSeek 降级完成（{len(decisions)} 只）")
 
     decision_by_ticker = {d.get("ticker", ""): d for d in decisions}
     for s in needs_pm:
