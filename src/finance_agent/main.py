@@ -9,17 +9,19 @@ from finance_agent.graph.workflow import run_workflow
 from finance_agent.storage.db import init_db, save_daily_signals
 from finance_agent.notifications.feishu import send_feishu_card, send_feishu_message
 from finance_agent.backtest.engine import backfill_yesterday
-from finance_agent.alerts.news_monitor import run_news_scan
+from finance_agent.alerts.news_monitor import run_news_scan, run_price_scan
 from finance_agent.db.thesis_generator import generate_all_theses, generate_thesis_for
 from finance_agent.db.tracker import (
     list_theses, log_user_action, get_action_history,
     backfill_action_returns, get_feedback_accuracy, feedback_summary,
+    get_dip_stats, backfill_dip_outcomes,
 )
 from finance_agent.alerts.earnings_trigger import check_and_alert_earnings
 from finance_agent.weekly.allocation_advisor import run_allocation_advisor
 from finance_agent.weekly.report_card import build_weekly_card
 from finance_agent.weekly.daily_followup import run_daily_followup
 from finance_agent.monthly.review import run_monthly_review
+from finance_agent.memory.mempal_client import ingest_daily_decisions
 
 load_dotenv()
 
@@ -63,12 +65,15 @@ async def _run(skip_notify: bool, backfill: bool):
     # Step 4: 打印报告
     console.print("\n" + state.report_text)
 
-    # Step 5: 推送飞书（优先卡片，降级纯文本）
+    # Step 5: 存入 mempal 决策记忆库
+    ingest_daily_decisions(state)
+
+    # Step 6: 推送飞书（优先卡片，降级纯文本）
     if not skip_notify:
         if state.report_card:
-            ok = await send_feishu_card(state.report_card)
+            ok = await send_feishu_card(state.report_card, fallback_text=state.report_text)
         else:
-            ok = await send_feishu_message(state.report_text)
+            ok = await send_feishu_message(state.report_text, fallback_subject="⚠️ 飞书推送失败 | 卡门智投日报")
         console.print("✅ 飞书推送成功" if ok else "❌ 飞书推送失败")
 
 
@@ -79,6 +84,15 @@ def news_scan(
     """扫描持仓新闻，高影响立即推送飞书提醒"""
     pushed = asyncio.run(run_news_scan(impact_threshold=threshold))
     console.print(f"{'✅' if pushed else '⚪'} 扫描完成，推送 {pushed} 条高影响新闻")
+
+
+@app.command("price-scan")
+def price_scan(
+    threshold: float = typer.Option(3.0, "--threshold", "-t", help="1小时跌幅阈值（%），默认 3.0"),
+):
+    """轻量价格异动扫描，跳过新闻，约 30 秒，适合每 5 分钟触发"""
+    pushed = asyncio.run(run_price_scan(threshold_pct=threshold))
+    console.print(f"{'✅' if pushed else '⚪'} 价格扫描完成，推送 {pushed} 条异动")
 
 
 @app.command("weekly-report")
@@ -103,7 +117,14 @@ async def _weekly_report(skip_notify: bool, force: bool = False):
 
     if not skip_notify:
         card = build_weekly_card(result)
-        ok = await send_feishu_card(card)
+        weekly_text = (
+            f"卡门智投周报\n"
+            f"集中度风险：{diagnosis.get('concentration_risk', '')}\n"
+            f"宏观风险：{diagnosis.get('macro_risk', '')}\n"
+            f"对冲方向：{len(diagnosis.get('hedge_directions', []))} 个\n"
+            f"机会：{len(result.get('opportunities', []))} 只"
+        )
+        ok = await send_feishu_card(card, fallback_text=weekly_text)
         console.print("✅ 周度报告推送成功" if ok else "❌ 周度报告推送失败")
 
 
@@ -117,15 +138,19 @@ def daily_followup(
 
 async def _daily_followup(skip_notify: bool):
     console.print("📌 开始每日配置跟进...")
-    text = await run_daily_followup()
-    if text is None:
+    result = await run_daily_followup()
+    if result is None:
         console.print("⚪ 无周报数据，跳过今日跟进")
         return
-    console.print(text)
+    console.print(result["text"])
     if not skip_notify:
-        from finance_agent.notifications.feishu import send_feishu_message
-        ok = await send_feishu_message(text)
-        console.print("✅ 跟进消息推送成功" if ok else "❌ 跟进消息推送失败")
+        card = result.get("card")
+        text = result["text"]
+        if card:
+            ok = await send_feishu_card(card, fallback_text=text)
+        else:
+            ok = await send_feishu_message(text, fallback_subject="⚠️ 飞书推送失败 | 卡门智投每日跟进")
+        console.print("✅ 跟进推送成功" if ok else "❌ 跟进推送失败")
 
 
 @app.command("generate-theses")
@@ -292,6 +317,29 @@ async def _feedback_stats():
     summary = feedback_summary(db_path=DB_PATH)
     if summary:
         console.print(f"\n  {summary}")
+
+
+@app.command("dip-stats")
+def dip_stats(
+    days: int = typer.Option(30, "--days", "-d", help="最近 N 天"),
+):
+    """展示暴跌警报历史及实际涨跌结果（含24h/7d回测）"""
+    backfill_dip_outcomes(db_path=DB_PATH)
+    rows = get_dip_stats(days=days, db_path=DB_PATH)
+    if not rows:
+        console.print(f"近 {days} 天无暴跌警报记录")
+        return
+    console.print(f"\n[bold]📉 暴跌警报追踪（最近 {days} 天，共 {len(rows)} 条）[/bold]")
+    for r in rows:
+        opp = r.get("opportunity") or "—"
+        intact = "✅" if r.get("thesis_intact") else "❌"
+        r24 = f"{r['return_24h']:+.2f}%" if r.get("return_24h") is not None else "待回填"
+        r7d = f"{r['return_7d']:+.2f}%" if r.get("return_7d") is not None else "待回填"
+        console.print(
+            f"  {r['alerted_at'][:16]}  [bold]{r['ticker']}[/bold]  "
+            f"跌{abs(r['drop_pct']):.2f}%  机会={opp}  逻辑{intact}  "
+            f"24h={r24}  7d={r7d}"
+        )
 
 
 if __name__ == "__main__":

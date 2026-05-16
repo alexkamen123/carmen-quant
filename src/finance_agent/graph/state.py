@@ -33,11 +33,13 @@ class StockAnalysis(BaseModel):
     # Portfolio metadata
     shares: float = 0.0              # 持仓股数
     sector: str = ""                 # 行业标签（来自 portfolio.yaml）
+    is_etf: bool = False             # True = 宽基/股息 ETF，跳过辩论和基本面分析
     cost_basis: float = 0.0          # 买入均价（来自 portfolio.yaml）
     unrealized_pnl_pct: float | None = None   # 浮动盈亏 %（运行时计算）
 
     # 持仓逻辑（从 DB 加载，注入 PM prompt）
     thesis: str = ""             # 原始持仓理由（Claude 生成，持久化在 theses 表）
+    thesis_stale: bool = False   # True = 超过 30 天未更新，已触发自动重生成
 
     # Technical debate (DeepSeek)
     bull_thesis: str = ""
