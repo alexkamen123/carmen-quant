@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 import yfinance as yf
 
 _DEFAULT_DB = Path("data/agent.db")
@@ -59,6 +60,24 @@ CREATE TABLE IF NOT EXISTS theses (
     generated_at    TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS dip_alerts (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker            TEXT NOT NULL,
+    market            TEXT NOT NULL DEFAULT 'us',
+    alerted_at        TEXT DEFAULT (datetime('now')),
+    drop_pct          REAL,
+    price_at_alert    REAL,
+    opportunity       TEXT,
+    thesis_intact     INTEGER,
+    drop_reason       TEXT,
+    price_24h         REAL,
+    return_24h        REAL,
+    price_7d          REAL,
+    return_7d         REAL
+);
+CREATE INDEX IF NOT EXISTS idx_dip_ticker ON dip_alerts(ticker);
+CREATE INDEX IF NOT EXISTS idx_dip_at     ON dip_alerts(alerted_at);
 """
 
 
@@ -226,6 +245,23 @@ def load_all_theses(db_path: str | Path | None = None) -> dict[str, str]:
     with _conn(p) as con:
         rows = con.execute("SELECT ticker, thesis_text FROM theses").fetchall()
     return {r["ticker"]: r["thesis_text"] for r in rows}
+
+
+def get_thesis_ages(db_path: str | Path | None = None) -> dict[str, int]:
+    """返回 {ticker: days_since_updated} 字典，供新鲜度检查使用。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        rows = con.execute("SELECT ticker, updated_at FROM theses").fetchall()
+    now = datetime.utcnow()
+    result = {}
+    for r in rows:
+        try:
+            updated = datetime.fromisoformat(r["updated_at"])
+            result[r["ticker"]] = (now - updated).days
+        except Exception:
+            result[r["ticker"]] = 9999
+    return result
 
 
 def list_theses(db_path: str | Path | None = None) -> list[dict]:
@@ -555,3 +591,119 @@ def feedback_summary(db_path: str | Path | None = None) -> str:
         )
 
     return "；".join(parts) if parts else ""
+
+
+# ── 暴跌警报追踪 ────────────────────────────────────────────────
+
+def save_dip_alert(ticker: str, market: str, drop_pct: float,
+                   price_at_alert: float, analysis: dict,
+                   db_path: str | Path | None = None) -> int:
+    """
+    保存一条暴跌警报记录，返回新记录 id。
+    analysis 来自 _analyze_dip() 的返回值。
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        cur = con.execute(
+            """INSERT INTO dip_alerts
+               (ticker, market, drop_pct, price_at_alert, opportunity, thesis_intact, drop_reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                ticker, market, round(drop_pct, 2), round(price_at_alert, 4),
+                analysis.get("opportunity", ""),
+                1 if analysis.get("thesis_intact") else 0,
+                analysis.get("drop_reason", ""),
+            ),
+        )
+        return cur.lastrowid
+
+
+def backfill_dip_outcomes(db_path: str | Path | None = None) -> int:
+    """
+    对已有 24h 但未回填 price_24h 的记录，以及 7d 未回填 price_7d 的记录，
+    拉取当前价格计算实际收益。返回回填条数。
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    filled = 0
+    with _conn(p) as con:
+        rows = con.execute(
+            """SELECT id, ticker, market, alerted_at, price_at_alert, price_24h, price_7d
+               FROM dip_alerts
+               WHERE (price_24h IS NULL OR price_7d IS NULL)
+                 AND alerted_at < datetime('now', '-23 hours')"""
+        ).fetchall()
+
+    for row in rows:
+        yf_ticker = (f"{int(row['ticker']):04d}.HK"
+                     if row["market"] == "hk" else row["ticker"])
+        try:
+            hist = yf.download(yf_ticker, period="10d", interval="1d",
+                               progress=False, auto_adjust=True)
+            if hist.empty:
+                continue
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = [c[0].lower() for c in hist.columns]
+            else:
+                hist.columns = [c.lower() for c in hist.columns]
+            closes = hist["close"].dropna()
+            if len(closes) < 1:
+                continue
+            alerted_dt = datetime.fromisoformat(row["alerted_at"])
+            base = row["price_at_alert"]
+            updates: dict[str, float] = {}
+
+            def _ret(price: float) -> float:
+                return round((price - base) / base * 100, 2) if base else 0.0
+
+            # 24h price: first trading close after alerted_at + 1 day
+            if row["price_24h"] is None:
+                target_1d = alerted_dt + timedelta(days=1)
+                later = closes[closes.index >= str(target_1d.date())]
+                if not later.empty:
+                    p24 = round(float(later.iloc[0]), 4)
+                    updates["price_24h"] = p24
+                    updates["return_24h"] = _ret(p24)
+
+            # 7d price
+            if row["price_7d"] is None:
+                target_7d = alerted_dt + timedelta(days=7)
+                if datetime.utcnow() >= target_7d:
+                    later = closes[closes.index >= str(target_7d.date())]
+                    if not later.empty:
+                        p7 = round(float(later.iloc[0]), 4)
+                        updates["price_7d"] = p7
+                        updates["return_7d"] = _ret(p7)
+
+            if updates:
+                set_clause = ", ".join(f"{k} = ?" for k in updates)
+                with _conn(p) as con:
+                    con.execute(
+                        f"UPDATE dip_alerts SET {set_clause} WHERE id = ?",
+                        (*updates.values(), row["id"]),
+                    )
+                filled += 1
+        except Exception as e:
+            print(f"[DipTracker] 回填失败 {row['ticker']}: {e}")
+
+    if filled:
+        print(f"[DipTracker] 回填 {filled} 条暴跌警报")
+    return filled
+
+
+def get_dip_stats(days: int = 30, db_path: str | Path | None = None) -> list[dict]:
+    """返回最近 N 天的暴跌警报统计，按 alerted_at 降序。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        rows = con.execute(
+            """SELECT ticker, market, alerted_at, drop_pct, price_at_alert,
+                      opportunity, thesis_intact, drop_reason,
+                      return_24h, return_7d
+               FROM dip_alerts
+               WHERE alerted_at >= datetime('now', ?)
+               ORDER BY alerted_at DESC""",
+            (f"-{days} days",),
+        ).fetchall()
+    return [dict(r) for r in rows]

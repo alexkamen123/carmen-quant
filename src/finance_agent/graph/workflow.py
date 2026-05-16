@@ -14,7 +14,7 @@ from finance_agent.agents.bear_agent import run_bear_analysis
 from finance_agent.agents.portfolio_manager import run_portfolio_manager_batch, _sector_summary
 from finance_agent.db.tracker import (
     save_recommendations, fill_7d_returns, accuracy_summary,
-    load_all_theses,
+    load_all_theses, get_thesis_ages,
 )
 from finance_agent.notifications.glossary import build_glossary_element
 from finance_agent.agents.fundamental_analyst import run_fundamental_analysis
@@ -89,18 +89,54 @@ async def fetch_data_node(state: AgentState) -> AgentState:
     })
 
 
+_THESIS_STALE_DAYS = 30
+
+
 async def thesis_node(state: AgentState) -> AgentState:
-    """从 DB 加载每只股票的持仓逻辑，注入 StockAnalysis.thesis"""
+    """从 DB 加载每只股票的持仓逻辑，超过 30 天自动触发重生成。"""
+    from finance_agent.db.thesis_generator import generate_thesis_for
+    import yaml as _yaml
+    from pathlib import Path as _Path
+
     all_theses = load_all_theses()
-    if not all_theses:
-        return state
-    updated = [
-        s.model_copy(update={"thesis": all_theses.get(s.ticker, "")})
-        for s in state.stocks
-    ]
+    ages = get_thesis_ages()
+
+    # 读取 portfolio.yaml 供自动重生成时使用
+    _config = _Path(__file__).parents[3] / "config" / "portfolio.yaml"
+    with open(_config) as _f:
+        _port = _yaml.safe_load(_f)
+    _holding_map = {h["ticker"]: h for h in _port.get("holdings", [])}
+
+    updated = []
+    for s in state.stocks:
+        thesis = all_theses.get(s.ticker, "")
+        age = ages.get(s.ticker, 9999)
+        stale = age >= _THESIS_STALE_DAYS and not s.is_etf
+
+        if stale:
+            print(f"[Thesis] {s.ticker} 持仓逻辑已 {age} 天未更新，自动重生成...")
+            h = _holding_map.get(s.ticker, {})
+            try:
+                thesis = await generate_thesis_for(
+                    ticker=s.ticker,
+                    market=h.get("market", s.market or "us"),
+                    cost_basis=float(h.get("cost_basis") or 0),
+                    shares=float(h.get("shares", 0)),
+                    notes=h.get("notes", ""),
+                    force=True,
+                )
+            except Exception as e:
+                print(f"[Thesis] 自动重生成失败 {s.ticker}: {e}")
+                stale = False  # 保留旧 thesis，不标为 stale
+
+        updated.append(s.model_copy(update={"thesis": thesis, "thesis_stale": stale}))
+
     loaded = sum(1 for s in updated if s.thesis)
-    if loaded:
-        print(f"[Thesis] 加载 {loaded} 只股票的持仓逻辑")
+    stale_tickers = [s.ticker for s in updated if s.thesis_stale]
+    if stale_tickers:
+        print(f"[Thesis] 自动重生成：{', '.join(stale_tickers)}")
+    elif loaded:
+        print(f"[Thesis] 加载 {loaded} 只股票的持仓逻辑（均在新鲜期内）")
     return state.model_copy(update={"stocks": updated})
 
 
