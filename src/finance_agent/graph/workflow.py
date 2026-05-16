@@ -61,11 +61,14 @@ async def fetch_data_node(state: AgentState) -> AgentState:
                         ))
                 except Exception:
                     pass
+            sector = item.get("sector", "")
+            is_etf = "ETF" in sector or item.get("is_dca", False)
             return StockAnalysis(
                 ticker=ticker, market=market, signals=signals,
                 news=news, peer_news=peer_news, earnings=earnings,
                 shares=item.get("shares", 0.0),
-                sector=item.get("sector", ""),
+                sector=sector,
+                is_etf=is_etf,
                 cost_basis=cost_basis,
                 unrealized_pnl_pct=unrealized_pnl_pct,
             )
@@ -103,13 +106,12 @@ async def thesis_node(state: AgentState) -> AgentState:
 
 async def fundamentals_node(state: AgentState) -> AgentState:
     """用 Claude 分析每只股票基本面（串行，Claude CLI 判断能力更强）"""
-    etf_tickers = {"QQQM", "VOO"}
     updated = []
     for analysis in state.stocks:
-        if analysis.ticker in etf_tickers:
+        if analysis.is_etf:
             updated.append(analysis.model_copy(update={
                 "earnings": analysis.earnings.model_copy(
-                    update={"fundamental_view": "宽基 ETF，按定投计划执行"}
+                    update={"fundamental_view": "宽基/股息 ETF，按定投计划执行"}
                 )
             }))
         else:
@@ -118,20 +120,38 @@ async def fundamentals_node(state: AgentState) -> AgentState:
 
 
 async def debate_node(state: AgentState) -> AgentState:
-    """对每只股票依次运行 Bull/Bear 辩论（串行避免 API 限速）"""
-    updated_stocks = []
-    for analysis in state.stocks:
-        # 定投标的跳过辩论，直接标记
-        if analysis.ticker in ("QQQM", "VOO"):
-            updated = analysis.model_copy(update={
-                "bull_thesis": "定投标的，按月计划执行",
-                "bear_thesis": "定投标的，不做短期判断",
-            })
-        else:
-            bull_result = await run_bull_analysis(analysis)
-            updated = await run_bear_analysis(bull_result)
-        updated_stocks.append(updated)
-    return state.model_copy(update={"stocks": updated_stocks})
+    """Bull/Bear 辩论：ETF 直接标记，个股两层并行（先并行所有 Bull，再并行所有 Bear）"""
+    etf_stocks = [s for s in state.stocks if s.is_etf]
+    non_etf = [s for s in state.stocks if not s.is_etf]
+
+    etf_updated = [
+        s.model_copy(update={
+            "bull_thesis": "定投标的，按月计划执行",
+            "bear_thesis": "定投标的，不做短期判断",
+        })
+        for s in etf_stocks
+    ]
+
+    if non_etf:
+        # 限制并发为 3，避免 DeepSeek API 限速（原串行改并行后的保护）
+        sem = asyncio.Semaphore(3)
+
+        async def _bull(s):
+            async with sem:
+                return await run_bull_analysis(s)
+
+        async def _bear(s):
+            async with sem:
+                return await run_bear_analysis(s)
+
+        bull_results = list(await asyncio.gather(*[_bull(s) for s in non_etf]))
+        bear_results = list(await asyncio.gather(*[_bear(s) for s in bull_results]))
+    else:
+        bear_results = []
+
+    # 按原顺序合并
+    result_map = {s.ticker: s for s in etf_updated + bear_results}
+    return state.model_copy(update={"stocks": [result_map[s.ticker] for s in state.stocks]})
 
 
 async def decision_node(state: AgentState) -> AgentState:
