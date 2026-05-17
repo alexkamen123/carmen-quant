@@ -1,144 +1,83 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## 协作约定
 
 - **交互语言：中文**。所有回复、解释、提问均用中文；代码注释、提交信息、变量名保持英文。
 
-## Commands
+## 常用命令
 
 ```bash
-# Setup
-uv sync                                    # install all dependencies
-uv sync --extra dev                        # include test dependencies
-cp .env.example .env                       # configure API keys
+# 环境
+uv sync --extra dev          # 安装依赖（含测试）
+cp .env.example .env         # 配置 API key
 
-# Run the agent (must be in project root so config/portfolio.yaml resolves correctly)
-finance-agent run                          # daily analysis + Feishu push
-finance-agent run --skip-notify            # dry run, print only
-finance-agent run --no-backfill            # skip yesterday's win-rate backfill
-finance-agent weekly-report --skip-notify  # weekly allocation report
-finance-agent weekly-report --force        # re-run even if this week is cached
-finance-agent daily-followup --skip-notify # Tue–Fri lightweight follow-up
-finance-agent news-scan                    # scan holdings news, push if high-impact
-finance-agent earnings-check --skip-notify # check upcoming earnings in 7 days
-finance-agent generate-theses --force      # regenerate holding theses for all tickers
+# 必须从项目根目录运行，否则 data/agent.db 路径解析出错
+finance-agent run --skip-notify        # 日报干跑
+finance-agent weekly-report --force    # 强制重跑周报
+finance-agent daily-followup --skip-notify
+finance-agent news-scan
+finance-agent earnings-check --skip-notify
 finance-agent generate-theses --ticker NVDA
 finance-agent monthly-review --skip-notify
+finance-agent dip-stats --days 30
 
-# Feedback loop
+# 反馈闭环
 finance-agent log-action NVDA BUY --shares 1 --price 190
 finance-agent show-actions --days 30
 finance-agent feedback-stats
 
-# Tests
-pytest                                     # all tests
-pytest tests/test_agents/test_debate.py   # single file
-pytest -k "test_bull"                      # single test
+# 测试
+uv run pytest tests/ -x -q
 ```
 
-The `finance-agent` CLI is installed via `pyproject.toml` entry point pointing to `finance_agent.main:app`.
+## 架构速览
 
-## Architecture
-
-### Daily pipeline (LangGraph 7-node DAG)
-
-`graph/workflow.py` builds a linear `StateGraph`:
-
+**日报流水线**（`graph/workflow.py`，LangGraph DAG）：
 ```
 fetch_data → thesis → fundamentals → debate → decision → format → track
 ```
+- `fetch_data`：并行拉 OHLCV / 新闻 / 基本面 + 宏观背景（VIX/大盘），ETF 跳过 `fetch_earnings`
+- `debate`：DeepSeek 串行跑 Bull / Bear（避免并发限速）；DCA 标的跳过
+- `decision`：Claude 批量输出所有持仓决策
 
-State flows through `AgentState` (Pydantic model in `graph/state.py`), which carries a list of `StockAnalysis` objects — one per holding. Each node returns an updated copy via `state.model_copy(update={...})`.
+**模型分工**：
+- DeepSeek V3 → Bull/Bear 辩论（`DEEPSEEK_API_KEY`）
+- Claude → 基本面分析 + 组合决策 + 周报（`claude -p` 子进程，失败自动降级 DeepSeek）
 
-| Node | What it does |
-|------|-------------|
-| `fetch_data` | Parallel OHLCV + news + earnings fetch via `DataRouter`; computes `unrealized_pnl_pct`; also fetches macro context (VIX/yields/indices) |
-| `thesis` | Loads per-ticker holding rationale from the `theses` SQLite table into each `StockAnalysis` |
-| `fundamentals` | Claude (via CLI subprocess) writes a plain-language fundamental view; ETFs (QQQM, VOO) are hardcoded to skip |
-| `debate` | DeepSeek Bull then Bear analysis sequentially (serial to avoid rate limits); DCA tickers skip to fixed strings |
-| `decision` | Single batch Claude call for Portfolio Manager verdict across all stocks at once |
-| `format` | Builds both `report_text` (console) and `report_card` (Feishu interactive card JSON) |
-| `track` | Saves today's recommendations to SQLite; backfills 7-day returns for old records |
+**数据路由**（`data/router.py`）：`us` → yfinance，`hk`/`cn` → AkShare，港股代码用 `00700` 格式
 
-### Model routing
+**并发保护**：yfinance 共享 `_YF_SEM(2)`，AkShare 串行 `_AK_SEM(1)`，均定义在 `data/yf_utils.py`
 
-- **DeepSeek V3** — Bull/Bear debate (`agents/bull_agent.py`, `agents/bear_agent.py`). Called via OpenAI-compatible API (`DEEPSEEK_API_KEY`).
-- **Claude** — Fundamental analysis + Portfolio Manager batch decision + weekly advisor. Called via `claude -p` subprocess (`agents/claude_client.py`). Requires `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. Falls back to DeepSeek if Claude CLI is unavailable.
-- All prompts live in `agents/prompts.py`.
+**持久化**（`data/agent.db`，`AGENT_DB_PATH` 可覆盖）：
+- `recommendations` — 日报推荐 + 7日回填胜率
+- `theses` — 持仓逻辑，>30天自动重生成
+- `user_actions` — 手动操作记录
+- `dip_alerts` — 价格异动追踪，24h/7d 回填收益
 
-### Data layer
+**周报**（`weekly/allocation_advisor.py`）：3步 Claude 调用，结果缓存到 `data/weekly_latest.json`（ISO周粒度）
 
-`data/router.py` dispatches by `market` field:
-- `us` → `YFinanceProvider` (yfinance)
-- `hk` → `AkShareProvider` (东方财富 / AkShare)
-- `cn` → `AkShareProvider`
+## 关键配置
 
-Port stock tickers use `00700` format; `YFinanceProvider` adds `.HK` suffix when needed. Currency normalisation: HKD ÷ 7.8, CNY ÷ 7.2 → USD for concentration calculations.
+- `config/portfolio.yaml` — 持仓，`cost_basis` 填原始货币（美股 USD、港股 HKD、A股 CNY）
+- `config/settings.yaml` — 模型参数 + 信号阈值；`send_hour` 无效，调度靠 GitHub Actions
+- `.env` — `DEEPSEEK_API_KEY`（必填）、`FEISHU_WEBHOOK_URL`、`CLAUDE_CODE_OAUTH_TOKEN`
 
-### Persistence (SQLite at `data/agent.db`)
+## GitHub Actions 时刻表（北京时间）
 
-Three tables, created lazily at runtime:
-- `recommendations` — daily ticker recommendations with 7-day return backfill and outcome scoring (`tracker.py`)
-- `theses` — AI-generated holding rationale per ticker, with `pillars` (JSON) and `stop_conditions` (`thesis_generator.py`)
-- `user_actions` — manual BUY/SELL/SKIP records linked to recommendations, with 7-day price backfill (`tracker.py`)
-
-The `daily_signals` table in `storage/schema.sql` / `storage/db.py` is a separate write path used by `main.py` to snapshot raw signal scores.
-
-DB path defaults to `data/agent.db` relative to CWD, overridable via `AGENT_DB_PATH` env var. Always run `finance-agent` commands from the project root.
-
-### Weekly pipeline
-
-`weekly/allocation_advisor.py` runs three sequential Claude calls:
-1. Concentration diagnosis → hedge directions
-2. Hedge instrument selection per direction
-3. Opportunity screening (RSI < 48 pre-filter + Claude fundamental double-check)
-
-Result cached to `data/weekly_latest.json` keyed by ISO week; `--force` bypasses cache.
-
-### Feishu notifications
-
-`notifications/feishu.py` — HMAC-SHA256 signed webhook. Two functions: `send_feishu_card` (interactive card JSON) and `send_feishu_message` (plain text fallback). Requires `FEISHU_WEBHOOK_URL`; `FEISHU_WEBHOOK_SECRET` is optional.
-
-`notifications/glossary.py` scans report text for financial jargon and appends plain-language definitions to the card (max 5 terms).
-
-### Automation
-
-Six GitHub Actions workflows trigger the CLI commands on schedule (Beijing time). Secrets needed: `DEEPSEEK_API_KEY`, `FEISHU_WEBHOOK_URL`, and one of `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`.
-
-## Key configuration files
-
-- `config/portfolio.yaml` — holdings list with `ticker`, `market` (us/hk/cn), `shares`, `cost_basis`, `sector`, `peers`, `is_dca` flag
-- `config/settings.yaml` — model parameters (temperature, max_tokens) and signal thresholds (RSI overbought/oversold, MA periods, `min_confidence`). **`send_hour: 9` is a dead config value — it is never read by any code; scheduling must be done externally via crontab or GitHub Actions.**
-- `.env` — `DEEPSEEK_API_KEY` (required), `FEISHU_WEBHOOK_URL`, `FEISHU_WEBHOOK_SECRET`, `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`
-
-## GitHub Actions Schedule (Beijing Time, UTC+8)
-
-| Workflow | Schedule | Command |
+| Workflow | 触发时间 | 命令 |
 |---|---|---|
-| `price_alert` | 每 5 分钟，09:00–16:00 & 21:00–05:00 工作日 | `price-scan` |
-| `earnings_check` | 08:30 工作日 | `earnings-check` |
-| `weekly_report` | 周一 09:30 | `weekly-report` |
-| `daily_analysis` | 09:00 & 21:30 工作日 | `run` |
+| `daily_analysis` | 工作日 09:00 & 21:30 | `run` |
 | `daily_followup` | 周二–五 09:30 | `daily-followup` |
-| `news_alert` | 每小时，09:00–16:00 & 21:00–06:00 工作日 | `news-scan` |
-| `monthly_review` | 每月 1 日 10:00 | `monthly-review` |
+| `weekly_report` | 周一 09:30 | `weekly-report` |
+| `price_alert` | 工作日 09:00–16:00 & 21:00–05:00 每5分钟 | `price-scan` |
+| `news_alert` | 工作日每小时 | `news-scan` |
+| `earnings_check` | 工作日 08:30 | `earnings-check` |
+| `monthly_review` | 每月1日 10:00 | `monthly-review` |
 
-## Local Dev Setup
+## 已知陷阱
 
-```bash
-cd ~/Projects/personal/finance-agent
-source .venv/bin/activate   # 激活 venv
-# 或直接用 uv run finance-agent <cmd>
-```
-
-## Known Issues & Gotchas
-
-- **DeepSeek timeout**：Bull/Bear debate 调用设有超时，超时时降级为空字符串；若频繁触发检查 `DEEPSEEK_API_KEY` 和网络代理
-- **Claude client fallback**：`agents/claude_client.py` 检测不到 `claude` CLI 时自动降级到 DeepSeek；本地调试需确保 `claude` 在 PATH 中
-- **HK 股格式**：portfolio.yaml 中用 `00700`（不加 .HK），`AkShareProvider` 内部自动转换；`YFinanceProvider` 加 `.HK` 后缀
-- **货币归一化**：HKD ÷ 7.8、CNY ÷ 7.2 换算为 USD，仅用于集中度计算，不影响持仓收益显示
-- **DB 路径**：必须从项目根目录运行 CLI，否则 `data/agent.db` 路径解析错误；`AGENT_DB_PATH` 环境变量可覆盖
-- **ETF 跳过**：`QQQM`、`VOO` 在 `fundamentals` 节点被硬编码跳过，不做 Claude 基本面分析
-- **dedup 逻辑**：`news_monitor.py` 基于 `(ticker, headline_hash)` 去重，避免同一新闻在多个窗口重复推送
+- **AkShare 东方财富**：TLS 指纹被拦截，`retries=1` 快速失败后自动降级 yfinance，不是代理问题
+- **ETF 基本面**：`sector` 含 `ETF` 或 `is_dca=True` 的标的跳过 `fetch_earnings`（Yahoo 无此数据）
+- **HK 股格式**：portfolio.yaml 填 `00700`（无 .HK），AkShare/yfinance 内部自动转换
+- **货币归一化**：HKD÷7.8、CNY÷7.2 换算 USD，仅用于集中度计算，不影响盈亏显示
+- **Known Issues 原则**：已在代码注释中说明的不重复写这里，只记录非显而易见的行为
