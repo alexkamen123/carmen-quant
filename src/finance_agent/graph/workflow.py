@@ -127,6 +127,7 @@ async def thesis_node(state: AgentState) -> AgentState:
                 )
             except Exception as e:
                 print(f"[Thesis] 自动重生成失败 {s.ticker}: {e}")
+                print(f"[Thesis] ⚠️ WARNING: {s.ticker} 持仓逻辑已 {age} 天未更新，重生成失败，继续使用旧版本")
                 stale = False  # 保留旧 thesis，不标为 stale
 
         updated.append(s.model_copy(update={"thesis": thesis, "thesis_stale": stale}))

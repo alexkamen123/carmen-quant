@@ -660,7 +660,7 @@ def backfill_dip_outcomes(db_path: str | Path | None = None) -> int:
             # 24h price: first trading close after alerted_at + 1 day
             if row["price_24h"] is None:
                 target_1d = alerted_dt + timedelta(days=1)
-                later = closes[closes.index >= str(target_1d.date())]
+                later = closes[closes.index >= pd.Timestamp(target_1d.date())]
                 if not later.empty:
                     p24 = round(float(later.iloc[0]), 4)
                     updates["price_24h"] = p24
@@ -670,7 +670,7 @@ def backfill_dip_outcomes(db_path: str | Path | None = None) -> int:
             if row["price_7d"] is None:
                 target_7d = alerted_dt + timedelta(days=7)
                 if datetime.utcnow() >= target_7d:
-                    later = closes[closes.index >= str(target_7d.date())]
+                    later = closes[closes.index >= pd.Timestamp(target_7d.date())]
                     if not later.empty:
                         p7 = round(float(later.iloc[0]), 4)
                         updates["price_7d"] = p7
