@@ -5,7 +5,7 @@
   - 拉取推荐品种当前价格，计算周内涨跌幅
   - 重跑技术初筛，判断机会是否还在
   - Claude 给出 2-3 句跟进意见
-  - 发飞书文本消息（不发全卡片，避免打扰）
+  - 发飞书卡片（带股票名称注解，视觉分区清晰）
 """
 import json
 from datetime import date
@@ -19,6 +19,130 @@ from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli
 from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.weekly.allocation_advisor import CANDIDATE_POOL, _quick_screen
 import asyncio
+
+# 股票代码 → 中文名称注解
+TICKER_NAMES: dict[str, str] = {
+    # 当前持仓
+    "NVDA": "英伟达（GPU/AI芯片）",
+    "GOOGL": "谷歌（AI搜索/云）",
+    "MU": "美光科技（内存芯片）",
+    "QQQM": "纳指100 ETF",
+    "VOO": "标普500 ETF",
+    "SCHD": "美股股息 ETF",
+    "DRAM": "内存半导体 ETF",
+    "00700": "腾讯控股",
+    "03032": "恒生科技 ETF",
+    # 常见推荐/观察标的
+    "KWEB": "中国互联网 ETF",
+    "TLT": "美国长期国债 ETF",
+    "XLU": "公用事业 ETF",
+    "VWO": "新兴市场 ETF",
+    "IAU": "黄金 ETF（iShares）",
+    "GLD": "黄金 ETF（SPDR）",
+    "SHY": "短期美债 ETF",
+    "SGOV": "超短期美债 ETF",
+    "EMCX": "新兴市场科技 ETF",
+    "XLV": "医疗健康 ETF",
+    "META": "Meta（社交/广告）",
+    "JNJ": "强生（医疗健康）",
+    "MSFT": "微软（云/AI）",
+    "CRM": "Salesforce（企业软件）",
+    "PLTR": "Palantir（AI数据分析）",
+    "AMD": "超威半导体",
+    "INTC": "英特尔",
+    "AMZN": "亚马逊",
+    "TSLA": "特斯拉",
+    "AAPL": "苹果",
+    "TSM": "台积电（代工）",
+    "AMAT": "应用材料（设备）",
+    "2840": "安硕纳指100 ETF（港）",
+    "2840.HK": "安硕纳指100 ETF（港）",
+}
+
+
+def _ticker_label(ticker: str) -> str:
+    """返回 '**TICKER** 名称' 格式，无名称时只返回加粗 ticker。"""
+    name = TICKER_NAMES.get(ticker, "")
+    return f"**{ticker}** {name}" if name else f"**{ticker}**"
+
+
+def _pct_emoji(pct: float) -> str:
+    if pct > 0.5:
+        return "📈"
+    elif pct < -0.5:
+        return "📉"
+    return "➡️"
+
+
+def build_followup_card(
+    comment: str,
+    holdings_perf: list[dict],
+    price_changes: list[dict],
+    new_opps: list[dict],
+    today_str: str,
+) -> dict:
+    """构建每日跟进飞书交互卡片。"""
+    elements: list[dict] = []
+
+    # ── AI 跟进意见 ────────────────────────────────────────────────────────
+    elements.append({
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": comment.strip()},
+    })
+    elements.append({"tag": "hr"})
+
+    # ── 持仓本周表现 ───────────────────────────────────────────────────────
+    if holdings_perf:
+        lines = ["**📊 持仓本周表现**（周一→今日）"]
+        for c in holdings_perf:  # sorted ascending by pct_change (worst first)
+            sign = "+" if c["pct_change"] >= 0 else ""
+            line = f"{_pct_emoji(c['pct_change'])} {_ticker_label(c['ticker'])}　{sign}{c['pct_change']}%"
+            pnl = c.get("unrealized_pnl")
+            if pnl is not None:
+                pnl_sign = "+" if pnl >= 0 else ""
+                line += f"　持仓浮盈 {pnl_sign}{pnl:.1f}%"
+            lines.append(line)
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+        elements.append({"tag": "hr"})
+
+    # ── 推荐品种动态 ───────────────────────────────────────────────────────
+    if price_changes:
+        lines = ["**🔭 推荐品种动态**（周一→今日）"]
+        for c in sorted(price_changes, key=lambda x: x["pct_change"]):
+            sign = "+" if c["pct_change"] >= 0 else ""
+            lines.append(
+                f"{_pct_emoji(c['pct_change'])} {_ticker_label(c['ticker'])}"
+                f"　{c['price_start']} → {c['price_now']}　{sign}{c['pct_change']}%"
+            )
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+        elements.append({"tag": "hr"})
+
+    # ── 新增超卖信号 ───────────────────────────────────────────────────────
+    if new_opps:
+        lines = ["**⚠️ 新增超卖信号**（RSI < 40）"]
+        for c in new_opps[:5]:
+            lines.append(f"🔻 {_ticker_label(c['ticker'])}　RSI = {c['rsi']}")
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+    else:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "✅ **超卖信号：** 暂无新增"},
+        })
+
+    # ── 免责声明 ───────────────────────────────────────────────────────────
+    elements.append({
+        "tag": "note",
+        "elements": [{"tag": "plain_text", "content": "以上为 AI 辅助参考，不构成投资建议，请结合自身风险偏好决策"}],
+    })
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"📌 卡门智投 · {today_str} 配置跟进"},
+            "template": "turquoise",
+        },
+        "elements": elements,
+    }
 
 
 FOLLOWUP_SYSTEM = """你是家庭投资组合的每日跟进助手。
@@ -111,10 +235,11 @@ def _fetch_price_changes(tickers: list[str]) -> list[dict]:
     return changes
 
 
-async def run_daily_followup() -> str | None:
+async def run_daily_followup() -> dict | None:
     """
     执行每日跟进逻辑。
-    返回要推送到飞书的文字内容，或 None（若无周报数据则跳过）。
+    返回 {"card": ..., "text": ...}，或 None（若无周报数据则跳过）。
+    card 用于飞书卡片推送，text 用于控制台打印。
     """
     weekly_path = Path("data/weekly_latest.json")
     if not weekly_path.exists():
@@ -126,32 +251,24 @@ async def run_daily_followup() -> str | None:
 
     report_date = weekly.get("date", "本周一")
     watch_tickers = weekly.get("watch_tickers", [])
-    diagnosis = weekly.get("diagnosis", {})
     hedge_instruments = weekly.get("hedge_instruments", [])
     opportunities = weekly.get("opportunities", [])
 
     # ── 持仓本周表现 ──
     loop = asyncio.get_event_loop()
     holdings_perf = await loop.run_in_executor(None, _fetch_holdings_performance)
-    if holdings_perf:
-        holdings_str = "  ".join(
-            f"{c['ticker']} {'+' if c['pct_change'] >= 0 else ''}{c['pct_change']}%"
-            for c in holdings_perf
-        )
-    else:
-        holdings_str = "（无法获取）"
+    holdings_str = "  ".join(
+        f"{c['ticker']} {'+' if c['pct_change'] >= 0 else ''}{c['pct_change']}%"
+        for c in holdings_perf
+    ) if holdings_perf else "（无法获取）"
 
     # ── 推荐品种价格变化 ──
     price_changes = await loop.run_in_executor(None, _fetch_price_changes, watch_tickers)
-
-    if not price_changes:
-        price_change_str = "（无法获取价格数据）"
-    else:
-        price_change_str = "\n".join(
-            f"  {c['ticker']}：{c['price_start']} → {c['price_now']} "
-            f"（{'+' if c['pct_change'] >= 0 else ''}{c['pct_change']}%）"
-            for c in sorted(price_changes, key=lambda x: x["pct_change"])
-        )
+    price_change_str = "\n".join(
+        f"  {c['ticker']}：{c['price_start']} → {c['price_now']} "
+        f"（{'+' if c['pct_change'] >= 0 else ''}{c['pct_change']}%）"
+        for c in sorted(price_changes, key=lambda x: x["pct_change"])
+    ) if price_changes else "（无法获取价格数据）"
 
     # ── 今日快速初筛，看是否有新机会 ──
     all_new: list[dict] = []
@@ -160,7 +277,6 @@ async def run_daily_followup() -> str | None:
         screened = await loop.run_in_executor(None, _quick_screen, tickers, market)
         all_new.extend(screened)
 
-    # 已经在 watch list 里的不算新增
     existing_tickers = set(watch_tickers)
     new_opps = [c for c in all_new if c["ticker"] not in existing_tickers]
     new_opp_str = (
@@ -168,11 +284,11 @@ async def run_daily_followup() -> str | None:
         if new_opps else "暂无新增超卖机会"
     )
 
-    # ── 推荐摘要 ──
-    hedge_summary_parts = []
-    for block in hedge_instruments:
-        names = [ins["ticker"] for ins in block.get("instruments", [])]
-        hedge_summary_parts.append(f"{block['direction']}→{'/'.join(names)}")
+    # ── 推荐摘要（供 LLM 参考）──
+    hedge_summary_parts = [
+        f"{block['direction']}→{'/'.join(ins['ticker'] for ins in block.get('instruments', []))}"
+        for block in hedge_instruments
+    ]
     opp_tickers = [op["ticker"] for op in opportunities]
     rec_summary = (
         f"对冲方向：{' | '.join(hedge_summary_parts)}\n"
@@ -196,12 +312,22 @@ async def run_daily_followup() -> str | None:
         print(f"[Followup] Claude 失败，降级 DeepSeek: {e}")
         comment = await deepseek_chat(FOLLOWUP_SYSTEM, user_msg)
 
-    today = date.today().strftime("%m/%d")
-    output = (
-        f"📌 卡门智投 · {today} 配置跟进\n\n"
+    today_str = date.today().strftime("%m/%d")
+
+    card = build_followup_card(
+        comment=comment,
+        holdings_perf=holdings_perf,
+        price_changes=price_changes,
+        new_opps=new_opps,
+        today_str=today_str,
+    )
+
+    text = (
+        f"📌 卡门智投 · {today_str} 配置跟进\n\n"
         f"{comment.strip()}\n\n"
         f"持仓本周：{holdings_str}\n"
         f"推荐品种：\n{price_change_str}\n"
         f"新增超卖：{new_opp_str}"
     )
-    return output
+
+    return {"card": card, "text": text}

@@ -83,6 +83,14 @@ def calculate_signals(df: pd.DataFrame, ticker: str = "") -> TechnicalSignals:
     vol_ma20 = float(vol_ma20_series.iloc[-1]) if len(vol_ma20_series) > 0 else 1.0
     volume_ratio = float(vol_float.iloc[-1]) / vol_ma20 if vol_ma20 > 0 else 1.0
 
+    # ATR(14) — 平均真实波幅，量化价格波动剧烈程度
+    try:
+        atr_series = ta.atr(df["high"], df["low"], df["close"], length=14)
+        atr_val = float(atr_series.dropna().iloc[-1]) if atr_series is not None and len(atr_series.dropna()) > 0 else 0.0
+        atr_pct = round(atr_val / current_close * 100, 2) if current_close > 0 else 0.0
+    except Exception:
+        atr_val = atr_pct = 0.0
+
     # Change pct
     prev_close = float(close.iloc[-2]) if len(close) > 1 else current_close
     change_pct = (current_close - prev_close) / prev_close * 100
@@ -111,5 +119,7 @@ def calculate_signals(df: pd.DataFrame, ticker: str = "") -> TechnicalSignals:
         macd_trend=macd_trend,
         bb_upper=bb_upper, bb_lower=bb_lower, bb_position=bb_position,
         volume_ratio=volume_ratio,
+        atr=round(atr_val, 4),
+        atr_pct=atr_pct,
         composite_score=score,
     )

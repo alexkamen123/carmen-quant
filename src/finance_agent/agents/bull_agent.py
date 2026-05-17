@@ -10,6 +10,7 @@ async def deepseek_chat(system: str, user: str) -> str:
     client = AsyncOpenAI(
         api_key=os.environ["DEEPSEEK_API_KEY"],
         base_url="https://api.deepseek.com",
+        timeout=90.0,
     )
     response = await client.chat.completions.create(
         model="deepseek-chat",
