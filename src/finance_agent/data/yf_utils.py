@@ -8,6 +8,8 @@ _YF_SEM 全局限制同时最多 2 个 yfinance 请求；_download_with_retry �
 最多重试 3 次（间隔 2s），覆盖偶发的 crumb 竞争。
 """
 import asyncio
+import contextlib
+import os
 import time
 import yfinance as yf
 
@@ -67,3 +69,18 @@ def _ticker_calendar_with_retry(ticker: str, retries: int = 3):
             if attempt < retries - 1:
                 time.sleep(2)
     return None
+
+
+@contextlib.contextmanager
+def _direct_connection():
+    """
+    临时摘掉 HTTP_PROXY/HTTPS_PROXY，让 requests 直连目标服务器（适用于 AkShare/东方财富）。
+    退出时自动恢复原值。
+    """
+    saved = {k: os.environ.pop(k, None) for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")}
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v

@@ -35,12 +35,18 @@ async def fetch_data_node(state: AgentState) -> AgentState:
     async def fetch_one(item: dict) -> StockAnalysis | None:
         ticker = item["ticker"]
         market = item["market"]
+        sector = item.get("sector", "")
+        is_etf = "ETF" in sector or item.get("is_dca", False)
         try:
             df = await router.fetch_ohlcv(ticker, market, days=60)
             signals = calculate_signals(df, ticker=ticker)
             news_raw = await router.fetch_news(ticker, market, limit=3)
             news = [NewsItem(**n) for n in news_raw]
-            earnings_raw = await router.fetch_earnings(ticker, market)
+            # ETF 没有 PE/营收等基本面数据，跳过 API 调用避免 404 噪音
+            if is_etf:
+                earnings_raw = {}
+            else:
+                earnings_raw = await router.fetch_earnings(ticker, market)
             earnings = EarningsSummary(**{k: v for k, v in earnings_raw.items() if v is not None})
             cost_basis = float(item.get("cost_basis") or 0.0)
             current_price = float(signals.close) if signals else 0.0
@@ -61,8 +67,6 @@ async def fetch_data_node(state: AgentState) -> AgentState:
                         ))
                 except Exception:
                     pass
-            sector = item.get("sector", "")
-            is_etf = "ETF" in sector or item.get("is_dca", False)
             return StockAnalysis(
                 ticker=ticker, market=market, signals=signals,
                 news=news, peer_news=peer_news, earnings=earnings,
