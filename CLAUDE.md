@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 协作约定
+
+- **交互语言：中文**。所有回复、解释、提问均用中文；代码注释、提交信息、变量名保持英文。
+
 ## Commands
 
 ```bash
@@ -108,3 +112,33 @@ Six GitHub Actions workflows trigger the CLI commands on schedule (Beijing time)
 - `config/portfolio.yaml` — holdings list with `ticker`, `market` (us/hk/cn), `shares`, `cost_basis`, `sector`, `peers`, `is_dca` flag
 - `config/settings.yaml` — model parameters (temperature, max_tokens) and signal thresholds (RSI overbought/oversold, MA periods, `min_confidence`). **`send_hour: 9` is a dead config value — it is never read by any code; scheduling must be done externally via crontab or GitHub Actions.**
 - `.env` — `DEEPSEEK_API_KEY` (required), `FEISHU_WEBHOOK_URL`, `FEISHU_WEBHOOK_SECRET`, `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`
+
+## GitHub Actions Schedule (Beijing Time, UTC+8)
+
+| Workflow | Schedule | Command |
+|---|---|---|
+| `price_alert` | 每 5 分钟，09:00–16:00 & 21:00–05:00 工作日 | `price-scan` |
+| `earnings_check` | 08:30 工作日 | `earnings-check` |
+| `weekly_report` | 周一 09:30 | `weekly-report` |
+| `daily_analysis` | 09:00 & 21:30 工作日 | `run` |
+| `daily_followup` | 周二–五 09:30 | `daily-followup` |
+| `news_alert` | 每小时，09:00–16:00 & 21:00–06:00 工作日 | `news-scan` |
+| `monthly_review` | 每月 1 日 10:00 | `monthly-review` |
+
+## Local Dev Setup
+
+```bash
+cd ~/Projects/personal/finance-agent
+source .venv/bin/activate   # 激活 venv
+# 或直接用 uv run finance-agent <cmd>
+```
+
+## Known Issues & Gotchas
+
+- **DeepSeek timeout**：Bull/Bear debate 调用设有超时，超时时降级为空字符串；若频繁触发检查 `DEEPSEEK_API_KEY` 和网络代理
+- **Claude client fallback**：`agents/claude_client.py` 检测不到 `claude` CLI 时自动降级到 DeepSeek；本地调试需确保 `claude` 在 PATH 中
+- **HK 股格式**：portfolio.yaml 中用 `00700`（不加 .HK），`AkShareProvider` 内部自动转换；`YFinanceProvider` 加 `.HK` 后缀
+- **货币归一化**：HKD ÷ 7.8、CNY ÷ 7.2 换算为 USD，仅用于集中度计算，不影响持仓收益显示
+- **DB 路径**：必须从项目根目录运行 CLI，否则 `data/agent.db` 路径解析错误；`AGENT_DB_PATH` 环境变量可覆盖
+- **ETF 跳过**：`QQQM`、`VOO` 在 `fundamentals` 节点被硬编码跳过，不做 Claude 基本面分析
+- **dedup 逻辑**：`news_monitor.py` 基于 `(ticker, headline_hash)` 去重，避免同一新闻在多个窗口重复推送
