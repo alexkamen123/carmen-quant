@@ -6,6 +6,7 @@
 import asyncio
 from dataclasses import dataclass
 import yfinance as yf
+from .yf_utils import _YF_SEM
 
 
 @dataclass
@@ -50,14 +51,22 @@ def _vix_value() -> float:
 
 
 async def fetch_macro_context() -> MacroContext:
-    """异步包装（在 executor 中运行 yfinance 同步调用）"""
+    """异步包装（在 executor 中运行 yfinance 同步调用，共享 _YF_SEM 避免 crumb 竞争）"""
     loop = asyncio.get_event_loop()
 
+    async def _sem_vix():
+        async with _YF_SEM:
+            return await loop.run_in_executor(None, _vix_value)
+
+    async def _sem_chg(sym: str):
+        async with _YF_SEM:
+            return await loop.run_in_executor(None, _day_change, sym)
+
     vix, spx_chg, nasdaq_chg, hsi_chg = await asyncio.gather(
-        loop.run_in_executor(None, _vix_value),
-        loop.run_in_executor(None, _day_change, "^GSPC"),
-        loop.run_in_executor(None, _day_change, "^IXIC"),
-        loop.run_in_executor(None, _day_change, "^HSI"),
+        _sem_vix(),
+        _sem_chg("^GSPC"),
+        _sem_chg("^IXIC"),
+        _sem_chg("^HSI"),
     )
 
     if vix < 20:

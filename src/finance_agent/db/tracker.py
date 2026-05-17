@@ -145,7 +145,9 @@ def _determine_outcome(recommendation: str, position_change: str, ret: float) ->
 
 
 def _fetch_current_price(ticker: str, market: str = "us") -> float | None:
-    """用 yfinance 拉最新收盘价"""
+    """用 yfinance 拉最新收盘价，带 2s 间隔避免 crumb 竞争。"""
+    import time
+    time.sleep(0.5)  # backfill 是串行循环，0.5s 间隔足够避免 crumb 踩踏
     try:
         if market == "hk" and ticker.isdigit():
             yf_ticker = f"{int(ticker):04d}.HK"

@@ -6,7 +6,7 @@ import pandas as pd
 import akshare as ak
 import yfinance as yf
 from .base import DataProvider
-from .yf_utils import _YF_SEM, _download_with_retry, _ticker_info_with_retry, _ticker_calendar_with_retry, _AK_SEM
+from .yf_utils import _YF_SEM, _AK_SEM, _download_with_retry, _ticker_info_with_retry, _ticker_calendar_with_retry, _direct_connection
 
 # AkShare 数据来自东方财富，本地开发走代理时 eastmoney.com 可能被拦截。
 # 将其加入 NO_PROXY，让 requests 直连；CI 环境无代理，这里是 no-op。
@@ -21,15 +21,20 @@ def _to_yf_hk(ticker: str) -> str:
     return f"{int(ticker):04d}.HK"
 
 
-def _ak_hk_hist_with_retry(ticker: str, start: str, end: str, retries: int = 3) -> pd.DataFrame:
-    """同步调用 AkShare 港股历史数据，失败时重试 retries 次（间隔 2s）。"""
+def _ak_hk_hist_with_retry(ticker: str, start: str, end: str, retries: int = 1) -> pd.DataFrame:
+    """
+    同步调用 AkShare 港股历史数据，直连东方财富（绕过代理）。
+    retries 默认 1：本地 Mac 环境下 eastmoney.com 连接会被 TLS 指纹检测断开，
+    多次重试无意义，快速失败后交由 yfinance fallback 处理。
+    """
     last_err = None
     for attempt in range(retries):
         try:
-            df = ak.stock_hk_hist(
-                symbol=ticker, period="daily",
-                start_date=start, end_date=end, adjust="qfq"
-            )
+            with _direct_connection():
+                df = ak.stock_hk_hist(
+                    symbol=ticker, period="daily",
+                    start_date=start, end_date=end, adjust="qfq"
+                )
             if df is not None and not df.empty:
                 return df
         except Exception as e:
@@ -37,7 +42,7 @@ def _ak_hk_hist_with_retry(ticker: str, start: str, end: str, retries: int = 3) 
         if attempt < retries - 1:
             time.sleep(2)
     raise ConnectionError(
-        f"AkShare 获取 {ticker} 失败（{retries} 次）" + (f": {last_err}" if last_err else "")
+        f"AkShare 获取 {ticker} 失败" + (f": {last_err}" if last_err else "")
     )
 
 
