@@ -21,7 +21,11 @@ from finance_agent.weekly.allocation_advisor import run_allocation_advisor
 from finance_agent.weekly.report_card import build_weekly_card
 from finance_agent.weekly.daily_followup import run_daily_followup
 from finance_agent.monthly.review import run_monthly_review
-from finance_agent.memory.mempal_client import ingest_daily_decisions
+from finance_agent.memory.mempal_client import (
+    ingest_daily_report,
+    ingest_weekly_report,
+    ingest_monthly_review,
+)
 
 load_dotenv()
 
@@ -47,12 +51,15 @@ async def _run(skip_notify: bool, backfill: bool):
     Path("data").mkdir(exist_ok=True)
     await init_db(DB_PATH)
 
-    # Step 1: 回填昨日胜率
+    # Step 1: 回填昨日胜率 + 暴跌告警回测
     if backfill:
         console.print("📊 回填昨日信号胜率...")
         win_rates = await backfill_yesterday(DB_PATH)
         for ticker, rate in win_rates.items():
             console.print(f"   {ticker}: {rate:.0%}")
+        filled = backfill_dip_outcomes(db_path=DB_PATH)
+        if filled:
+            console.print(f"📉 回填 {filled} 条暴跌告警回测价格")
 
     # Step 2: 运行今日分析
     console.print("🤖 开始今日分析...")
@@ -65,8 +72,8 @@ async def _run(skip_notify: bool, backfill: bool):
     # Step 4: 打印报告
     console.print("\n" + state.report_text)
 
-    # Step 5: 存入 mempal 决策记忆库
-    ingest_daily_decisions(state)
+    # Step 5: 存入 mempal 决策记忆库（仅日报全文，新闻预警/轻量跟进不存）
+    ingest_daily_report(state.report_text)
 
     # Step 6: 推送飞书（优先卡片，降级纯文本）
     if not skip_notify:
@@ -114,6 +121,8 @@ async def _weekly_report(skip_notify: bool, force: bool = False):
     console.print(f"[对冲方向] {len(diagnosis.get('hedge_directions', []))} 个")
     console.print(f"[对冲品种] {sum(len(b.get('instruments', [])) for b in result.get('hedge_instruments', []))} 个")
     console.print(f"[机会筛选] {len(result.get('opportunities', []))} 只（初筛 {result.get('candidates_screened', 0)} 只）")
+
+    ingest_weekly_report(result)
 
     if not skip_notify:
         card = build_weekly_card(result)
@@ -211,11 +220,13 @@ def monthly_review(
 
 async def _monthly_review(skip_notify: bool):
     console.print("📆 开始月度投资回顾...")
-    card = await run_monthly_review(db_path_str=DB_PATH)
-    if card is None:
+    result = await run_monthly_review(db_path_str=DB_PATH)
+    if result is None:
         console.print("⚪ 上月无已回填数据，跳过月度回顾")
         return
+    card, summary, stats = result
     console.print("✅ 月度回顾已生成")
+    ingest_monthly_review(summary, stats)
     if not skip_notify:
         ok = await send_feishu_card(card)
         console.print("✅ 月度回顾推送成功" if ok else "❌ 月度回顾推送失败")
