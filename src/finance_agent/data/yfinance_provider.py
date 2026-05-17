@@ -1,8 +1,28 @@
 import asyncio
+import time
 from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
 from .base import DataProvider
+
+# Yahoo Finance crumb 在高并发下会失效，限制同时最多 2 个 yfinance 请求
+_YF_SEM = asyncio.Semaphore(2)
+
+
+def _download_with_retry(ticker: str, start, end, retries: int = 3) -> pd.DataFrame:
+    """同步下载，失败时最多重试 retries 次（每次间隔 2s），规避 crumb 竞争。"""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+            if not df.empty:
+                return df
+        except Exception as e:
+            last_err = e
+        if attempt < retries - 1:
+            time.sleep(2)
+    raise ValueError(f"No data returned for {ticker}" + (f" ({last_err})" if last_err else ""))
+
 
 class YFinanceProvider(DataProvider):
     """美股数据，使用 yfinance（免费）"""
@@ -12,10 +32,11 @@ class YFinanceProvider(DataProvider):
         start = end - timedelta(days=days + 10)
 
         loop = asyncio.get_event_loop()
-        df = await loop.run_in_executor(
-            None,
-            lambda: yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
-        )
+        async with _YF_SEM:
+            df = await loop.run_in_executor(
+                None,
+                lambda: _download_with_retry(ticker, start, end)
+            )
 
         if df.empty:
             raise ValueError(f"No data returned for {ticker}")
