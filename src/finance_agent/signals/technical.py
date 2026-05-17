@@ -91,21 +91,51 @@ def calculate_signals(df: pd.DataFrame, ticker: str = "") -> TechnicalSignals:
     except Exception:
         atr_val = atr_pct = 0.0
 
+    # ADX(14) — 趋势强度，>25 视为强趋势
+    try:
+        adx_df = ta.adx(df["high"], df["low"], df["close"], length=14)
+        adx_col = next((c for c in adx_df.columns if c.startswith("ADX")), None)
+        adx_series = adx_df[adx_col].dropna() if adx_col else None
+        adx_val = float(adx_series.iloc[-1]) if adx_series is not None and len(adx_series) > 0 else 0.0
+    except Exception:
+        adx_val = 0.0
+
     # Change pct
     prev_close = float(close.iloc[-2]) if len(close) > 1 else current_close
     change_pct = (current_close - prev_close) / prev_close * 100
 
-    # Composite score
+    # 趋势模式判断：ADX > 25 且价格结构为上升趋势（价格 > MA20 > MA60）
+    is_uptrend = current_close > ma20 and ma20 > ma60
+    trend_mode = adx_val > 25 and is_uptrend
+
+    # Composite score — 双模式
     score = 0.0
-    if rsi_signal == "oversold":
-        score += 0.3 * (1 - rsi / 100)
-    elif rsi_signal == "overbought":
-        score -= 0.3 * (rsi / 100)
-    score += 0.25 if ma_signal == "golden_cross" else (-0.25 if ma_signal == "death_cross" else 0)
-    score += 0.2 if macd_trend == "bullish" else (-0.2 if macd_trend == "bearish" else 0)
-    score += 0.15 * (1 - bb_position * 2)
-    if change_pct > 0:
-        score += 0.1 * min(volume_ratio - 1, 1)
+    if trend_mode:
+        # 趋势模式：严格的"回踩 MA20 支撑买点"，三个条件同时满足才触发
+        #   1. 价格确实压到 MA20 下方（-6% ~ -0.5%），而不是随便在附近
+        #   2. RSI 处于冷却区（40~62），不是超买延续，也不是恐慌抛售
+        #   3. MACD 多头（趋势未断）
+        genuine_pullback = -6.0 < price_vs_ma20 < -0.5
+        rsi_cooling = 40 < rsi < 62
+        score += 0.6 if (genuine_pullback and rsi_cooling and macd_trend == "bullish") else 0.0
+        # 成交量放大加分（缩量回踩更健康）
+        if change_pct > 0:
+            score += 0.1 * min(volume_ratio - 1, 1)
+        # 卖出：均线死叉或价格跌破 MA60 才是真正的结构破坏
+        score -= 0.5 if ma_signal == "death_cross" else 0.0
+        score -= 0.3 if current_close < ma60 else 0.0
+    else:
+        # 震荡/均值回归模式：原逻辑
+        if rsi_signal == "oversold":
+            score += 0.3 * (1 - rsi / 100)
+        elif rsi_signal == "overbought":
+            score -= 0.3 * (rsi / 100)
+        score += 0.25 if ma_signal == "golden_cross" else (-0.25 if ma_signal == "death_cross" else 0)
+        score += 0.2 if macd_trend == "bullish" else (-0.2 if macd_trend == "bearish" else 0)
+        score += 0.15 * (1 - bb_position * 2)
+        if change_pct > 0:
+            score += 0.1 * min(volume_ratio - 1, 1)
+
     score = max(-1.0, min(1.0, score))
 
     return TechnicalSignals(
@@ -121,5 +151,7 @@ def calculate_signals(df: pd.DataFrame, ticker: str = "") -> TechnicalSignals:
         volume_ratio=volume_ratio,
         atr=round(atr_val, 4),
         atr_pct=atr_pct,
+        adx=round(adx_val, 1),
+        trend_mode=trend_mode,
         composite_score=score,
     )

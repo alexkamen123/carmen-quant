@@ -35,6 +35,7 @@ class StockAnalysis(BaseModel):
     sector: str = ""                 # 行业标签（来自 portfolio.yaml）
     is_etf: bool = False             # True = 宽基/股息 ETF，跳过辩论和基本面分析
     cost_basis: float = 0.0          # 买入均价（来自 portfolio.yaml）
+    signal_weight: str = "normal"    # "low" = 技术信号回测无效，PM 应以基本面/thesis 为主
     unrealized_pnl_pct: float | None = None   # 浮动盈亏 %（运行时计算）
 
     # 持仓逻辑（从 DB 加载，注入 PM prompt）

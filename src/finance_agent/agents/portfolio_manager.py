@@ -97,6 +97,12 @@ async def run_portfolio_manager_batch(
         else:
             cost_basis_str = "未记录成本"
 
+        signals_str = s.signals.to_prompt_str()
+        if s.signal_weight == "low":
+            signals_str += (
+                "\n⚠️ 技术信号仅供参考（历史回测显示该标的技术信号无效）"
+                "——PM 裁决应以持仓逻辑和基本面为主，忽略 composite_score 的方向性。"
+            )
         blocks.append(PM_BATCH_STOCK_TEMPLATE.format(
             ticker=s.ticker,
             market=MARKET_LABEL.get(s.market, s.market),
@@ -105,7 +111,7 @@ async def run_portfolio_manager_batch(
             current_price=round(s.signals.close, 2) if s.signals else "N/A",
             cost_basis_str=cost_basis_str,
             thesis=s.thesis or "暂未记录持仓逻辑",
-            signals_str=s.signals.to_prompt_str(),
+            signals_str=signals_str,
             fundamental_view=s.earnings.fundamental_view or "暂无基本面数据",
             bull_thesis=s.bull_thesis or "无",
             bear_thesis=s.bear_thesis or "无",

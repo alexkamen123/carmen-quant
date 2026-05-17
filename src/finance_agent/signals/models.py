@@ -27,11 +27,14 @@ class TechnicalSignals(BaseModel):
     volume_ratio: float
     atr: float = 0.0
     atr_pct: float = 0.0
+    adx: float = 0.0
+    trend_mode: bool = False  # True = 强趋势（ADX>25 且价格在MA20/MA60上方）
     composite_score: float
 
     def to_prompt_str(self) -> str:
         atr_tag = " ⚡高波动" if self.atr_pct > 3.0 else ""
-        return f"""技术指标摘要（{self.ticker}）：
+        mode_tag = "【趋势模式】" if self.trend_mode else "【震荡模式】"
+        return f"""技术指标摘要（{self.ticker}）{mode_tag}：
 - 当前价格：{self.close:.2f}，今日涨跌：{self.change_pct:+.2f}%
 - RSI(14): {self.rsi:.1f} → {self.rsi_signal}
 - MA5={self.ma5:.2f} / MA20={self.ma20:.2f} / MA60={self.ma60:.2f}
@@ -40,4 +43,5 @@ class TechnicalSignals(BaseModel):
 - 布林带位置：{self.bb_position:.0%}（0%=下轨,100%=上轨）
 - 成交量比率：{self.volume_ratio:.1f}x
 - ATR(14): {self.atr:.2f}（价格的 {self.atr_pct:.1f}%）{atr_tag}
+- ADX(14): {self.adx:.1f}{"（强趋势）" if self.adx > 25 else ""}
 - 综合量化评分：{self.composite_score:+.2f}""".strip()

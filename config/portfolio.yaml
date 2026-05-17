@@ -11,6 +11,7 @@ holdings:
     shares: 2.04
     cost_basis: 194.82
     sector: 半导体/AI算力
+    signal_weight: low   # 回测显示技术信号无效，决策依赖宏观预警和持仓逻辑
     peers: ["AMD", "INTC", "TSM"]   # 竞争对手，新闻一并扫描
     notes: "AI算力核心持仓；2026-05-14 减仓1股@236.00"
 
