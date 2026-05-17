@@ -9,6 +9,7 @@ from finance_agent.graph.workflow import run_workflow
 from finance_agent.storage.db import init_db, save_daily_signals
 from finance_agent.notifications.feishu import send_feishu_card, send_feishu_message
 from finance_agent.backtest.engine import backfill_yesterday
+from finance_agent.backtest.historical import backtest_ticker, backtest_portfolio
 from finance_agent.alerts.news_monitor import run_news_scan, run_price_scan
 from finance_agent.db.thesis_generator import generate_all_theses, generate_thesis_for
 from finance_agent.db.tracker import (
@@ -351,6 +352,128 @@ def dip_stats(
             f"跌{abs(r['drop_pct']):.2f}%  机会={opp}  逻辑{intact}  "
             f"24h={r24}  7d={r7d}"
         )
+
+
+@app.command("backtest")
+def backtest(
+    ticker: str = typer.Option("", "--ticker", "-t", help="指定股票代码，留空则跑全部持仓（跳过定投ETF）"),
+    days:   int = typer.Option(730, "--days", "-d", help="回测天数，默认730（约2年）"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="展示每一条信号记录"),
+):
+    """历史回测：验证 composite_score 信号的有效性（不看总收益，看信号质量）"""
+    asyncio.run(_backtest(ticker=ticker, days=days, verbose=verbose))
+
+
+async def _backtest(ticker: str, days: int, verbose: bool):
+    import yaml
+    from pathlib import Path
+    from rich.table import Table
+
+    config_path = Path("config/portfolio.yaml")
+    with open(config_path) as f:
+        portfolio = yaml.safe_load(f)
+    holdings = portfolio.get("holdings", [])
+
+    if ticker:
+        holding = next((h for h in holdings if h["ticker"] == ticker), None)
+        market = holding.get("market", "us") if holding else "us"
+        console.print(f"[bold]回测 {ticker}（{days} 天）...[/bold]")
+        results = [await backtest_ticker(ticker, market, days)]
+    else:
+        targets = [h for h in holdings if not h.get("is_dca")]
+        console.print(f"[bold]回测全部持仓 {len(targets)} 只（{days} 天，跳过定投ETF）...[/bold]")
+        results = await backtest_portfolio(holdings, days)
+
+    # ── 汇总表 ─────────────────────────────────────────────────────────────
+    table = Table(title=f"历史回测结果（过去 {days} 天）", show_lines=True)
+    table.add_column("股票", style="bold")
+    table.add_column("市场")
+    table.add_column("买入\n信号数", justify="right")
+    table.add_column("卖出\n信号数", justify="right")
+    table.add_column("买入后10日\n均收益%", justify="right")
+    table.add_column("基准10日\n均收益%", justify="right")
+    table.add_column("买入超额\n收益%", justify="right")
+    table.add_column("低位买入\n准确率", justify="right")
+    table.add_column("卖出预警\n准确率", justify="right")
+    table.add_column("备注")
+
+    for r in results:
+        if r.error:
+            table.add_row(r.ticker, r.market, "—", "—", "—", "—", "—", "—", "—", f"[red]{r.error}[/red]")
+            continue
+
+        # 买入超额收益
+        if r.buy_avg_fwd10 is not None:
+            excess = r.buy_avg_fwd10 - r.baseline_fwd10
+            buy_str = f"{r.buy_avg_fwd10:+.2f}%"
+            excess_str = f"[green]{excess:+.2f}%[/green]" if excess > 0 else f"[red]{excess:+.2f}%[/red]"
+        else:
+            buy_str = "—"
+            excess_str = "—"
+
+        baseline_str = f"{r.baseline_fwd10:+.2f}%"
+
+        # 卖出后10日收益（负值=预警有效）
+        sell_str = f"{r.sell_avg_fwd10:+.2f}%" if r.sell_avg_fwd10 is not None else "—"
+
+        bottom_str = f"{r.buy_bottom_pct:.0%}" if r.buy_bottom_pct is not None else "—"
+        drop_str   = f"{r.sell_before_drop_pct:.0%}" if r.sell_before_drop_pct is not None else "—"
+
+        # 综合评价
+        notes = []
+        if r.buy_avg_fwd10 is not None and excess > 0.5:
+            notes.append("[green]买入有效[/green]")
+        elif r.buy_avg_fwd10 is not None and excess < -0.5:
+            notes.append("[red]买入无效[/red]")
+        if r.sell_before_drop_pct is not None and r.sell_before_drop_pct >= 0.4:
+            notes.append("[green]卖出有效[/green]")
+        if r.buy_bottom_pct is not None and r.buy_bottom_pct >= 0.5:
+            notes.append("[green]抄底准[/green]")
+
+        table.add_row(
+            r.ticker, r.market,
+            str(r.buy_count), str(r.sell_count),
+            buy_str, baseline_str, excess_str,
+            bottom_str, drop_str,
+            " ".join(notes) if notes else "—",
+        )
+
+    console.print(table)
+
+    # ── 说明 ────────────────────────────────────────────────────────────────
+    console.print(
+        "\n[dim]指标说明：\n"
+        "  买入超额收益 = 买入信号后10日均收益 − 随机入场基准，正值=信号有价值\n"
+        "  低位买入准确率 = 买入信号中，入场价处于60日区间低40%的比例，越高越好\n"
+        "  卖出预警准确率 = 卖出信号后20日内出现≥5%跌幅的比例，越高越好[/dim]"
+    )
+
+    # ── verbose 模式：逐条信号 ───────────────────────────────────────────────
+    if verbose:
+        for r in results:
+            if r.error or not r.signals:
+                continue
+            console.print(f"\n[bold]{r.ticker} 全部信号（{len(r.signals)} 条）[/bold]")
+            sig_table = Table(show_lines=False, header_style="dim")
+            sig_table.add_column("日期")
+            sig_table.add_column("方向")
+            sig_table.add_column("分数", justify="right")
+            sig_table.add_column("收盘价", justify="right")
+            sig_table.add_column("5日%", justify="right")
+            sig_table.add_column("10日%", justify="right")
+            sig_table.add_column("20日%", justify="right")
+            sig_table.add_column("入场位", justify="right")
+            for s in r.signals:
+                color = "green" if s.signal == "buy" else "red"
+                direction = f"[{color}]{'▲买入' if s.signal == 'buy' else '▼卖出'}[/{color}]"
+                sig_table.add_row(
+                    s.date, direction, f"{s.score:+.3f}", f"{s.close_price}",
+                    f"{s.fwd_5d:+.2f}%" if s.fwd_5d is not None else "—",
+                    f"{s.fwd_10d:+.2f}%" if s.fwd_10d is not None else "—",
+                    f"{s.fwd_20d:+.2f}%" if s.fwd_20d is not None else "—",
+                    f"{s.entry_percentile:.0%}" if s.entry_percentile is not None else "—",
+                )
+            console.print(sig_table)
 
 
 if __name__ == "__main__":

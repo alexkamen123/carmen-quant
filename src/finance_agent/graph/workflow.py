@@ -75,6 +75,7 @@ async def fetch_data_node(state: AgentState) -> AgentState:
                 is_etf=is_etf,
                 cost_basis=cost_basis,
                 unrealized_pnl_pct=unrealized_pnl_pct,
+                signal_weight=item.get("signal_weight", "normal"),
             )
         except Exception as e:
             state.errors.append(f"{ticker}: {e}")
