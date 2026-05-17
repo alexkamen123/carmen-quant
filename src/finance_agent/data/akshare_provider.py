@@ -1,10 +1,12 @@
 import asyncio
 import os
-from datetime import datetime, timedelta, date as date_type
+import time
+from datetime import datetime, timedelta
 import pandas as pd
 import akshare as ak
 import yfinance as yf
 from .base import DataProvider
+from .yf_utils import _YF_SEM, _download_with_retry, _ticker_info_with_retry, _ticker_calendar_with_retry, _AK_SEM
 
 # AkShare 数据来自东方财富，本地开发走代理时 eastmoney.com 可能被拦截。
 # 将其加入 NO_PROXY，让 requests 直连；CI 环境无代理，这里是 no-op。
@@ -18,27 +20,47 @@ def _to_yf_hk(ticker: str) -> str:
     """将 AkShare 港股代码转为 yfinance 格式：'00700' → '0700.HK'"""
     return f"{int(ticker):04d}.HK"
 
+
+def _ak_hk_hist_with_retry(ticker: str, start: str, end: str, retries: int = 3) -> pd.DataFrame:
+    """同步调用 AkShare 港股历史数据，失败时重试 retries 次（间隔 2s）。"""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            df = ak.stock_hk_hist(
+                symbol=ticker, period="daily",
+                start_date=start, end_date=end, adjust="qfq"
+            )
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            last_err = e
+        if attempt < retries - 1:
+            time.sleep(2)
+    raise ConnectionError(
+        f"AkShare 获取 {ticker} 失败（{retries} 次）" + (f": {last_err}" if last_err else "")
+    )
+
+
 class AkShareProvider(DataProvider):
     """港股/A股数据，使用 akshare（免费）"""
 
     async def fetch_ohlcv(self, ticker: str, days: int = 60) -> pd.DataFrame:
         end = datetime.today().strftime("%Y%m%d")
         start = (datetime.today() - timedelta(days=days + 10)).strftime("%Y%m%d")
-
         loop = asyncio.get_event_loop()
 
         if ticker.isdigit() and len(ticker) <= 6:
-            # 港股：优先 AkShare，失败自动降级到 yfinance
+            # 港股：优先 AkShare（串行保护），失败自动降级到 yfinance
             try:
-                df = await loop.run_in_executor(
-                    None,
-                    lambda: ak.stock_hk_hist(
-                        symbol=ticker, period="daily",
-                        start_date=start, end_date=end, adjust="qfq"
+                async with _AK_SEM:
+                    df = await loop.run_in_executor(
+                        None,
+                        lambda: _ak_hk_hist_with_retry(ticker, start, end)
                     )
-                )
                 rename = {"日期": "date", "开盘": "open", "最高": "high",
                           "最低": "low", "收盘": "close", "成交量": "volume"}
+                if "日期" not in df.columns and "close" not in df.columns:
+                    raise ValueError(f"AkShare 返回意外列结构（可能是ETF）: {list(df.columns)[:5]}")
                 df = df.rename(columns=rename)
                 df["date"] = pd.to_datetime(df["date"])
                 df = df.set_index("date").sort_index()
@@ -48,13 +70,12 @@ class AkShareProvider(DataProvider):
                 raise ValueError(f"AkShare 数据不足 {len(result)} 条")
             except Exception as e:
                 print(f"[AkShare] {ticker} 降级到 yfinance: {e}")
-                # 降级：yfinance 港股格式 0700.HK
                 yf_ticker = _to_yf_hk(ticker)
-                df_yf = await loop.run_in_executor(
-                    None,
-                    lambda: yf.download(yf_ticker, period=f"{days + 10}d",
-                                        progress=False, auto_adjust=True)
-                )
+                async with _YF_SEM:
+                    df_yf = await loop.run_in_executor(
+                        None,
+                        lambda: _download_with_retry(yf_ticker, period=f"{days + 10}d")
+                    )
                 if df_yf.empty:
                     raise ValueError(f"yfinance 也无法获取 {ticker} 数据")
                 if isinstance(df_yf.columns, pd.MultiIndex):
@@ -80,7 +101,6 @@ class AkShareProvider(DataProvider):
             return df[["open", "high", "low", "close", "volume"]].tail(days)
 
     async def fetch_news(self, ticker: str, limit: int = 5) -> list[dict]:
-        # 简化版：港股新闻获取，失败时返回空列表不影响主流程
         return []
 
     async def fetch_earnings(self, ticker: str) -> dict:
@@ -88,16 +108,18 @@ class AkShareProvider(DataProvider):
         港股基本面数据：via yfinance（0700.HK 格式）。
         A股代码格式不符，暂返回空；yfinance 查不到时静默返回空。
         """
-        # A 股代码含字母或超过 6 位时跳过（yfinance 港股格式只适用数字代码）
         if not ticker.isdigit():
             return {}
 
         yf_ticker = _to_yf_hk(ticker)
         loop = asyncio.get_event_loop()
-        try:
-            stock = await loop.run_in_executor(None, lambda: yf.Ticker(yf_ticker))
-            info = await loop.run_in_executor(None, lambda: stock.info) or {}
-        except Exception:
+
+        async with _YF_SEM:
+            info = await loop.run_in_executor(
+                None, lambda: _ticker_info_with_retry(yf_ticker)
+            )
+
+        if not info:
             return {}
 
         def safe(key, divisor=1):
@@ -116,10 +138,12 @@ class AkShareProvider(DataProvider):
         gross_margins = safe("grossMargins")
         gross_margin = round(gross_margins * 100, 1) if gross_margins is not None else None
 
-        # 下次财报日期（港股同样走 yfinance calendar）
         next_earnings_date = ""
         try:
-            calendar = await loop.run_in_executor(None, lambda: stock.calendar)
+            async with _YF_SEM:
+                calendar = await loop.run_in_executor(
+                    None, lambda: _ticker_calendar_with_retry(yf_ticker)
+                )
             if isinstance(calendar, dict):
                 dates = calendar.get("Earnings Date", [])
             elif hasattr(calendar, "loc"):
