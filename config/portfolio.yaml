@@ -1,4 +1,10 @@
 holdings:
+  # ⚠️  cost_basis 必须填写股票原始货币：
+  #     美股 (market: us)  → 美元 USD（如 194.82 = $194.82/股）
+  #     港股 (market: hk)  → 港币 HKD（如 541.50 = HK$541.50/股）
+  #     A股  (market: cn)  → 人民币 CNY
+  #     填错货币会导致持仓盈亏计算严重偏差（-89% 等异常值）
+
   # ── 美股 ──────────────────────────────────────────────
   - ticker: NVDA
     market: us
@@ -52,7 +58,7 @@ holdings:
     shares: 1.1533
     cost_basis: 762.84
     sector: 半导体/AI算力
-    peers: ["NVDA", "AMD", "AMAT"]
+    peers: ["NVDA", "AMD", "AMAT", "000660.KS"]   # 000660.KS = SK海力士，内存芯片最直接竞对
     notes: "美光科技；2026-05-11 加仓1股@780，加权均价762.84"
 
   # ── 港股 ──────────────────────────────────────────────
@@ -70,5 +76,12 @@ holdings:
     sector: 互联网/AI
     peers: ["09988", "09618", "01810"]   # BABA, JD, 小米
     notes: "腾讯控股"
+
+  - ticker: "07709"
+    market: hk
+    shares: 300
+    cost_basis: 91.06
+    sector: 半导体/AI算力
+    notes: "南方东英SK海力士ETF；2026-05-15 分三批买入@95.22/91.44/86.52，均价91.06"
 
 watchlist: []

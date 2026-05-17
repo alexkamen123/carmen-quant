@@ -94,16 +94,18 @@ holdings:
   - ticker: NVDA
     market: us
     shares: 3.04
-    cost_basis: 194.82  # 买入均价
+    cost_basis: 194.82  # 买入均价（USD，美股填美元）
     sector: 半导体/AI算力
     peers: ["AMD", "INTC"]
 
   - ticker: "00700"
     market: hk
     shares: 3
-    cost_basis: 541.50
+    cost_basis: 541.50  # ⚠️ 港股填港币 HKD，不要填美元
     sector: 互联网/AI
 ```
+
+> **⚠️ 货币说明**：`cost_basis` 必须填写股票原始货币。美股填 USD，港股填 HKD，A股填 CNY。填错货币会导致盈亏计算出现 -89% 等严重偏差。
 
 提交后自动触发，**每个工作日 9 点和 21 点**飞书推送日报。
 

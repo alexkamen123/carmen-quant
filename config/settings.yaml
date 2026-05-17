@@ -25,7 +25,7 @@ signals:
 notifications:
   feishu:
     enabled: true
-    send_hour: 9
+    # 注意：send_hour 不被代码读取，定时调度请在 GitHub Actions workflow 或 crontab 中配置
 
 backtest:
   lookback_days: 30

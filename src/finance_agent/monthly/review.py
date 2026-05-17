@@ -140,9 +140,9 @@ def _get_thesis_notes(db_path: Path) -> str:
     return "\n".join(f"  {r['ticker']}: {r['preview']}..." for r in rows)
 
 
-async def run_monthly_review(db_path_str: str = "data/agent.db") -> dict | None:
+async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, str, dict] | None:
     """
-    生成月度回顾，返回飞书卡片 dict。
+    生成月度回顾，返回 (飞书卡片 dict, AI复盘文本, stats dict)。
     若上月无数据则返回 None。
     """
     db_path = _resolve_db(db_path_str)
@@ -216,4 +216,4 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> dict | None:
             },
         ],
     }
-    return card
+    return card, summary, stats

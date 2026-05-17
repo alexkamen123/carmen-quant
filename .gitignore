@@ -7,3 +7,6 @@ data/
 !src/**/data/
 .venv/
 dist/
+
+# backtest fixtures (market data snapshots, captured locally)
+tests/fixtures/price_snapshots/*.json

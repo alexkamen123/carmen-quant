@@ -25,9 +25,12 @@ class TechnicalSignals(BaseModel):
     bb_position: float
 
     volume_ratio: float
+    atr: float = 0.0
+    atr_pct: float = 0.0
     composite_score: float
 
     def to_prompt_str(self) -> str:
+        atr_tag = " ⚡高波动" if self.atr_pct > 3.0 else ""
         return f"""技术指标摘要（{self.ticker}）：
 - 当前价格：{self.close:.2f}，今日涨跌：{self.change_pct:+.2f}%
 - RSI(14): {self.rsi:.1f} → {self.rsi_signal}
@@ -36,4 +39,5 @@ class TechnicalSignals(BaseModel):
 - MACD趋势：{self.macd_trend}（MACD={self.macd:.3f}, Signal={self.macd_signal:.3f}）
 - 布林带位置：{self.bb_position:.0%}（0%=下轨,100%=上轨）
 - 成交量比率：{self.volume_ratio:.1f}x
+- ATR(14): {self.atr:.2f}（价格的 {self.atr_pct:.1f}%）{atr_tag}
 - 综合量化评分：{self.composite_score:+.2f}""".strip()

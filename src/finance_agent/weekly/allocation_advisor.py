@@ -329,8 +329,13 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
     )
     raw = await _claude_json(DIAG_SYSTEM, diag_user, timeout=150)
     start, end = raw.find("{"), raw.rfind("}") + 1
-    diagnosis: dict = json.loads(raw[start:end]) if start >= 0 else {}
-    hedge_directions = diagnosis.get("hedge_directions", [])
+    try:
+        diagnosis: dict = json.loads(raw[start:end]) if start >= 0 else {}
+        hedge_directions = diagnosis.get("hedge_directions", [])
+        print(f"[AllocationAdvisor] Step 1 完成：识别到 {len(hedge_directions)} 个对冲方向")
+    except Exception as e:
+        print(f"[AllocationAdvisor] ⚠️ Step 1 JSON 解析失败: {e}，后续步骤将使用空数据")
+        diagnosis, hedge_directions = {}, []
 
     # ── Step 2: 对冲选品（Claude，需要宏观判断能力）──
     print("[AllocationAdvisor] Step 2: 对冲选品...")
@@ -343,12 +348,17 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
         macro_summary=macro_summary,
     )
     hedge_instruments: list[dict] = []
-    try:
-        raw2 = await _claude_json(HEDGE_SYSTEM, hedge_user, timeout=150, array=True)
-        start2, end2 = raw2.find("["), raw2.rfind("]") + 1
-        hedge_instruments = json.loads(raw2[start2:end2]) if start2 >= 0 else []
-    except Exception as e:
-        print(f"[AllocationAdvisor] 对冲选品解析失败: {e}")
+    if not hedge_directions:
+        print("[AllocationAdvisor] ⚠️ Step 2 跳过：Step 1 未输出对冲方向")
+    else:
+        try:
+            raw2 = await _claude_json(HEDGE_SYSTEM, hedge_user, timeout=150, array=True)
+            start2, end2 = raw2.find("["), raw2.rfind("]") + 1
+            hedge_instruments = json.loads(raw2[start2:end2]) if start2 >= 0 else []
+            n_inst = sum(len(b.get("instruments", [])) for b in hedge_instruments)
+            print(f"[AllocationAdvisor] Step 2 完成：推荐 {n_inst} 个对冲品种")
+        except Exception as e:
+            print(f"[AllocationAdvisor] ⚠️ Step 2 解析失败: {e}，对冲品种将为空")
 
     # ── Step 3: 机会筛选（技术初筛 → Claude 精选）──
     print("[AllocationAdvisor] Step 3: 市场机会筛选...")
@@ -381,8 +391,9 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
             raw3 = await _claude_json(SCREEN_SYSTEM, screen_user, timeout=150, array=True)
             start3, end3 = raw3.find("["), raw3.rfind("]") + 1
             opportunities = json.loads(raw3[start3:end3]) if start3 >= 0 else []
+            print(f"[AllocationAdvisor] Step 3 完成：精选 {len(opportunities)} 只机会标的")
         except Exception as e:
-            print(f"[AllocationAdvisor] 机会筛选解析失败: {e}")
+            print(f"[AllocationAdvisor] ⚠️ Step 3 解析失败: {e}，机会标的将为空")
 
     # ── 上周复盘统计 ──
     weekly_stats = weekly_accuracy_summary()
@@ -391,6 +402,14 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
               f"胜率={weekly_stats['win_rate']}%（{weekly_stats['correct']}/{weekly_stats['total']}）")
     else:
         print("[AllocationAdvisor] 近期复盘：暂无已回填数据")
+
+    # 完整度摘要
+    completeness = [
+        "✅ 配置诊断" if diagnosis else "❌ 配置诊断",
+        "✅ 对冲选品" if hedge_instruments else "❌ 对冲选品",
+        "✅ 机会筛选" if opportunities else "❌ 机会筛选",
+    ]
+    print(f"[AllocationAdvisor] 本次周报完整度：{' | '.join(completeness)}")
 
     result: dict[str, Any] = {
         "date": __import__("datetime").date.today().isoformat(),
