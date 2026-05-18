@@ -760,6 +760,24 @@ def _get_market_1h_drop(benchmark: str) -> float:
         return 0.0
 
 
+def _recheck_price(ticker: str, market: str) -> float | None:
+    """LLM 分析完成后、发送前快速取最新价，识别"分析期间已回升"场景。"""
+    try:
+        yf_ticker = f"{int(ticker):04d}.HK" if market == "hk" else ticker
+        df = yf.download(yf_ticker, period="1d", interval="5m",
+                         progress=False, auto_adjust=True)
+        if df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0].lower() for c in df.columns]
+        else:
+            df.columns = [c.lower() for c in df.columns]
+        close = df["close"].dropna()
+        return float(close.iloc[-1]) if len(close) > 0 else None
+    except Exception:
+        return None
+
+
 def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> dict | None:
     """
     用 yfinance 5min K 线检测过去 1 小时的价格跌幅。
@@ -786,6 +804,15 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
             return None
         drop_pct = (price_now - price_1h_ago) / price_1h_ago * 100
         if drop_pct <= -threshold_pct:
+            # 回升判断：从1小时内的低点到现在涨了多少（识别"追晚了"场景）
+            drop_window = close.iloc[idx_1h:]
+            low_price = float(drop_window.min())
+            recovery_pct = (price_now - low_price) / low_price * 100 if low_price > 0 else 0.0
+            # 15分钟趋势：3根5min K，正值=价格在回升
+            idx_15m = max(0, len(close) - 3)
+            price_15m_ago = float(close.iloc[idx_15m])
+            recovering = price_now > price_15m_ago * 1.005  # 15分钟内回升超0.5%
+
             # 用日线数据计算有意义的技术指标（ATR/BB/RSI 基于日线更稳健）
             signals = None
             try:
@@ -808,6 +835,9 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
                 "drop_pct": round(drop_pct, 2),
                 "price_now": round(price_now, 4),
                 "price_1h_ago": round(price_1h_ago, 4),
+                "low_price": round(low_price, 4),
+                "recovery_pct": round(recovery_pct, 2),
+                "recovering": recovering,
                 "signals": signals,
             }
     except Exception as e:
@@ -819,7 +849,11 @@ async def _send_price_drop_alert(ticker: str, market: str,
                                   drop_pct: float, price_now: float,
                                   price_1h_ago: float,
                                   signals=None,
-                                  analysis: dict | None = None) -> None:
+                                  analysis: dict | None = None,
+                                  low_price: float | None = None,
+                                  recovery_pct: float = 0.0,
+                                  recovering: bool = False,
+                                  price_at_detection: float | None = None) -> None:
     from finance_agent.weekly.daily_followup import TICKER_NAMES
     market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
     name = TICKER_NAMES.get(ticker, "")
@@ -834,6 +868,24 @@ async def _send_price_drop_alert(ticker: str, market: str,
             f"\nBB下轨：{signals.bb_lower:.2f}　ATR：{signals.atr:.2f}"
             f"　RSI：{signals.rsi:.0f}　2×ATR止损：{price_now - 2 * signals.atr:.2f}"
         )
+
+    # 发送时价 vs 检测时价：LLM 分析期间可能已回升
+    if price_at_detection is not None and abs(price_now - price_at_detection) > 0.01:
+        recheck_chg = (price_now - price_at_detection) / price_at_detection * 100
+        chg_str = f"{'↗' if recheck_chg > 0 else '↘'} {recheck_chg:+.1f}%"
+        price_line = (
+            f"检测价：{price_at_detection}　发送时：**{price_now}**（{chg_str}）　1小时前：{price_1h_ago}"
+        )
+        if recheck_chg > 1.5:
+            price_line = f"⚠️ 价格已回升，请以发送时价为准\n{price_line}"
+    else:
+        price_line = f"当前价：**{price_now}**　1小时前：{price_1h_ago}"
+        # 检测时已从低点回升
+        if recovering and recovery_pct >= 1.0:
+            price_line += f"\n⚠️ 低点 {low_price}，已回升 **{recovery_pct:.1f}%**"
+        elif recovery_pct >= 0.5:
+            price_line += f"\n↗ 低点 {low_price}，已回升 {recovery_pct:.1f}%"
+
     elements = [
         {
             "tag": "div",
@@ -841,7 +893,7 @@ async def _send_price_drop_alert(ticker: str, market: str,
                 "tag": "lark_md",
                 "content": (
                     f"📉 {display}　跌幅 **{abs(drop_pct):.2f}%**（1小时内）\n"
-                    f"当前价：**{price_now}**　1小时前：{price_1h_ago}"
+                    f"{price_line}"
                     f"{tech_ref}"
                 ),
             },
@@ -1074,9 +1126,16 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
         if drop_info:
             hour_key = f"price_drop:{ticker}:{datetime.now(_BJT).strftime('%Y-%m-%d %H')}"
             if hour_key not in alerted:
-                # 分析暴跌是否是买入机会
                 analysis = await _analyze_dip(**drop_info)
-                await _send_price_drop_alert(**drop_info, analysis=analysis)
+                # 发送前重取最新价，LLM 分析期间价格可能已变化
+                fresh_price = await asyncio.get_event_loop().run_in_executor(
+                    None, _recheck_price, ticker, market
+                )
+                price_at_detection = drop_info["price_now"]
+                if fresh_price is not None:
+                    drop_info = {**drop_info, "price_now": fresh_price}
+                await _send_price_drop_alert(**drop_info, analysis=analysis,
+                                             price_at_detection=price_at_detection)
                 alerted.add(hour_key)
                 _save_alerted(hour_key, today_str)
                 pushed += 1
@@ -1138,7 +1197,13 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
             if dedup_key not in alerted:
                 mkt_drop = hk_mkt_drop if market == "hk" else us_mkt_drop
                 analysis = await _analyze_dip(**drop_info, mkt_drop=mkt_drop)
-                await _send_price_drop_alert(**drop_info, analysis=analysis)
+                # 发送前重取最新价，LLM 分析期间价格可能已变化
+                fresh_price = await loop.run_in_executor(None, _recheck_price, ticker, market)
+                price_at_detection = drop_info["price_now"]
+                if fresh_price is not None:
+                    drop_info = {**drop_info, "price_now": fresh_price}
+                await _send_price_drop_alert(**drop_info, analysis=analysis,
+                                             price_at_detection=price_at_detection)
                 if analysis:
                     try:
                         save_dip_alert(
