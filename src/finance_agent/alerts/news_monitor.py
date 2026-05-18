@@ -780,8 +780,9 @@ def _recheck_price(ticker: str, market: str) -> float | None:
 
 def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> dict | None:
     """
-    用 yfinance 5min K 线检测过去 1 小时的价格跌幅。
-    跌幅 >= threshold_pct 时返回异动信息（含日线技术指标），否则返回 None。
+    用 yfinance 5min K 线检测价格异动，触发条件之一满足即报警：
+    1. 过去 1 小时跌幅 >= threshold_pct（捕捉突发急跌）
+    2. 较今日开盘跌幅 >= threshold_pct * 1.5（捕捉开盘就跌、扫描延迟场景）
     """
     try:
         yf_ticker = f"{int(ticker):04d}.HK" if market == "hk" else ticker
@@ -797,49 +798,62 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
         if len(close) < 4:
             return None
         price_now = float(close.iloc[-1])
-        # 往前取约 1 小时（12 根 5min K）
+
+        # 条件1：过去 1 小时跌幅（12 根 5min K）
         idx_1h = max(0, len(close) - 12)
         price_1h_ago = float(close.iloc[idx_1h])
-        if price_1h_ago <= 0:
+        drop_1h = (price_now - price_1h_ago) / price_1h_ago * 100 if price_1h_ago > 0 else 0.0
+
+        # 条件2：较今日开盘跌幅（第一根 K 线开盘价）
+        open_price = float(close.iloc[0])
+        drop_from_open = (price_now - open_price) / open_price * 100 if open_price > 0 else 0.0
+        open_triggered = drop_from_open <= -(threshold_pct * 1.5)
+
+        triggered_by_1h = drop_1h <= -threshold_pct
+        if not triggered_by_1h and not open_triggered:
             return None
-        drop_pct = (price_now - price_1h_ago) / price_1h_ago * 100
-        if drop_pct <= -threshold_pct:
-            # 回升判断：从1小时内的低点到现在涨了多少（识别"追晚了"场景）
-            drop_window = close.iloc[idx_1h:]
-            low_price = float(drop_window.min())
-            recovery_pct = (price_now - low_price) / low_price * 100 if low_price > 0 else 0.0
-            # 15分钟趋势：3根5min K，正值=价格在回升
-            idx_15m = max(0, len(close) - 3)
-            price_15m_ago = float(close.iloc[idx_15m])
-            recovering = price_now > price_15m_ago * 1.005  # 15分钟内回升超0.5%
 
-            # 用日线数据计算有意义的技术指标（ATR/BB/RSI 基于日线更稳健）
-            signals = None
-            try:
-                from finance_agent.signals.technical import calculate_signals
-                df_daily = yf.download(yf_ticker, period="3mo", interval="1d",
-                                       progress=False, auto_adjust=True)
-                if not df_daily.empty:
-                    if isinstance(df_daily.columns, pd.MultiIndex):
-                        df_daily.columns = [c[0].lower() for c in df_daily.columns]
-                    else:
-                        df_daily.columns = [c.lower() for c in df_daily.columns]
-                    if len(df_daily) >= 20:
-                        signals = calculate_signals(df_daily, ticker=ticker)
-            except Exception as sig_err:
-                print(f"[Alert] 技术指标计算失败 {ticker}: {sig_err}")
+        # 用更严重的那个作为报告跌幅；保留两个数据供消息展示
+        drop_pct = min(drop_1h, drop_from_open)  # 取绝对值更大的（更负的）
 
-            return {
-                "ticker": ticker,
-                "market": market,
-                "drop_pct": round(drop_pct, 2),
-                "price_now": round(price_now, 4),
-                "price_1h_ago": round(price_1h_ago, 4),
-                "low_price": round(low_price, 4),
-                "recovery_pct": round(recovery_pct, 2),
-                "recovering": recovering,
-                "signals": signals,
-            }
+        # 回升判断：从扫描窗口低点到现在涨了多少（识别"追晚了"场景）
+        scan_window = close.iloc[idx_1h:]
+        low_price = float(scan_window.min())
+        recovery_pct = (price_now - low_price) / low_price * 100 if low_price > 0 else 0.0
+        idx_15m = max(0, len(close) - 3)
+        price_15m_ago = float(close.iloc[idx_15m])
+        recovering = price_now > price_15m_ago * 1.005  # 15分钟内回升超0.5%
+
+        # 用日线数据计算有意义的技术指标（ATR/BB/RSI 基于日线更稳健）
+        signals = None
+        try:
+            from finance_agent.signals.technical import calculate_signals
+            df_daily = yf.download(yf_ticker, period="3mo", interval="1d",
+                                   progress=False, auto_adjust=True)
+            if not df_daily.empty:
+                if isinstance(df_daily.columns, pd.MultiIndex):
+                    df_daily.columns = [c[0].lower() for c in df_daily.columns]
+                else:
+                    df_daily.columns = [c.lower() for c in df_daily.columns]
+                if len(df_daily) >= 20:
+                    signals = calculate_signals(df_daily, ticker=ticker)
+        except Exception as sig_err:
+            print(f"[Alert] 技术指标计算失败 {ticker}: {sig_err}")
+
+        return {
+            "ticker": ticker,
+            "market": market,
+            "drop_pct": round(drop_pct, 2),
+            "price_now": round(price_now, 4),
+            "price_1h_ago": round(price_1h_ago, 4),
+            "open_price": round(open_price, 4),
+            "drop_from_open": round(drop_from_open, 2),
+            "open_triggered": open_triggered and not triggered_by_1h,  # 仅开盘触发时标记
+            "low_price": round(low_price, 4),
+            "recovery_pct": round(recovery_pct, 2),
+            "recovering": recovering,
+            "signals": signals,
+        }
     except Exception as e:
         print(f"[Alert] 价格异动检查失败 {ticker}: {e}")
     return None
@@ -853,7 +867,11 @@ async def _send_price_drop_alert(ticker: str, market: str,
                                   low_price: float | None = None,
                                   recovery_pct: float = 0.0,
                                   recovering: bool = False,
-                                  price_at_detection: float | None = None) -> None:
+                                  price_at_detection: float | None = None,
+                                  open_price: float | None = None,
+                                  drop_from_open: float = 0.0,
+                                  open_triggered: bool = False,
+                                  **_extra) -> None:
     from finance_agent.weekly.daily_followup import TICKER_NAMES
     market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
     name = TICKER_NAMES.get(ticker, "")
@@ -886,13 +904,22 @@ async def _send_price_drop_alert(ticker: str, market: str,
         elif recovery_pct >= 0.5:
             price_line += f"\n↗ 低点 {low_price}，已回升 {recovery_pct:.1f}%"
 
+    # 跌幅标签：开盘触发时显示"较开盘"，否则显示"1小时内"
+    if open_triggered and open_price:
+        drop_label = f"较开盘跌 **{abs(drop_from_open):.2f}%**（开盘价 {open_price}）"
+    else:
+        drop_label = f"跌幅 **{abs(drop_pct):.2f}%**（1小时内）"
+    # 如果同时触发两个条件，也附上开盘跌幅
+    if not open_triggered and open_price and abs(drop_from_open) >= abs(drop_pct) * 0.8:
+        drop_label += f"　较开盘 {drop_from_open:.2f}%"
+
     elements = [
         {
             "tag": "div",
             "text": {
                 "tag": "lark_md",
                 "content": (
-                    f"📉 {display}　跌幅 **{abs(drop_pct):.2f}%**（1小时内）\n"
+                    f"📉 {display}　{drop_label}\n"
                     f"{price_line}"
                     f"{tech_ref}"
                 ),
@@ -1152,7 +1179,7 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
 async def run_price_scan(threshold_pct: float = 3.0) -> int:
     """
     轻量价格异动扫描：只检测价格，跳过新闻，约 30 秒跑完。
-    去重粒度为 5 分钟（而非 news-scan 的 1 小时），适合高频触发。
+    去重粒度为 10 分钟（而非 news-scan 的 1 小时），适合高频触发。
     返回推送条数。
     """
     config_path = Path(__file__).parents[3] / "config" / "portfolio.yaml"
@@ -1167,8 +1194,8 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
 
     today_str = datetime.now(_BJT).strftime("%Y-%m-%d")
     alerted = _load_alerted(today_str)
-    # 5 分钟粒度去重 key（每 5 分钟最多推一次）
-    slot_5m = datetime.now(_BJT).strftime("%Y-%m-%d %H:%M")[:-1]  # 截掉个位分钟
+    # 10 分钟粒度去重 key（每 10 分钟最多推一次）
+    slot_5m = datetime.now(_BJT).strftime("%Y-%m-%d %H:") + str(datetime.now(_BJT).minute // 10)
 
     # 顺手回填历史暴跌记录（24h/7d 实际涨跌），不阻塞主流程
     try:
@@ -1193,7 +1220,7 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
             None, _check_price_drop, ticker, market, threshold_pct
         )
         if drop_info:
-            dedup_key = f"price_drop_5m:{ticker}:{slot_5m}"
+            dedup_key = f"price_drop_10m:{ticker}:{slot_5m}"
             if dedup_key not in alerted:
                 mkt_drop = hk_mkt_drop if market == "hk" else us_mkt_drop
                 analysis = await _analyze_dip(**drop_info, mkt_drop=mkt_drop)
@@ -1218,9 +1245,9 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
                 _save_alerted(dedup_key, today_str)
                 pushed += 1
             else:
-                print(f"[PriceScan] {ticker} 5分钟内已推送，跳过")
+                print(f"[PriceScan] {ticker} 10分钟内已推送，跳过")
         else:
-            print(f"[PriceScan] {ticker} 无异动（1h跌幅 < {threshold_pct}%）")
+            print(f"[PriceScan] {ticker} 无异动（1h跌幅 < {threshold_pct}%，较开盘跌幅 < {threshold_pct*1.5:.1f}%）")
 
     if pushed == 0:
         print(f"[PriceScan] 本次无价格异动")

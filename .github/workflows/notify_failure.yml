@@ -1,0 +1,68 @@
+name: Actions 失败飞书通知
+
+on:
+  workflow_run:
+    workflows:
+      - "每日持仓分析"
+      - "盘中价格异动扫描"
+      - "盘中新闻扫描"
+      - "每日配置跟进（周二到周五）"
+      - "周度配置建议（完整三步）"
+      - "Earnings Check"
+      - "月度投资回顾"
+    types: [completed]
+
+jobs:
+  notify:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 发送飞书失败通知
+        env:
+          FEISHU_WEBHOOK_URL:    ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
+        run: |
+          python3 - <<'EOF'
+          import hmac, hashlib, base64, time, json, urllib.request, os
+
+          webhook_url = os.environ["FEISHU_WEBHOOK_URL"]
+          secret      = os.environ.get("FEISHU_WEBHOOK_SECRET", "")
+          workflow    = "${{ github.event.workflow_run.name }}"
+          run_url     = "${{ github.event.workflow_run.html_url }}"
+          run_id      = "${{ github.event.workflow_run.id }}"
+
+          ts = int(time.time())
+          payload = {
+              "msg_type": "interactive",
+              "card": {
+                  "header": {
+                      "title": {"tag": "plain_text", "content": "🚨 卡门智投 Actions 失败"},
+                      "template": "red"
+                  },
+                  "elements": [
+                      {"tag": "div", "text": {"tag": "lark_md",
+                          "content": f"**工作流**：{workflow}\n**Run ID**：{run_id}"}},
+                      {"tag": "action", "actions": [
+                          {"tag": "button", "text": {"tag": "plain_text", "content": "查看日志"},
+                           "type": "primary", "url": run_url}
+                      ]}
+                  ]
+              }
+          }
+
+          if secret:
+              string_to_sign = f"{ts}\n{secret}"
+              sign = base64.b64encode(
+                  hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+              ).decode("utf-8")
+              payload["timestamp"] = str(ts)
+              payload["sign"] = sign
+
+          req = urllib.request.Request(
+              webhook_url,
+              data=json.dumps(payload).encode("utf-8"),
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(req, timeout=10) as resp:
+              print(resp.read().decode())
+          EOF
