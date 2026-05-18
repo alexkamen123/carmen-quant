@@ -100,4 +100,4 @@ watchlist: []
 account:
   usd: 1065            # 美股账户规模（USD）
   hkd: 7589            # 港股账户规模（HKD）
-  risk_per_trade_pct: 1.0   # 每笔交易最大亏损 = 账户规模 × 此值%
+  risk_per_trade_pct: 5.0   # 每笔交易最大亏损 = 账户规模 × 此值%

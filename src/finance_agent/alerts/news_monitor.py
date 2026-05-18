@@ -714,7 +714,6 @@ def _shares_hint(price_now: float, atr: float, market: str, account: dict) -> in
     """
     ATR-based position sizer：根据账户规模和 ATR 计算建议买入股数（第一批）。
     公式：shares = (account_size × risk_pct%) ÷ (2 × ATR)
-    港股取整到 100 股（最小单位），美股取整到 1 股。
     """
     if not account or atr <= 0:
         return None
@@ -725,8 +724,6 @@ def _shares_hint(price_now: float, atr: float, market: str, account: dict) -> in
     shares = int(risk_budget / stop_dist)
     if shares <= 0:
         return None
-    if market == "hk":
-        shares = max(100, (shares // 100) * 100)
     return shares
 
 
