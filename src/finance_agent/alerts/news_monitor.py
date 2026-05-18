@@ -638,7 +638,12 @@ DIP_SYSTEM = """你是一位家庭投资顾问，专门识别「长期逻辑不�
 严格按以下 JSON 格式输出（不要其他内容）：
 {
   "thesis_intact": true | false,
-  "drop_reason": "一句话判断：情绪恐慌/板块联动/还是基本面恶化",
+  "impact_chain": {
+    "direct": "直接触发因素（一句话：什么事件/情绪导致这次下跌）",
+    "spillover": "传导风险（这次下跌会不会蔓延到其他持仓？如'半导体板块联动影响NVDA/MU'，若无关联写'暂无明显传导'）",
+    "recovery": "修复条件（什么情况下会修复？如'联储暂停加息'或'Q2财报确认增速'）"
+  },
+  "drop_reason": "一句话综合判断：情绪恐慌/板块联动/还是基本面恶化",
   "opportunity": "高" | "中" | "低" | "无",
   "entry_plan": [
     {"tranche": 1, "condition": "第一批什么时候买（用具体价格锚定，如'布林下轨87.2附近'或'当前价稳住'）", "size": "轻仓，总计划仓位的30%"},
@@ -652,7 +657,7 @@ DIP_SYSTEM = """你是一位家庭投资顾问，专门识别「长期逻辑不�
 分析原则：
 - 大盘情绪/板块联动导致的下跌 + 持仓逻辑未破坏 → opportunity=高/中
 - 个股基本面利空（业绩暴雷/监管/竞争恶化）→ opportunity=低/无
-- 分批入场越往后仓位越轻，不是越买越重
+- impact_chain.spillover 要结合用户其他持仓判断传导风险（如半导体下跌影响哪些标的）
 - entry_plan 的 condition 必须包含具体价格，优先用布林下轨和ATR锚定
 - stop_loss 必须是具体价格（用 2×ATR 计算），不能只写跌幅百分比"""
 
@@ -671,6 +676,9 @@ DIP_USER = """股票：{ticker}（{market}市场）
 【近期新闻摘要】
 {news_summary}
 
+【其他持仓（判断传导风险用）】
+{other_holdings}
+
 请结合布林下轨和ATR给出有具体价格锚的分批入场建议，止损用2×ATR计算。"""
 
 
@@ -688,14 +696,57 @@ def _load_thesis(ticker: str) -> str:
         return ""
 
 
+def _load_portfolio_account() -> dict:
+    """读取 portfolio.yaml 中的 account 配置和持仓列表。"""
+    try:
+        config_path = Path(__file__).parents[3] / "config" / "portfolio.yaml"
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+        return {
+            "account": cfg.get("account", {}),
+            "holdings": cfg.get("holdings", []),
+        }
+    except Exception:
+        return {"account": {}, "holdings": []}
+
+
+def _shares_hint(price_now: float, atr: float, market: str, account: dict) -> int | None:
+    """
+    ATR-based position sizer：根据账户规模和 ATR 计算建议买入股数（第一批）。
+    公式：shares = (account_size × risk_pct%) ÷ (2 × ATR)
+    港股取整到 100 股（最小单位），美股取整到 1 股。
+    """
+    if not account or atr <= 0:
+        return None
+    size = account.get("hkd" if market == "hk" else "usd", 0)
+    risk_pct = account.get("risk_per_trade_pct", 1.0) / 100
+    risk_budget = size * risk_pct
+    stop_dist = 2 * atr
+    shares = int(risk_budget / stop_dist)
+    if shares <= 0:
+        return None
+    if market == "hk":
+        shares = max(100, (shares // 100) * 100)
+    return shares
+
+
 async def _analyze_dip(ticker: str, market: str, drop_pct: float,
                         price_now: float, price_1h_ago: float,
-                        signals=None, mkt_drop: float = 0.0) -> dict:
-    """调用 DeepSeek 分析暴跌是否是机会，返回结构化建议。"""
+                        signals=None, mkt_drop: float = 0.0, **_extra) -> dict:
+    """调用 DeepSeek 分析暴跌是否是机会，返回结构化建议（含链式影响和股数建议）。"""
     thesis = _load_thesis(ticker) or "暂无持仓逻辑记录"
     news_list = _get_fresh_news(ticker, market, hours=4)
     news_summary = "\n".join(f"- {n['title']}" for n in news_list[:5]) or "暂无近期新闻"
     market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
+
+    # 其他持仓（传导风险判断）
+    portfolio_data = _load_portfolio_account()
+    other = [
+        f"{h['ticker']}（{h.get('sector','未知板块')}）"
+        for h in portfolio_data["holdings"]
+        if h["ticker"] != ticker
+    ]
+    other_holdings = "、".join(other[:8]) if other else "暂无"
 
     if signals:
         tech_summary = (
@@ -705,8 +756,11 @@ async def _analyze_dip(ticker: str, market: str, drop_pct: float,
             f"MA20：{signals.ma20:.2f}　MA60：{signals.ma60:.2f}\n"
             f"2×ATR止损参考：{price_now - 2 * signals.atr:.2f}"
         )
+        # 计算建议股数
+        hint = _shares_hint(price_now, signals.atr, market, portfolio_data["account"])
     else:
         tech_summary = "暂无技术指标数据（建议参考近期支撑位）"
+        hint = None
 
     # 板块联动判断
     if mkt_drop <= -1.5:
@@ -728,10 +782,14 @@ async def _analyze_dip(ticker: str, market: str, drop_pct: float,
                 drop_pct=abs(drop_pct), price_1h_ago=price_1h_ago, price_now=price_now,
                 tech_summary=tech_summary, sector_note=sector_note,
                 thesis=thesis, news_summary=news_summary,
+                other_holdings=other_holdings,
             ),
         )
         start, end = raw.find("{"), raw.rfind("}") + 1
-        return json.loads(raw[start:end])
+        result = json.loads(raw[start:end])
+        if hint is not None:
+            result["shares_hint"] = hint
+        return result
     except Exception as e:
         print(f"[Alert] 暴跌机会分析失败 {ticker}: {e}")
         return {}
@@ -935,6 +993,8 @@ async def _send_price_drop_alert(ticker: str, market: str,
         one_line = analysis.get("one_line", "")
         entry_plan = analysis.get("entry_plan", [])
         stop_loss = analysis.get("stop_loss", "")
+        impact_chain = analysis.get("impact_chain", {})
+        shares_hint = analysis.get("shares_hint")
 
         # 机会判断
         elements.append({
@@ -950,6 +1010,21 @@ async def _send_price_drop_alert(ticker: str, market: str,
         })
         elements.append({"tag": "hr"})
 
+        # 链式影响分析
+        if impact_chain:
+            chain_lines = ["**🔗 影响链分析**"]
+            if impact_chain.get("direct"):
+                chain_lines.append(f"1️⃣ 直接原因：{impact_chain['direct']}")
+            if impact_chain.get("spillover"):
+                chain_lines.append(f"2️⃣ 传导风险：{impact_chain['spillover']}")
+            if impact_chain.get("recovery"):
+                chain_lines.append(f"3️⃣ 修复条件：{impact_chain['recovery']}")
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": "\n".join(chain_lines)},
+            })
+            elements.append({"tag": "hr"})
+
         # 分批入场计划（仅 opportunity != 无 才展示）
         if entry_plan and opp != "无":
             plan_lines = ["**📋 分批入场建议**"]
@@ -957,6 +1032,9 @@ async def _send_price_drop_alert(ticker: str, market: str,
                 plan_lines.append(
                     f"第 {ep.get('tranche', '?')} 批：{ep.get('condition', '')}　{ep.get('size', '')}"
                 )
+            if shares_hint:
+                currency = "股" if market != "hk" else "股（约1%风险预算）"
+                plan_lines.append(f"📐 **建议首批股数：** {shares_hint} {currency}")
             if stop_loss:
                 plan_lines.append(f"🛑 **止损：** {stop_loss}")
             elements.append({
