@@ -58,6 +58,7 @@ def _parse_decision(d: dict) -> dict:
 async def run_portfolio_manager_batch(
     stocks: list[StockAnalysis],
     macro_summary: str = "",
+    exposure_posture: str = "NEW_ENTRY_ALLOWED",
 ) -> list[StockAnalysis]:
     """
     一次 Claude CLI 调用处理所有非 ETF 股票的 PM 裁决。
@@ -118,8 +119,14 @@ async def run_portfolio_manager_batch(
             next_earnings_date=s.earnings.next_earnings_date or "未知",
         ))
 
+    POSTURE_NOTE = {
+        "NEW_ENTRY_ALLOWED": "市场机制健康，可正常评估新增仓位",
+        "REDUCE_ONLY":       "当前机制偏弱，建议以持有/减仓为主，新增需充分理由",
+        "CASH_PRIORITY":     "市场处于收缩/危机机制，建议优先保留现金，避免新增仓位",
+    }
     user_msg = PM_BATCH_USER.format(
         macro_summary=macro_summary or "暂无宏观数据",
+        exposure_note=POSTURE_NOTE.get(exposure_posture, exposure_posture),
         sector_summary=sector_str,
         n=len(needs_pm),
         stocks_block="\n\n".join(blocks),
