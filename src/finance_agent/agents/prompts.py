@@ -147,6 +147,9 @@ short_term_action 填写规则（本周内如何实际执行）：
 PM_BATCH_USER = """【今日宏观背景】
 {macro_summary}
 
+【仓位管理约束】{exposure_note}
+（此为市场机制信号，不是硬规则；若个股有极强的基本面机会，可给出"等企稳后小加"，但须在 one_line 中说明理由）
+
 【当前持仓集中度】
 {sector_summary}
 （集中度超过50%的行业需在相关股票的 key_risk 中提示集中风险）

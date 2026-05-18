@@ -1,35 +1,59 @@
 # src/finance_agent/data/macro.py
 """
-拉取宏观市场背景数据（VIX、大盘指数涨跌）。
-全部走 yfinance，无需额外 API key。
+宏观市场背景数据：VIX、大盘指数、5维度机制分类、Exposure Gate。
+
+5维度机制（参考 tradermonty macro-regime-detector 方法论）：
+  1. RSP/SPY  — 等权 vs 市值加权标普，判断涨势宽度
+  2. IWM/SPY  — 小盘 vs 大盘，风险偏好
+  3. HYG/LQD  — 高收益 vs 投资级债，信用状况
+  4. XLY/XLP  — 可选消费 vs 必选消费，进攻 vs 防御
+  5. VIX 绝对水平
+
+每个维度输出 +1（风险偏好）/ 0（中性）/ -1（风险回避），
+综合评分 → 机制标签 → Exposure Posture（是否适合新增仓位）。
 """
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import yfinance as yf
+import pandas as pd
 from .yf_utils import _YF_SEM
 
 
 @dataclass
 class MacroContext:
-    vix: float           # VIX 恐慌指数（当前值）
-    vix_level: str       # 低(<20) / 中(20-30) / 高(>30)
-    spx_chg: float       # 标普500 当日涨跌 %
-    nasdaq_chg: float    # 纳斯达克 当日涨跌 %
-    hsi_chg: float       # 恒生指数 当日涨跌 %
+    vix: float
+    vix_level: str
+    spx_chg: float
+    nasdaq_chg: float
+    hsi_chg: float
+    # 机制分类
+    regime: str = "未知"
+    regime_score: int = 0
+    exposure_posture: str = "NEW_ENTRY_ALLOWED"
+    # 10Y 国债收益率（美股宏观锚点）
+    yield_10y: float = 0.0
 
     def to_prompt_str(self) -> str:
         def fmt(v: float) -> str:
             return f"{'+' if v >= 0 else ''}{v:.2f}%"
+
+        POSTURE_CN = {
+            "NEW_ENTRY_ALLOWED": "✅ 可新增",
+            "REDUCE_ONLY":       "⚠️ 暂缓新增",
+            "CASH_PRIORITY":     "🚨 优先持现金",
+        }
+        posture_str = POSTURE_CN.get(self.exposure_posture, self.exposure_posture)
+        yield_str = f"　10Y美债：{self.yield_10y:.2f}%" if self.yield_10y > 0 else ""
+
         return (
-            f"VIX恐慌指数：{self.vix:.1f}（{self.vix_level}）｜"
-            f"标普500：{fmt(self.spx_chg)}｜"
-            f"纳斯达克：{fmt(self.nasdaq_chg)}｜"
-            f"恒生指数：{fmt(self.hsi_chg)}"
+            f"VIX：{self.vix:.1f}（{self.vix_level}）｜"
+            f"SPX：{fmt(self.spx_chg)}　NDX：{fmt(self.nasdaq_chg)}　HSI：{fmt(self.hsi_chg)}"
+            f"{yield_str}｜"
+            f"机制：{self.regime}｜仓位建议：{posture_str}"
         )
 
 
 def _day_change(ticker_symbol: str) -> float:
-    """返回当日涨跌幅 %，失败返回 0.0"""
     try:
         t = yf.Ticker(ticker_symbol)
         hist = t.history(period="2d")
@@ -50,8 +74,78 @@ def _vix_value() -> float:
         return 20.0
 
 
+def _fetch_regime_data() -> tuple[str, int, float]:
+    """
+    一次性下载 7 支 ETF + ^TNX，计算 5 维度机制评分。
+    返回 (regime_label, score, yield_10y)。
+    失败时静默返回默认值。
+    """
+    TICKERS = ["RSP", "SPY", "IWM", "HYG", "LQD", "XLY", "XLP", "^TNX"]
+    try:
+        raw = yf.download(TICKERS, period="35d", interval="1d",
+                          progress=False, auto_adjust=True)
+        if raw.empty:
+            return "未知", 0, 0.0
+
+        # 展平 MultiIndex
+        if isinstance(raw.columns, pd.MultiIndex):
+            close = raw["Close"]
+        else:
+            close = raw
+
+        def ratio_signal(a: str, b: str) -> int:
+            """当前比值相对 20 日均线，高于 +1% → +1；低于 -1% → -1；否则 0"""
+            if a not in close.columns or b not in close.columns:
+                return 0
+            ratio = (close[a] / close[b]).dropna()
+            if len(ratio) < 20:
+                return 0
+            ma20 = float(ratio.rolling(20).mean().iloc[-1])
+            cur = float(ratio.iloc[-1])
+            pct_dev = (cur - ma20) / ma20 * 100 if ma20 > 0 else 0.0
+            return 1 if pct_dev > 1.0 else (-1 if pct_dev < -1.0 else 0)
+
+        score = 0
+        score += ratio_signal("RSP", "SPY")   # 宽度信号
+        score += ratio_signal("IWM", "SPY")   # 风险偏好
+        score += ratio_signal("HYG", "LQD")   # 信用状况
+        score += ratio_signal("XLY", "XLP")   # 进攻 vs 防御
+
+        # 10Y 国债收益率（^TNX 报价单位是 %，如 4.5 = 4.5%）
+        yield_10y = 0.0
+        if "^TNX" in close.columns:
+            yield_10y = round(float(close["^TNX"].dropna().iloc[-1]), 2)
+
+        # regime 分类（含 VIX 隐式权重：高 VIX 不覆盖 score，让 posture 逻辑处理）
+        if score >= 3:
+            regime = "扩散（全面上涨）"
+        elif score >= 1:
+            regime = "集中（龙头带动）"
+        elif score == 0:
+            regime = "过渡（信号分歧）"
+        elif score >= -2:
+            regime = "收缩（防御为主）"
+        else:
+            regime = "危机（全面风险）"
+
+        return regime, score, yield_10y
+
+    except Exception as e:
+        print(f"[Macro] 机制检测失败: {e}")
+        return "未知", 0, 0.0
+
+
+def _compute_posture(regime: str, vix: float) -> str:
+    """根据机制和 VIX 决定仓位行动建议。"""
+    if "危机" in regime or ("收缩" in regime and vix > 28):
+        return "CASH_PRIORITY"
+    if "收缩" in regime or "过渡" in regime or vix > 25:
+        return "REDUCE_ONLY"
+    return "NEW_ENTRY_ALLOWED"
+
+
 async def fetch_macro_context() -> MacroContext:
-    """异步包装（在 executor 中运行 yfinance 同步调用，共享 _YF_SEM 避免 crumb 竞争）"""
+    """异步获取完整宏观背景（大盘涨跌 + VIX + 5维度机制）。"""
     loop = asyncio.get_event_loop()
 
     async def _sem_vix():
@@ -62,19 +156,28 @@ async def fetch_macro_context() -> MacroContext:
         async with _YF_SEM:
             return await loop.run_in_executor(None, _day_change, sym)
 
-    vix, spx_chg, nasdaq_chg, hsi_chg = await asyncio.gather(
+    async def _sem_regime():
+        async with _YF_SEM:
+            return await loop.run_in_executor(None, _fetch_regime_data)
+
+    vix, spx_chg, nasdaq_chg, hsi_chg, regime_tuple = await asyncio.gather(
         _sem_vix(),
         _sem_chg("^GSPC"),
         _sem_chg("^IXIC"),
         _sem_chg("^HSI"),
+        _sem_regime(),
     )
 
+    regime, regime_score, yield_10y = regime_tuple
+
     if vix < 20:
-        level = "低（市场平静）"
+        level = "低（平静）"
     elif vix < 30:
-        level = "中（波动偏高）"
+        level = "中（偏高）"
     else:
-        level = "高（市场恐慌）"
+        level = "高（恐慌）"
+
+    posture = _compute_posture(regime, vix)
 
     return MacroContext(
         vix=vix,
@@ -82,4 +185,8 @@ async def fetch_macro_context() -> MacroContext:
         spx_chg=spx_chg,
         nasdaq_chg=nasdaq_chg,
         hsi_chg=hsi_chg,
+        regime=regime,
+        regime_score=regime_score,
+        exposure_posture=posture,
+        yield_10y=yield_10y,
     )
