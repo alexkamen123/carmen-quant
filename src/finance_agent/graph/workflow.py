@@ -91,6 +91,7 @@ async def fetch_data_node(state: AgentState) -> AgentState:
         "stocks": stocks,
         "date": datetime.today().strftime("%Y-%m-%d"),
         "macro_summary": macro.to_prompt_str(),
+        "exposure_posture": macro.exposure_posture,
     })
 
 
@@ -199,7 +200,9 @@ async def debate_node(state: AgentState) -> AgentState:
 async def decision_node(state: AgentState) -> AgentState:
     """Portfolio Manager 批量裁决：1 次 Claude 调用处理所有股票"""
     updated_stocks = await run_portfolio_manager_batch(
-        state.stocks, macro_summary=state.macro_summary
+        state.stocks,
+        macro_summary=state.macro_summary,
+        exposure_posture=state.exposure_posture,
     )
     return state.model_copy(update={"stocks": updated_stocks})
 

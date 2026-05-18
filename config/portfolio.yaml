@@ -94,3 +94,10 @@ holdings:
     notes: "2026-05-18 买入，无明确thesis，追涨买入；止损$100，止盈$125，Q2财报前评估是否继续持有"
 
 watchlist: []
+
+# ── 账户规模配置（供 Position Sizer 计算建议股数）──────────────────────────
+# 填写实际可交易资金规模；risk_per_trade_pct = 单笔操作可接受的最大亏损占比
+account:
+  usd: 30000           # 美股账户规模（USD）
+  hkd: 200000          # 港股账户规模（HKD）
+  risk_per_trade_pct: 1.0   # 每笔交易最大亏损 = 账户规模 × 此值%
