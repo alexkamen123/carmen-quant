@@ -1,6 +1,6 @@
 # src/finance_agent/data/macro.py
 """
-宏观市场背景数据：VIX、大盘指数、5维度机制分类、Exposure Gate。
+宏观市场背景数据：VIX、大盘指数、5维度机制分类、Exposure Gate、O'Neil 出货日计数。
 
 5维度机制（参考 tradermonty macro-regime-detector 方法论）：
   1. RSP/SPY  — 等权 vs 市值加权标普，判断涨势宽度
@@ -11,6 +11,11 @@
 
 每个维度输出 +1（风险偏好）/ 0（中性）/ -1（风险回避），
 综合评分 → 机制标签 → Exposure Posture（是否适合新增仓位）。
+
+O'Neil 出货日（Distribution Day）：
+  - 收盘跌幅 ≥ 0.2% 且成交量 > 前一日 → 计为 1 个出货日
+  - 统计最近 25 个交易日内 SPY / QQQ 各自的出货日数量
+  - ≥5 个出货日 → 机构分批撤退信号，exposure_posture 至少升为 REDUCE_ONLY
 """
 import asyncio
 from dataclasses import dataclass, field
@@ -32,6 +37,10 @@ class MacroContext:
     exposure_posture: str = "NEW_ENTRY_ALLOWED"
     # 10Y 国债收益率（美股宏观锚点）
     yield_10y: float = 0.0
+    # O'Neil 出货日计数（25日窗口）
+    dist_days_spy: int = 0
+    dist_days_qqq: int = 0
+    market_top_signal: str = "正常"
 
     def to_prompt_str(self) -> str:
         def fmt(v: float) -> str:
@@ -44,12 +53,16 @@ class MacroContext:
         }
         posture_str = POSTURE_CN.get(self.exposure_posture, self.exposure_posture)
         yield_str = f"　10Y美债：{self.yield_10y:.2f}%" if self.yield_10y > 0 else ""
+        dist_str = (
+            f"　出货日 SPY:{self.dist_days_spy}/QQQ:{self.dist_days_qqq}（25日）→ {self.market_top_signal}"
+        )
 
         return (
             f"VIX：{self.vix:.1f}（{self.vix_level}）｜"
             f"SPX：{fmt(self.spx_chg)}　NDX：{fmt(self.nasdaq_chg)}　HSI：{fmt(self.hsi_chg)}"
             f"{yield_str}｜"
-            f"机制：{self.regime}｜仓位建议：{posture_str}"
+            f"机制：{self.regime}｜仓位建议：{posture_str}｜"
+            f"{dist_str}"
         )
 
 
@@ -135,17 +148,69 @@ def _fetch_regime_data() -> tuple[str, int, float]:
         return "未知", 0, 0.0
 
 
-def _compute_posture(regime: str, vix: float) -> str:
-    """根据机制和 VIX 决定仓位行动建议。"""
+def _fetch_distribution_days() -> tuple[int, int, str]:
+    """
+    O'Neil 出货日计数：统计 SPY / QQQ 最近 25 个交易日内的出货日数量。
+    出货日 = 收盘跌幅 ≥0.2% 且 成交量 > 前一日成交量。
+    返回 (spy_count, qqq_count, signal_label)。
+    """
+    try:
+        raw = yf.download(["SPY", "QQQ"], period="65d", interval="1d",
+                          progress=False, auto_adjust=True)
+        if raw.empty or not isinstance(raw.columns, pd.MultiIndex):
+            return 0, 0, "数据不足"
+
+        close = raw["Close"]
+        volume = raw["Volume"]
+
+        def count_dist(ticker: str) -> int:
+            if ticker not in close.columns or ticker not in volume.columns:
+                return 0
+            c = close[ticker].dropna()
+            v = volume[ticker].dropna()
+            idx = c.index.intersection(v.index)
+            c, v = c[idx], v[idx]
+            if len(c) < 26:
+                return 0
+            # 最近 25 个交易日（对比各自的前一日）
+            chg = c.pct_change() * 100          # 每日涨跌幅 %
+            vol_up = v > v.shift(1)             # 成交量放大
+            dist = (chg <= -0.2) & vol_up
+            return int(dist.iloc[-25:].sum())
+
+        spy_n = count_dist("SPY")
+        qqq_n = count_dist("QQQ")
+        worst = max(spy_n, qqq_n)
+
+        if worst >= 7:
+            label = "🚨 危险（顶部确认）"
+        elif worst >= 5:
+            label = "⚠️ 警告（机构撤退）"
+        elif worst >= 4:
+            label = "📌 注意（轻微出货）"
+        else:
+            label = "✅ 正常"
+
+        return spy_n, qqq_n, label
+
+    except Exception as e:
+        print(f"[Macro] 出货日计数失败: {e}")
+        return 0, 0, "计算失败"
+
+
+def _compute_posture(regime: str, vix: float, dist_days: int = 0) -> str:
+    """根据机制、VIX、出货日计数决定仓位行动建议。"""
     if "危机" in regime or ("收缩" in regime and vix > 28):
         return "CASH_PRIORITY"
     if "收缩" in regime or "过渡" in regime or vix > 25:
+        return "REDUCE_ONLY"
+    if dist_days >= 5:
         return "REDUCE_ONLY"
     return "NEW_ENTRY_ALLOWED"
 
 
 async def fetch_macro_context() -> MacroContext:
-    """异步获取完整宏观背景（大盘涨跌 + VIX + 5维度机制）。"""
+    """异步获取完整宏观背景（大盘涨跌 + VIX + 5维度机制 + O'Neil 出货日）。"""
     loop = asyncio.get_event_loop()
 
     async def _sem_vix():
@@ -160,15 +225,21 @@ async def fetch_macro_context() -> MacroContext:
         async with _YF_SEM:
             return await loop.run_in_executor(None, _fetch_regime_data)
 
-    vix, spx_chg, nasdaq_chg, hsi_chg, regime_tuple = await asyncio.gather(
+    async def _sem_dist():
+        async with _YF_SEM:
+            return await loop.run_in_executor(None, _fetch_distribution_days)
+
+    vix, spx_chg, nasdaq_chg, hsi_chg, regime_tuple, dist_tuple = await asyncio.gather(
         _sem_vix(),
         _sem_chg("^GSPC"),
         _sem_chg("^IXIC"),
         _sem_chg("^HSI"),
         _sem_regime(),
+        _sem_dist(),
     )
 
     regime, regime_score, yield_10y = regime_tuple
+    dist_spy, dist_qqq, top_signal = dist_tuple
 
     if vix < 20:
         level = "低（平静）"
@@ -177,7 +248,7 @@ async def fetch_macro_context() -> MacroContext:
     else:
         level = "高（恐慌）"
 
-    posture = _compute_posture(regime, vix)
+    posture = _compute_posture(regime, vix, dist_days=max(dist_spy, dist_qqq))
 
     return MacroContext(
         vix=vix,
@@ -189,4 +260,7 @@ async def fetch_macro_context() -> MacroContext:
         regime_score=regime_score,
         exposure_posture=posture,
         yield_10y=yield_10y,
+        dist_days_spy=dist_spy,
+        dist_days_qqq=dist_qqq,
+        market_top_signal=top_signal,
     )
