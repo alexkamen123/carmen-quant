@@ -72,17 +72,25 @@ holdings:
 
   - ticker: "00700"
     market: hk
-    shares: 3
-    cost_basis: 541.50
+    shares: 5
+    cost_basis: 510.10
     sector: 互联网/AI
     peers: ["09988", "09618", "01810"]   # BABA, JD, 小米
-    notes: "腾讯控股"
+    notes: "腾讯控股；原3股@541.50，2026-05-18 加仓2股@463.00，均价510.10"
 
   - ticker: "07709"
     market: hk
-    shares: 300
+    shares: 30
     cost_basis: 91.06
     sector: 半导体/AI算力
-    notes: "南方东英SK海力士ETF；2026-05-15 分三批买入@95.22/91.44/86.52，均价91.06"
+    notes: "南方东英SK海力士ETF；2026-05-15 分三批买入@95.22/91.44/86.52，均价91.06（30股）"
+
+  - ticker: INTC
+    market: us
+    shares: 1
+    cost_basis: 120.00
+    sector: 半导体
+    signal_weight: low
+    notes: "2026-05-18 买入，无明确thesis，追涨买入；止损$100，止盈$125，Q2财报前评估是否继续持有"
 
 watchlist: []
