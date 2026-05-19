@@ -833,12 +833,30 @@ def _recheck_price(ticker: str, market: str) -> float | None:
         return None
 
 
+def _is_market_open(market: str) -> bool:
+    """
+    粗略判断对应市场是否处于交易时段（UTC 时间）。
+    只用整点小时判断，误差在 30 分钟以内，足以防止收盘后扫描过期数据。
+      美股：UTC 13:00-21:00（含盘前/盘后，收盘 20:00）
+      港股：UTC 01:00-09:00（开盘 01:30，收盘 08:00）
+    """
+    utc_hour = datetime.now(timezone.utc).hour
+    if market == "us":
+        return 13 <= utc_hour <= 20
+    elif market == "hk":
+        return 1 <= utc_hour <= 8
+    return True  # 其他市场不做限制
+
+
 def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> dict | None:
     """
     用 yfinance 5min K 线检测价格异动，触发条件之一满足即报警：
     1. 过去 1 小时跌幅 >= threshold_pct（捕捉突发急跌）
     2. 较今日开盘跌幅 >= threshold_pct * 1.5（捕捉开盘就跌、扫描延迟场景）
+    市场收盘后直接跳过，避免用过期收盘数据误报。
     """
+    if not _is_market_open(market):
+        return None
     try:
         yf_ticker = f"{int(ticker):04d}.HK" if market == "hk" else ticker
         df_5m = yf.download(yf_ticker, period="1d", interval="5m",
@@ -1291,6 +1309,9 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
     for item in price_watch:
         ticker = item["ticker"]
         market = item.get("market", "us")
+        if not _is_market_open(market):
+            print(f"[PriceScan] {ticker} 跳过（{market} 市场已收盘）")
+            continue
         drop_info = await loop.run_in_executor(
             None, _check_price_drop, ticker, market, threshold_pct
         )
