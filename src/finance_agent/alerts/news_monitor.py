@@ -1097,9 +1097,11 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
     with open(config_path) as f:
         portfolio = yaml.safe_load(f)
 
-    holdings = portfolio.get("holdings", []) + portfolio.get("watchlist", [])
-    etf_skip = {"QQQM", "VOO", "SCHD", "DRAM"}
-    holdings = [h for h in holdings if h["ticker"] not in etf_skip]
+    _etf_sectors = {"宽基ETF", "股息ETF"}
+    holdings = [
+        h for h in portfolio.get("holdings", []) + portfolio.get("watchlist", [])
+        if h.get("sector", "") not in _etf_sectors and not h.get("is_dca", False)
+    ]
 
     # 构建扫描队列：(scan_ticker, scan_market, holding_ticker, is_peer)
     scan_queue: list[tuple[str, str, str, bool]] = []
