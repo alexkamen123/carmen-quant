@@ -297,17 +297,19 @@ async def format_report_node(state: AgentState) -> AgentState:
             if fv and "宽基" not in fv and "暂无" not in fv:
                 fv_short = fv.split("。")[0].split("\n")[0][:60]
                 debate_lines.append(f"📈 {fv_short}")
-            # 多空：各取第一条论点，合并一行
+            # 多空：各取第一条论点，分两行展示
             def _first_point(text: str) -> str:
-                """提取第一条编号论点或第一句，截到 30 字"""
+                """提取第一条编号论点或第一句，截到 60 字"""
                 import re
                 m = re.search(r"(?:^|\n)\s*[1１]\s*[\.．、:：]?\s*(.+)", text)
                 s_ = m.group(1).strip() if m else text.split("\n")[0]
-                return s_[:30]
+                return s_[:60]
             bull_short = _first_point(s.bull_thesis)
             bear_short = _first_point(s.bear_thesis or "")
-            if bull_short or bear_short:
-                debate_lines.append(f"🐂 {bull_short}　｜　🐻 {bear_short}")
+            if bull_short:
+                debate_lines.append(f"🐂 {bull_short}")
+            if bear_short:
+                debate_lines.append(f"🐻 {bear_short}")
             if debate_lines:
                 elements.append({
                     "tag": "div",
