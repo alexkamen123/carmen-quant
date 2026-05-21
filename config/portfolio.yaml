@@ -48,11 +48,11 @@ holdings:
 
   - ticker: DRAM
     market: us
-    shares: 1
-    cost_basis: 46.43
+    shares: 3
+    cost_basis: 48.12
     sector: 半导体/AI算力
     peers: ["MU", "NVDA"]
-    notes: "Roundhill内存芯片ETF"
+    notes: "Roundhill内存芯片ETF；原1股@46.43，2026-05-18 加仓2股@48.96，均价48.12"
 
   - ticker: MU
     market: us
@@ -80,18 +80,11 @@ holdings:
 
   - ticker: "07709"
     market: hk
-    shares: 30
+    shares: 10
     cost_basis: 91.06
     sector: 半导体/AI算力
-    notes: "南方东英SK海力士ETF；2026-05-15 分三批买入@95.22/91.44/86.52，均价91.06（30股）"
+    notes: "南方东英SK海力士ETF；2026-05-15 买入30股@91.06均价；2026-05-21 减仓20股@94.52均价（10@93.42/5@96.84/5@94.40），剩余10股"
 
-  - ticker: INTC
-    market: us
-    shares: 1
-    cost_basis: 120.00
-    sector: 半导体
-    signal_weight: low
-    notes: "2026-05-18 买入，无明确thesis，追涨买入；止损$100，止盈$125，Q2财报前评估是否继续持有"
 
 watchlist: []
 
