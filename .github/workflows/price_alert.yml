@@ -29,6 +29,7 @@ jobs:
   price-scan:
     runs-on: ubuntu-latest
     permissions:
+      actions: read    # dawidd6/action-download-artifact 需要
       contents: read
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +43,26 @@ jobs:
       - name: 安装依赖
         run: pip install -e .
 
+      # ── 恢复价格异动去重数据库 ──────────────────────────────────────
+      - name: 恢复历史数据库
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: price_alert.yml
+          name_is_regexp: true
+          name: "price-db-.*"
+          path: data/
+          if_no_artifact_found: ignore
+          search_artifacts: true
+
+      - name: 整理数据库路径
+        run: |
+          mkdir -p data
+          found=$(find data -name "agent.db" | head -1)
+          if [ -n "$found" ] && [ "$found" != "data/agent.db" ]; then
+            mv "$found" data/agent.db
+          fi
+
       - name: 扫描价格异动
         env:
           DEEPSEEK_API_KEY:      ${{ secrets.DEEPSEEK_API_KEY }}
@@ -50,3 +71,12 @@ jobs:
         run: |
           THRESHOLD=${{ github.event.inputs.threshold || '3.0' }}
           finance-agent price-scan --threshold $THRESHOLD
+
+      # ── 保存更新后的数据库 ──────────────────────────────────────────
+      - name: 上传去重数据库
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: price-db-${{ github.run_number }}
+          path: data/agent.db
+          retention-days: 3

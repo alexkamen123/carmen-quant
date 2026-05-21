@@ -27,6 +27,7 @@ jobs:
   news-scan:
     runs-on: ubuntu-latest
     permissions:
+      actions: read    # dawidd6/action-download-artifact 列举历史 artifact 需要
       contents: read
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +41,31 @@ jobs:
       - name: 安装依赖
         run: pip install -e .
 
+      # ── 恢复新闻去重数据库（防止同一条新闻重复推送）──────────────────
+      - name: 恢复历史数据库
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: news_alert.yml
+          name_is_regexp: true
+          name: "news-db-.*"
+          path: data/
+          if_no_artifact_found: ignore
+          search_artifacts: true
+
+      - name: 整理数据库路径
+        run: |
+          mkdir -p data
+          found=$(find data -name "agent.db" | head -1)
+          if [ -n "$found" ] && [ "$found" != "data/agent.db" ]; then
+            mv "$found" data/agent.db
+            echo "已恢复历史数据库：$found"
+          elif [ -f "data/agent.db" ]; then
+            echo "历史数据库已就位"
+          else
+            echo "无历史数据库，本次为首次运行"
+          fi
+
       - name: 扫描持仓新闻
         env:
           DEEPSEEK_API_KEY:      ${{ secrets.DEEPSEEK_API_KEY }}
@@ -48,3 +74,12 @@ jobs:
         run: |
           THRESHOLD=${{ github.event.inputs.threshold || '7' }}
           finance-agent news-scan --threshold $THRESHOLD
+
+      # ── 保存更新后的数据库（去重记录持久化）──────────────────────────
+      - name: 上传去重数据库
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: news-db-${{ github.run_number }}
+          path: data/agent.db
+          retention-days: 7
