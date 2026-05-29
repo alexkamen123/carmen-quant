@@ -729,7 +729,8 @@ def _shares_hint(price_now: float, atr: float, market: str, account: dict) -> in
 
 async def _analyze_dip(ticker: str, market: str, drop_pct: float,
                         price_now: float, price_1h_ago: float,
-                        signals=None, mkt_drop: float = 0.0, **_extra) -> dict:
+                        signals=None, mkt_drop: float = 0.0,
+                        gap_up_pct: float = 0.0, **_extra) -> dict:
     """调用 DeepSeek 分析暴跌是否是机会，返回结构化建议（含链式影响和股数建议）。"""
     thesis = _load_thesis(ticker) or "暂无持仓逻辑记录"
     news_list = _get_fresh_news(ticker, market, hours=4)
@@ -746,8 +747,17 @@ async def _analyze_dip(ticker: str, market: str, drop_pct: float,
     other_holdings = "、".join(other[:8]) if other else "暂无"
 
     if signals:
+        # BB 下轨合理性检查：若低于当前价 50% 以上，说明历史数据跨度导致失真，用 MA20 替代
+        bb_lower_valid = signals.bb_lower >= price_now * 0.5
+        if bb_lower_valid:
+            bb_anchor = f"布林下轨：{signals.bb_lower:.2f}（可作为入场锚）"
+        else:
+            bb_anchor = (
+                f"布林下轨：{signals.bb_lower:.2f}（⚠️ 历史数据跨度大导致失真，不建议用作入场锚）\n"
+                f"建议用 MA20 {signals.ma20:.2f} 作为近期支撑参考"
+            )
         tech_summary = (
-            f"布林下轨：{signals.bb_lower:.2f}　布林上轨：{signals.bb_upper:.2f}\n"
+            f"{bb_anchor}\n"
             f"ATR(14)：{signals.atr:.2f}（占价格 {signals.atr_pct:.1f}%）\n"
             f"RSI(14)：{signals.rsi:.1f}（{signals.rsi_signal}）\n"
             f"MA20：{signals.ma20:.2f}　MA60：{signals.ma60:.2f}\n"
@@ -758,6 +768,17 @@ async def _analyze_dip(ticker: str, market: str, drop_pct: float,
     else:
         tech_summary = "暂无技术指标数据（建议参考近期支撑位）"
         hint = None
+
+    # 当天跳空背景注释（传给 LLM，让其判断"回调是否只是正常散热"）
+    gap_context = ""
+    if gap_up_pct >= 10:
+        gap_context = (
+            f"\n⚠️ 注意：该股今天开盘相对前收已跳空上涨 **{gap_up_pct:.1f}%**，"
+            f"当前回调 {abs(drop_pct):.1f}% 可能只是超买散热而非真正的暴跌机会，"
+            f"请在判断 opportunity 时保持审慎，不要仅凭1小时跌幅就给高评级。"
+        )
+    elif gap_up_pct >= 5:
+        gap_context = f"\n提示：今日已跳空上涨 {gap_up_pct:.1f}%，当前回调需结合全日涨幅评估。"
 
     # 板块联动判断
     if mkt_drop <= -1.5:
@@ -770,6 +791,7 @@ async def _analyze_dip(ticker: str, market: str, drop_pct: float,
         sector_note = f"大盘同期上涨 {mkt_drop:.2f}%，此下跌为明显个股利空，需格外审慎"
     else:
         sector_note = f"大盘同期变动 {mkt_drop:+.2f}%，下跌主要为个股驱动"
+    sector_note += gap_context
 
     try:
         raw = await deepseek_chat(
@@ -853,6 +875,7 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
     用 yfinance 5min K 线检测价格异动，触发条件之一满足即报警：
     1. 过去 1 小时跌幅 >= threshold_pct（捕捉突发急跌）
     2. 较今日开盘跌幅 >= threshold_pct * 1.5（捕捉开盘就跌、扫描延迟场景）
+    当天跳空大涨（vs 前收 > 10%）时，阈值自动抬升，避免正常散热被误报为暴跌机会。
     市场收盘后直接跳过，避免用过期收盘数据误报。
     """
     if not _is_market_open(market):
@@ -882,7 +905,29 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
         drop_from_open = (price_now - open_price) / open_price * 100 if open_price > 0 else 0.0
         open_triggered = drop_from_open <= -(threshold_pct * 1.5)
 
-        triggered_by_1h = drop_1h <= -threshold_pct
+        # 当天跳空幅度：对比前一日收盘（用 2d 日线取昨收）
+        gap_up_pct = 0.0
+        try:
+            df_2d = yf.download(yf_ticker, period="2d", interval="1d",
+                                 progress=False, auto_adjust=True)
+            if not df_2d.empty and len(df_2d) >= 2:
+                if isinstance(df_2d.columns, pd.MultiIndex):
+                    df_2d.columns = [c[0].lower() for c in df_2d.columns]
+                else:
+                    df_2d.columns = [c.lower() for c in df_2d.columns]
+                prev_close = float(df_2d["close"].iloc[-2])
+                if prev_close > 0:
+                    gap_up_pct = (open_price - prev_close) / prev_close * 100
+        except Exception:
+            pass
+
+        # 当天大涨时动态抬升触发阈值：涨 10% → 需回调 6%，涨 20% → 需回调 9%
+        # 防止暴涨后正常散热（3-5%）被误报为买入机会
+        effective_threshold = threshold_pct
+        if gap_up_pct > 10:
+            effective_threshold = threshold_pct * (1 + gap_up_pct / 20)
+
+        triggered_by_1h = drop_1h <= -effective_threshold
         if not triggered_by_1h and not open_triggered:
             return None
 
@@ -925,6 +970,7 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
             "low_price": round(low_price, 4),
             "recovery_pct": round(recovery_pct, 2),
             "recovering": recovering,
+            "gap_up_pct": round(gap_up_pct, 2),
             "signals": signals,
         }
     except Exception as e:
@@ -955,8 +1001,13 @@ async def _send_price_drop_alert(ticker: str, market: str,
 
     tech_ref = ""
     if signals:
+        bb_lower_valid = signals.bb_lower >= price_now * 0.5
+        bb_ref = (
+            f"BB下轨：{signals.bb_lower:.2f}" if bb_lower_valid
+            else f"MA20：{signals.ma20:.2f}（BB下轨失真，用MA20替代）"
+        )
         tech_ref = (
-            f"\nBB下轨：{signals.bb_lower:.2f}　ATR：{signals.atr:.2f}"
+            f"\n{bb_ref}　ATR：{signals.atr:.2f}"
             f"　RSI：{signals.rsi:.0f}　2×ATR止损：{price_now - 2 * signals.atr:.2f}"
         )
 
