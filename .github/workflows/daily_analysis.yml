@@ -46,7 +46,7 @@ jobs:
       - name: 整理数据库路径
         run: |
           mkdir -p data
-          found=$(find data -name "agent.db" | head -1)
+          found=$(find data -name "agent.db" | xargs ls -t 2>/dev/null | head -1)
           if [ -n "$found" ] && [ "$found" != "data/agent.db" ]; then
             mv "$found" data/agent.db
             echo "已恢复历史数据库：$found"
