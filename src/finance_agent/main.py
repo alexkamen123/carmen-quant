@@ -331,6 +331,49 @@ async def _feedback_stats():
         console.print(f"\n  {summary}")
 
 
+@app.command("kg-init")
+def kg_init(
+    dry_run: bool = typer.Option(False, "--dry-run", help="只打印三元组，不写入 mempal"),
+):
+    """从 portfolio.yaml 的 peers 字段初始化供应链/竞争关系知识图谱"""
+    import yaml
+    from pathlib import Path
+    import subprocess
+
+    config_path = Path("config/portfolio.yaml")
+    with open(config_path) as f:
+        portfolio = yaml.safe_load(f)
+
+    triples: list[tuple[str, str, str]] = []
+    for h in portfolio.get("holdings", []):
+        ticker = h["ticker"]
+        for peer in h.get("peers", []):
+            triples.append((ticker, "competes_with", peer))
+            triples.append((peer, "competes_with", ticker))
+
+    # 去重
+    triples = list(dict.fromkeys(triples))
+
+    console.print(f"[bold]共 {len(triples)} 条三元组待写入[/bold]")
+    ok, fail = 0, 0
+    for subj, pred, obj in triples:
+        if dry_run:
+            console.print(f"  [dim]{subj} --{pred}--> {obj}[/dim]")
+            continue
+        result = subprocess.run(
+            ["mempal", "kg", "add", subj, pred, obj],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            ok += 1
+        else:
+            console.print(f"  [red]❌ {subj} --{pred}--> {obj}：{result.stderr.strip()}[/red]")
+            fail += 1
+
+    if not dry_run:
+        console.print(f"✅ 写入 {ok} 条，失败 {fail} 条")
+
+
 @app.command("dip-stats")
 def dip_stats(
     days: int = typer.Option(30, "--days", "-d", help="最近 N 天"),

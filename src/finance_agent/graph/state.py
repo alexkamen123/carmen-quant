@@ -42,6 +42,9 @@ class StockAnalysis(BaseModel):
     thesis: str = ""             # 原始持仓理由（Claude 生成，持久化在 theses 表）
     thesis_stale: bool = False   # True = 超过 30 天未更新，已触发自动重生成
 
+    # 历史决策记忆（mempal 查询结果，注入 PM prompt）
+    memory_context: str = ""
+
     # Technical debate (DeepSeek)
     bull_thesis: str = ""
     bear_thesis: str = ""
