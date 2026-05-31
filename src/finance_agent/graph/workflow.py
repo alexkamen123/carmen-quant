@@ -197,6 +197,23 @@ async def debate_node(state: AgentState) -> AgentState:
     return state.model_copy(update={"stocks": [result_map[s.ticker] for s in state.stocks]})
 
 
+async def memory_node(state: AgentState) -> AgentState:
+    """从 mempal 拉取各股历史决策，注入 memory_context 供 PM 参考"""
+    from finance_agent.memory.mempal_client import search_history, _mempal_available
+    if not _mempal_available():
+        return state
+    updated = []
+    for s in state.stocks:
+        if s.is_etf:
+            updated.append(s)
+            continue
+        ctx = search_history(s.ticker)
+        updated.append(s.model_copy(update={"memory_context": ctx}) if ctx else s)
+        if ctx:
+            print(f"[Memory] {s.ticker} 历史决策上下文已加载（{len(ctx)} 字符）")
+    return state.model_copy(update={"stocks": updated})
+
+
 async def decision_node(state: AgentState) -> AgentState:
     """Portfolio Manager 批量裁决：1 次 Claude 调用处理所有股票"""
     updated_stocks = await run_portfolio_manager_batch(
@@ -408,6 +425,7 @@ def build_graph(checkpointer=None):
     builder.add_node("thesis",       thesis_node)
     builder.add_node("fundamentals", fundamentals_node)
     builder.add_node("debate",       debate_node)
+    builder.add_node("memory",       memory_node)
     builder.add_node("decision",     decision_node)
     builder.add_node("format",       format_report_node)
     builder.add_node("track",        track_node)
@@ -416,7 +434,8 @@ def build_graph(checkpointer=None):
     builder.add_edge("fetch_data",   "thesis")
     builder.add_edge("thesis",       "fundamentals")
     builder.add_edge("fundamentals", "debate")
-    builder.add_edge("debate",       "decision")
+    builder.add_edge("debate",       "memory")
+    builder.add_edge("memory",       "decision")
     builder.add_edge("decision",     "format")
     builder.add_edge("format",       "track")
     builder.add_edge("track",         END)

@@ -129,7 +129,7 @@ def search_history(ticker: str, query: str = "") -> str:
 
     q = query or f"{ticker} 决策 recommendation"
     result = subprocess.run(
-        ["mempal", "search", q, "--limit", "3"],
+        ["mempal", "search", q, "--wing", "finance-agent", "--top-k", "3"],
         capture_output=True, text=True, timeout=10,
     )
     return result.stdout.strip() if result.returncode == 0 else ""
