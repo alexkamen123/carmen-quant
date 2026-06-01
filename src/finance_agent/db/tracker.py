@@ -98,6 +98,8 @@ def init_db(db_path: str | Path | None = None) -> None:
     p = _resolve_db(db_path)
     with _conn(p) as con:
         con.executescript(_CREATE_SQL)
+        con.executescript(_CREATE_ACTIONS_SQL)
+        _migrate_actions_table(con)
 
 
 # ── 写入当日推荐 ──────────────────────────────────────────────
