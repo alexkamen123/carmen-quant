@@ -511,11 +511,67 @@ async def _send_stock_alert(ticker: str, market: str, title: str, published: str
     print(f"[Alert] 已推送 {ticker} 快讯{conflict_tag}：{title[:40]}... (影响度={impact}, {sentiment})")
 
 
+# 宏观新闻「涉及板块」→ 持仓 sector 关键词 的同义词映射（用于关联持仓指引）
+_MACRO_SECTOR_SYNONYMS = {
+    "半导体": ["半导体"], "芯片": ["半导体"], "算力": ["半导体"], "内存": ["半导体"], "存储": ["半导体"],
+    "科技": ["互联网", "半导体", "宽基"], "互联网": ["互联网"], "软件": ["互联网"], "云计算": ["互联网"],
+    "人工智能": ["互联网", "半导体"], "ai": ["互联网", "半导体"],
+    "金融": ["金融"], "券商": ["金融"], "银行": ["金融"], "保险": ["金融"],
+    "量子": ["量子"],
+    "大盘": ["宽基"], "标普": ["宽基"], "纳斯达克": ["宽基"], "纳指": ["宽基"], "美股大盘": ["宽基"],
+    "全市场": ["宽基", "股息"], "股息": ["股息"], "红利": ["股息"], "高股息": ["股息"],
+}
+
+
+def _related_holdings(affected_sectors: list, max_n: int = 8) -> list:
+    """根据宏观新闻涉及板块，匹配用户持仓中相关标的，返回 ticker 列表（用于「关联持仓」指引）。"""
+    if not affected_sectors:
+        return []
+    try:
+        config_path = Path(__file__).parents[3] / "config" / "portfolio.yaml"
+        with open(config_path) as f:
+            portfolio = yaml.safe_load(f)
+    except Exception:
+        return []
+
+    sec_text = "、".join(affected_sectors).lower()
+    matched: list = []
+    seen: set = set()
+    for h in portfolio.get("holdings", []):
+        ticker = h.get("ticker", "")
+        h_sector = h.get("sector", "")
+        if not ticker or ticker in seen:
+            continue
+        for kw, targets in _MACRO_SECTOR_SYNONYMS.items():
+            if kw in sec_text and any(t in h_sector for t in targets):
+                matched.append(ticker)
+                seen.add(ticker)
+                break
+        if len(matched) >= max_n:
+            break
+    return matched
+
+
+def _macro_global_key(published: str, sentiment: str) -> str:
+    """跨源宏观去重 key：同一 30 分钟窗口 + 同情绪 视为同一事件。
+    港股（东财中文）与美股（CNBC 英文）对同一全球事件标题指纹不同，无法语义去重，
+    改用「发布时段 + 情绪」粗粒度兜底，避免同一事件被两源各推一条。"""
+    try:
+        date_part, hm = published.split()
+        h, m = hm.split(":")
+        slot = f"{date_part} {h}:{int(m) // 30}"
+    except Exception:
+        slot = published
+    return f"macro_global:{sentiment}:{slot}"
+
+
 async def _send_macro_alert(title: str, published: str, impact: int, sentiment: str,
                             affected_sectors: list, reason: str) -> None:
     SENT_EMOJI = {"利好": "🟢", "利空": "🔴", "中性": "⚪"}
     IMPACT_BAR = "🔥" * min(impact // 2, 5)
     sectors_str = "、".join(affected_sectors) if affected_sectors else "全市场"
+    related = _related_holdings(affected_sectors)
+    related_line = "、".join(related) if related else "暂无直接关联（属大盘/情绪面影响）"
 
     card = {
         "config": {"wide_screen_mode": True},
@@ -533,7 +589,8 @@ async def _send_macro_alert(title: str, published: str, impact: int, sentiment: 
                     "content": (
                         f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
                         f"**{title}**\n"
-                        f"🕐 {published}   📌 涉及板块：{sectors_str}"
+                        f"🕐 {published}   📌 涉及板块：{sectors_str}\n"
+                        f"🎯 **与你持仓相关**：{related_line}"
                     ),
                 },
             },
@@ -597,6 +654,8 @@ async def _send_us_macro_alert(title: str, published: str, impact: int, sentimen
     SENT_EMOJI = {"利好": "🟢", "利空": "🔴", "中性": "⚪"}
     IMPACT_BAR = "🔥" * min(impact // 2, 5)
     sectors_str = "、".join(affected_sectors) if affected_sectors else "科技/半导体"
+    related = _related_holdings(affected_sectors or ["科技", "半导体"])
+    related_line = "、".join(related) if related else "暂无直接关联（属大盘/情绪面影响）"
 
     card = {
         "config": {"wide_screen_mode": True},
@@ -614,7 +673,8 @@ async def _send_us_macro_alert(title: str, published: str, impact: int, sentimen
                     "content": (
                         f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
                         f"**{title}**\n"
-                        f"🕐 {published}   📌 涉及板块：{sectors_str}"
+                        f"🕐 {published}   📌 涉及板块：{sectors_str}\n"
+                        f"🎯 **与你持仓相关**：{related_line}"
                     ),
                 },
             },
@@ -1239,16 +1299,24 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
             )
             impact = result.get("impact", 0)
             if impact >= impact_threshold:
+                sentiment = result.get("sentiment", "中性")
+                gkey = _macro_global_key(news["published"], sentiment)
+                if gkey in alerted:
+                    print(f"[Alert] 港股宏观 与近30min同情绪宏观重复，跳过：{news['title'][:50]}")
+                    _save_alerted(key, today_str)
+                    continue
                 await _send_macro_alert(
                     title=news["title"], published=news["published"], impact=impact,
-                    sentiment=result.get("sentiment", "中性"),
+                    sentiment=sentiment,
                     affected_sectors=result.get("affected_sectors", []),
                     reason=result.get("reason", ""),
                 )
                 alerted.add(key)
                 alerted.add(slot_key)
+                alerted.add(gkey)
                 _save_alerted(key, today_str)
                 _save_alerted(slot_key, today_str)
+                _save_alerted(gkey, today_str)
                 pushed += 1
             else:
                 print(f"[Alert] 港股宏观 影响度={impact}，跳过：{news['title'][:50]}")
@@ -1269,53 +1337,31 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
             result = await _classify_us_macro_news(news["title"], news["published"])
             impact = result.get("impact", 0)
             if impact >= 6:
+                sentiment = result.get("sentiment", "中性")
+                gkey = _macro_global_key(news["published"], sentiment)
+                if gkey in alerted:
+                    print(f"[Alert] 美股宏观 与近30min同情绪宏观重复，跳过：{news['title'][:50]}")
+                    _save_alerted(key, today_str)
+                    continue
                 await _send_us_macro_alert(
                     title=news["title"], published=news["published"], impact=impact,
-                    sentiment=result.get("sentiment", "中性"),
+                    sentiment=sentiment,
                     affected_sectors=result.get("affected_sectors", []),
                     reason=result.get("reason", ""),
                 )
                 alerted.add(key)
                 alerted.add(slot_key)
+                alerted.add(gkey)
                 _save_alerted(key, today_str)
                 _save_alerted(slot_key, today_str)
+                _save_alerted(gkey, today_str)
                 pushed += 1
             else:
                 print(f"[Alert] 美股宏观 影响度={impact}，跳过：{news['title'][:50]}")
 
-    # ── 4. 价格异动预警（watchlist + 非ETF持仓，1h 跌幅 > 3%）─────────────────
-    etf_sectors = {"宽基ETF", "股息ETF"}
-    price_watch = list(portfolio.get("watchlist", [])) + [
-        h for h in portfolio.get("holdings", [])
-        if h.get("sector", "") not in etf_sectors and not h.get("is_dca", False)
-    ]
-    print(f"[Alert] 价格异动扫描：{len(price_watch)} 只标的（阈值 3%/1h）")
-    for item in price_watch:
-        ticker = item["ticker"]
-        market = item.get("market", "us")
-        drop_info = await asyncio.get_event_loop().run_in_executor(
-            None, _check_price_drop, ticker, market
-        )
-        if drop_info:
-            hour_key = f"price_drop:{ticker}:{datetime.now(_BJT).strftime('%Y-%m-%d %H')}"
-            if hour_key not in alerted:
-                analysis = await _analyze_dip(**drop_info)
-                # 发送前重取最新价，LLM 分析期间价格可能已变化
-                fresh_price = await asyncio.get_event_loop().run_in_executor(
-                    None, _recheck_price, ticker, market
-                )
-                price_at_detection = drop_info["price_now"]
-                if fresh_price is not None:
-                    drop_info = {**drop_info, "price_now": fresh_price}
-                await _send_price_drop_alert(**drop_info, analysis=analysis,
-                                             price_at_detection=price_at_detection)
-                alerted.add(hour_key)
-                _save_alerted(hour_key, today_str)
-                pushed += 1
-            else:
-                print(f"[Alert] {ticker} 价格异动本小时已推送，跳过")
-        else:
-            print(f"[Alert] {ticker} 无异动（1h跌幅 < 3%）")
+    # 价格异动预警已由独立 price_alert workflow（run_price_scan，每10分钟）专责，
+    # 此处不再重复扫描——两者去重 key 不互通（price_drop vs price_drop_10m），
+    # 同时跑会导致同一次急跌被 news-scan 与 price-scan 各推一遍。
 
     if pushed == 0:
         print(f"[Alert] 本次扫描无高影响新闻（阈值={impact_threshold}）")
