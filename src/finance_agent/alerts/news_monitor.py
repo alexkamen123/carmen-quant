@@ -358,13 +358,25 @@ ALERT_SYSTEM = """你是一个股票新闻影响评估助手。
 {
   "impact": 1-10,
   "sentiment": "利好" | "利空" | "中性",
+  "priced_in": "已充分预期" | "有意外性" | "部分已知",
+  "suggested_action": "立即关注" | "等待确认" | "可忽略",
   "reason": "一句话说明为什么这条新闻重要（或不重要）"
 }
 
 impact 评分标准：
 8-10: 极重要（财报超预期/暴雷、重大并购、监管处罚、CEO 离职、重大贸易/外交政策）
 5-7:  中等影响（行业政策变化、竞争对手动态、分析师调级）
-1-4:  低影响（一般行业新闻、重申评级、常规发布会）"""
+1-4:  低影响（一般行业新闻、重申评级、常规发布会）
+
+priced_in 判断标准：
+- "已充分预期"：市场已提前知晓（如业绩指引早已给出、分析师一致预期一致），新闻发布时价格可能不动或反向
+- "有意外性"：超出市场预期（如财报大幅超预期/暴雷、意外政策转变、突发事件），价格反应可能较大
+- "部分已知"：市场有预期但程度/细节未定，发布后仍有一定价格反应空间
+
+suggested_action 判断标准：
+- "立即关注"：有意外性 + 影响方向明确，需及时评估是否调整持仓
+- "等待确认"：方向不明或需等后续细节，建议观察1-2个交易日再行动
+- "可忽略"：已充分预期 + 无新信息，或影响度低，无需操作"""
 
 ALERT_USER = """股票/资产：{ticker}
 新闻标题：{title}
@@ -379,6 +391,8 @@ MACRO_SYSTEM = """你是一个宏观经济新闻影响评估助手。
 {
   "impact": 1-10,
   "sentiment": "利好" | "利空" | "中性",
+  "priced_in": "已充分预期" | "有意外性" | "部分已知",
+  "suggested_action": "立即关注" | "等待确认" | "可忽略",
   "affected_sectors": ["科技", "消费", "金融"],
   "reason": "一句话说明为什么这条新闻重要（或不重要）"
 }
@@ -386,7 +400,9 @@ MACRO_SYSTEM = """你是一个宏观经济新闻影响评估助手。
 impact 评分标准：
 8-10: 极重要（中美关系重大转变、联储加息/降息、贸易战升级/缓和、重大外交事件）
 5-7:  中等影响（PMI 超预期、行业政策、外资流入流出）
-1-4:  低影响（常规数据发布、无实质影响的声明）"""
+1-4:  低影响（常规数据发布、无实质影响的声明）
+
+priced_in / suggested_action 与个股评估标准相同。"""
 
 MACRO_USER = """宏观新闻标题：{title}
 发布时间：{published}
@@ -401,6 +417,8 @@ US_MACRO_SYSTEM = """你是一个美股市场宏观新闻影响评估助手。
 {
   "impact": 1-10,
   "sentiment": "利好" | "利空" | "中性",
+  "priced_in": "已充分预期" | "有意外性" | "部分已知",
+  "suggested_action": "立即关注" | "等待确认" | "可忽略",
   "affected_sectors": ["半导体/AI算力", "互联网/AI", "宽基ETF"],
   "reason": "一句话说明为什么这条新闻重要（或不重要）"
 }
@@ -408,7 +426,9 @@ US_MACRO_SYSTEM = """你是一个美股市场宏观新闻影响评估助手。
 impact 评分标准：
 8-10: 极重要（Fed 加息/降息决定、CPI 大幅超预期、标普/纳指单日跌超 2%、芯片出口管制）
 5-7:  中等影响（经济数据小幅超预期、分析师集体调级、板块轮动）
-1-4:  低影响（个股财报、常规声明、重申评级）"""
+1-4:  低影响（个股财报、常规声明、重申评级）
+
+priced_in / suggested_action 与个股评估标准相同。"""
 
 US_MACRO_USER = """美股宏观新闻标题：{title}
 发布时间：{published}
@@ -460,7 +480,8 @@ async def _classify_us_macro_news(title: str, published: str) -> dict:
 
 async def _send_stock_alert(ticker: str, market: str, title: str, published: str,
                             impact: int, sentiment: str, reason: str,
-                            conflict: str = "") -> None:
+                            conflict: str = "",
+                            priced_in: str = "", suggested_action: str = "") -> None:
     SENT_EMOJI = {"利好": "🟢", "利空": "🔴", "中性": "⚪"}
     IMPACT_BAR = "🔥" * min(impact // 2, 5)
     market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
@@ -472,6 +493,18 @@ async def _send_stock_alert(ticker: str, market: str, title: str, published: str
         "red" if sentiment == "利空" else ("green" if sentiment == "利好" else "blue")
     )
 
+    # 定价状态 + 操作建议行
+    ACTION_EMOJI = {"立即关注": "🚨", "等待确认": "⏳", "可忽略": "💤"}
+    PRICED_EMOJI = {"已充分预期": "📉已定价", "有意外性": "⚡有意外", "部分已知": "🔔部分已知"}
+    action_line = ""
+    if priced_in or suggested_action:
+        parts = []
+        if priced_in:
+            parts.append(PRICED_EMOJI.get(priced_in, priced_in))
+        if suggested_action:
+            parts.append(f"{ACTION_EMOJI.get(suggested_action, '')} **{suggested_action}**")
+        action_line = "　".join(parts)
+
     elements = [
         {
             "tag": "div",
@@ -481,6 +514,7 @@ async def _send_stock_alert(ticker: str, market: str, title: str, published: str
                     f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
                     f"**{title}**\n"
                     f"🕐 {published}"
+                    + (f"\n{action_line}" if action_line else "")
                 ),
             },
         },
@@ -566,12 +600,31 @@ def _macro_global_key(published: str, sentiment: str) -> str:
 
 
 async def _send_macro_alert(title: str, published: str, impact: int, sentiment: str,
-                            affected_sectors: list, reason: str) -> None:
+                            affected_sectors: list, reason: str,
+                            priced_in: str = "", suggested_action: str = "") -> None:
     SENT_EMOJI = {"利好": "🟢", "利空": "🔴", "中性": "⚪"}
     IMPACT_BAR = "🔥" * min(impact // 2, 5)
     sectors_str = "、".join(affected_sectors) if affected_sectors else "全市场"
     related = _related_holdings(affected_sectors)
     related_line = "、".join(related) if related else "暂无直接关联（属大盘/情绪面影响）"
+
+    ACTION_EMOJI = {"立即关注": "🚨", "等待确认": "⏳", "可忽略": "💤"}
+    PRICED_EMOJI = {"已充分预期": "📉已定价", "有意外性": "⚡有意外", "部分已知": "🔔部分已知"}
+    action_parts = []
+    if priced_in:
+        action_parts.append(PRICED_EMOJI.get(priced_in, priced_in))
+    if suggested_action:
+        action_parts.append(f"{ACTION_EMOJI.get(suggested_action, '')} **{suggested_action}**")
+    action_line = "　".join(action_parts)
+
+    content = (
+        f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
+        f"**{title}**\n"
+        f"🕐 {published}   📌 涉及板块：{sectors_str}\n"
+        f"🎯 **与你持仓相关**：{related_line}"
+    )
+    if action_line:
+        content += f"\n{action_line}"
 
     card = {
         "config": {"wide_screen_mode": True},
@@ -582,18 +635,7 @@ async def _send_macro_alert(title: str, published: str, impact: int, sentiment: 
             ),
         },
         "elements": [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": (
-                        f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
-                        f"**{title}**\n"
-                        f"🕐 {published}   📌 涉及板块：{sectors_str}\n"
-                        f"🎯 **与你持仓相关**：{related_line}"
-                    ),
-                },
-            },
+            {"tag": "div", "text": {"tag": "lark_md", "content": content}},
             {"tag": "hr"},
             {"tag": "div", "text": {"tag": "lark_md", "content": f"💡 {reason}"}},
             {"tag": "hr"},
@@ -650,12 +692,31 @@ def _get_us_macro_news(hours: int = 2) -> list[dict]:
 
 
 async def _send_us_macro_alert(title: str, published: str, impact: int, sentiment: str,
-                               affected_sectors: list, reason: str) -> None:
+                               affected_sectors: list, reason: str,
+                               priced_in: str = "", suggested_action: str = "") -> None:
     SENT_EMOJI = {"利好": "🟢", "利空": "🔴", "中性": "⚪"}
     IMPACT_BAR = "🔥" * min(impact // 2, 5)
     sectors_str = "、".join(affected_sectors) if affected_sectors else "科技/半导体"
     related = _related_holdings(affected_sectors or ["科技", "半导体"])
     related_line = "、".join(related) if related else "暂无直接关联（属大盘/情绪面影响）"
+
+    ACTION_EMOJI = {"立即关注": "🚨", "等待确认": "⏳", "可忽略": "💤"}
+    PRICED_EMOJI = {"已充分预期": "📉已定价", "有意外性": "⚡有意外", "部分已知": "🔔部分已知"}
+    action_parts = []
+    if priced_in:
+        action_parts.append(PRICED_EMOJI.get(priced_in, priced_in))
+    if suggested_action:
+        action_parts.append(f"{ACTION_EMOJI.get(suggested_action, '')} **{suggested_action}**")
+    action_line = "　".join(action_parts)
+
+    content = (
+        f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
+        f"**{title}**\n"
+        f"🕐 {published}   📌 涉及板块：{sectors_str}\n"
+        f"🎯 **与你持仓相关**：{related_line}"
+    )
+    if action_line:
+        content += f"\n{action_line}"
 
     card = {
         "config": {"wide_screen_mode": True},
@@ -666,18 +727,7 @@ async def _send_us_macro_alert(title: str, published: str, impact: int, sentimen
             ),
         },
         "elements": [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": (
-                        f"{SENT_EMOJI.get(sentiment, '⚪')} **{sentiment}** {IMPACT_BAR}  影响度 {impact}/10\n"
-                        f"**{title}**\n"
-                        f"🕐 {published}   📌 涉及板块：{sectors_str}\n"
-                        f"🎯 **与你持仓相关**：{related_line}"
-                    ),
-                },
-            },
+            {"tag": "div", "text": {"tag": "lark_md", "content": content}},
             {"tag": "hr"},
             {"tag": "div", "text": {"tag": "lark_md", "content": f"💡 {reason}"}},
             {"tag": "hr"},
@@ -1272,6 +1322,8 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                     reason=result.get("reason", "")
                     + (f"（竞对 {scan_ticker} 动态，间接影响 {holding_ticker}）" if is_peer else ""),
                     conflict=conflict,
+                    priced_in=result.get("priced_in", ""),
+                    suggested_action=result.get("suggested_action", ""),
                 )
                 alerted.add(key)
                 _save_alerted(key, today_str)
@@ -1310,6 +1362,8 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                     sentiment=sentiment,
                     affected_sectors=result.get("affected_sectors", []),
                     reason=result.get("reason", ""),
+                    priced_in=result.get("priced_in", ""),
+                    suggested_action=result.get("suggested_action", ""),
                 )
                 alerted.add(key)
                 alerted.add(slot_key)
@@ -1348,6 +1402,8 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
                     sentiment=sentiment,
                     affected_sectors=result.get("affected_sectors", []),
                     reason=result.get("reason", ""),
+                    priced_in=result.get("priced_in", ""),
+                    suggested_action=result.get("suggested_action", ""),
                 )
                 alerted.add(key)
                 alerted.add(slot_key)
