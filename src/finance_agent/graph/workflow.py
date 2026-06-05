@@ -214,6 +214,25 @@ async def memory_node(state: AgentState) -> AgentState:
     return state.model_copy(update={"stocks": updated})
 
 
+async def strategy_node(state: AgentState) -> AgentState:
+    """注入当前触发的量化策略信号（基于 state.json 历史验证数据，仅美股）"""
+    from finance_agent.backtest.signal_lookup import format_strategy_evidence
+    updated = []
+    for s in state.stocks:
+        if s.is_etf or s.market != "us":
+            updated.append(s)
+            continue
+        try:
+            evidence = format_strategy_evidence(s.ticker)
+        except Exception as e:
+            print(f"[Strategy] {s.ticker} 信号查找失败（跳过）: {e}")
+            evidence = ""
+        if evidence:
+            print(f"[Strategy] {s.ticker} 量化信号触发 ↓\n{evidence}")
+        updated.append(s.model_copy(update={"strategy_evidence": evidence}))
+    return state.model_copy(update={"stocks": updated})
+
+
 async def decision_node(state: AgentState) -> AgentState:
     """Portfolio Manager 批量裁决：1 次 Claude 调用处理所有股票"""
     updated_stocks = await run_portfolio_manager_batch(
@@ -473,6 +492,7 @@ def build_graph(checkpointer=None):
     builder.add_node("thesis",       thesis_node)
     builder.add_node("fundamentals", fundamentals_node)
     builder.add_node("debate",       debate_node)
+    builder.add_node("strategy",     strategy_node)
     builder.add_node("memory",       memory_node)
     builder.add_node("decision",     decision_node)
     builder.add_node("format",       format_report_node)
@@ -482,7 +502,8 @@ def build_graph(checkpointer=None):
     builder.add_edge("fetch_data",   "thesis")
     builder.add_edge("thesis",       "fundamentals")
     builder.add_edge("fundamentals", "debate")
-    builder.add_edge("debate",       "memory")
+    builder.add_edge("debate",       "strategy")
+    builder.add_edge("strategy",     "memory")
     builder.add_edge("memory",       "decision")
     builder.add_edge("decision",     "format")
     builder.add_edge("format",       "track")
