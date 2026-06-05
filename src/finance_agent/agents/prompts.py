@@ -179,6 +179,7 @@ PM_BATCH_STOCK_TEMPLATE = """--- {ticker}（{market}市场）---
 【持仓成本】{cost_basis_str}
 【持仓逻辑】{thesis}
 【技术面】{signals_str}
+{strategy_evidence}
 【基本面】{fundamental_view}
 【多头】{bull_thesis}
 【空头】{bear_thesis}

@@ -45,6 +45,9 @@ class StockAnalysis(BaseModel):
     # 历史决策记忆（mempal 查询结果，注入 PM prompt）
     memory_context: str = ""
 
+    # 当前触发的量化策略信号（signal_lookup 计算，注入 PM prompt）
+    strategy_evidence: str = ""
+
     # Technical debate (DeepSeek)
     bull_thesis: str = ""
     bear_thesis: str = ""

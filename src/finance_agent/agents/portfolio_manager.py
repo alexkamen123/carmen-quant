@@ -164,6 +164,7 @@ async def run_portfolio_manager_batch(
             cost_basis_str=cost_basis_str,
             thesis=thesis_text,
             signals_str=signals_str,
+            strategy_evidence=s.strategy_evidence or "",
             fundamental_view=s.earnings.fundamental_view or "暂无基本面数据",
             bull_thesis=s.bull_thesis or "无",
             bear_thesis=s.bear_thesis or "无",
