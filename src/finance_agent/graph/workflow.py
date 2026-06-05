@@ -452,6 +452,7 @@ async def track_node(state: AgentState) -> AgentState:
     records = [
         {
             "ticker":          s.ticker,
+            "market":          s.market,
             "recommendation":  s.recommendation,
             "confidence":      s.confidence,
             "position_change": s.position_change,
