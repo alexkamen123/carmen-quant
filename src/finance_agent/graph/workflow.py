@@ -14,7 +14,7 @@ from finance_agent.agents.bear_agent import run_bear_analysis
 from finance_agent.agents.portfolio_manager import run_portfolio_manager_batch, _sector_summary
 from finance_agent.db.tracker import (
     save_recommendations, fill_7d_returns, accuracy_summary,
-    load_all_theses, get_thesis_ages,
+    load_all_theses, get_thesis_ages, ticker_signal_stats,
 )
 from finance_agent.notifications.glossary import build_glossary_element
 from finance_agent.agents.fundamental_analyst import run_fundamental_analysis
@@ -246,6 +246,10 @@ async def format_report_node(state: AgentState) -> AgentState:
             lines.append(f"   📌 {s.entry_hint}")
         if s.key_risk:
             lines.append(f"   ⚠️  {s.key_risk}")
+        if s.key_assumption:
+            lines.append(f"   🔑 假设：{s.key_assumption}")
+        if s.stop_loss_hint:
+            lines.append(f"   🛡️ 止损：{s.stop_loss_hint}")
         if s.bull_thesis and s.ticker not in ("QQQM", "VOO"):
             if s.earnings.fundamental_view and "宽基" not in s.earnings.fundamental_view:
                 lines.append(f"   📈 基本面：{s.earnings.fundamental_view}")
@@ -300,6 +304,10 @@ async def format_report_node(state: AgentState) -> AgentState:
             main_md_lines.append(f"📌 {s.entry_hint}")
         if s.key_risk:
             main_md_lines.append(f"⚠️ {s.key_risk}")
+        if s.key_assumption:
+            main_md_lines.append(f"🔑 **假设**：{s.key_assumption}")
+        if s.stop_loss_hint:
+            main_md_lines.append(f"🛡️ **止损**：{s.stop_loss_hint}")
 
         elements.append({
             "tag": "div",
@@ -327,6 +335,11 @@ async def format_report_node(state: AgentState) -> AgentState:
                 debate_lines.append(f"🐂 {bull_short}")
             if bear_short:
                 debate_lines.append(f"🐻 {bear_short}")
+            # 信号历史面板：只对买入/加仓显示，样本不足时加警示
+            if s.recommendation in ("买入",) or "加" in (s.position_change or ""):
+                hist = ticker_signal_stats(s.ticker)
+                if hist:
+                    debate_lines.append(hist)
             if debate_lines:
                 elements.append({
                     "tag": "div",
@@ -370,14 +383,48 @@ async def format_report_node(state: AgentState) -> AgentState:
                                   "如实际操作，可运行 finance-agent log-action TICKER BUY/SELL 记录"}],
     })
 
-    # 宏观 + 集中度放在卡片最顶部
+    # 宏观 + 集中度 + L1战略红线状态 放在卡片最顶部
     macro_elements: list[dict] = []
     header_lines = []
     if state.macro_summary:
-        header_lines.append(f"🌍 **宏观**｜{state.macro_summary}")
+        header_lines.append(f"🌍 **宏观（L2战术层）**｜{state.macro_summary}")
     sector_str = _sector_summary(state.stocks)
     if sector_str and sector_str != "暂无持仓市值数据":
         header_lines.append(f"📂 **集中度**｜{sector_str}")
+
+    # 读取战略红线状态，生成红绿灯行
+    try:
+        _cfg = Path(__file__).parent.parent.parent.parent.parent / "config"
+        _settings = yaml.safe_load(open(_cfg / "settings.yaml")) or {}
+        _inj = _settings.get("strategy_injection", {})
+        if _inj.get("enabled", True) and _inj.get("show_limit_status_in_daily", True):
+            _port = yaml.safe_load(open(_cfg / "portfolio.yaml")) or {}
+            _strat = _port.get("strategy", {})
+            _limits = _strat.get("risk_limits", [])
+            if _limits:
+                limit_icons = []
+                for lim in _limits:
+                    # 简单解析 rule 中的数值与当前值做红绿灯判断
+                    rule_str = lim.get("rule", "")
+                    current_str = lim.get("current", "")
+                    name = lim.get("name", "")
+                    try:
+                        import re
+                        threshold = float(re.search(r"[\d.]+", rule_str.split("<=")[-1] if "<=" in rule_str else rule_str.split(">=")[-1]).group())
+                        current_val = float(re.search(r"[\d.]+", current_str).group()) if current_str else None
+                        if current_val is not None:
+                            if "<=" in rule_str:
+                                icon = "🟢" if current_val <= threshold * 0.9 else ("🟡" if current_val <= threshold else "🔴")
+                            else:
+                                icon = "🟢" if current_val >= threshold * 1.1 else ("🟡" if current_val >= threshold else "🔴")
+                            limit_icons.append(f"{icon} {name}：{current_str}/{threshold}%")
+                    except Exception:
+                        limit_icons.append(f"⚪ {name}")
+                if limit_icons:
+                    header_lines.append(f"🎯 **L1战略红线**｜{' | '.join(limit_icons)}")
+    except Exception:
+        pass  # 红线状态读取失败不影响主报告
+
     if header_lines:
         macro_elements = [
             {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(header_lines)}},

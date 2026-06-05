@@ -57,6 +57,8 @@ class StockAnalysis(BaseModel):
     key_risk: str = ""
     one_line: str = ""
     position_change: str = ""   # 仓位调整建议：减仓 / 维持 / 小加 / 大加
+    key_assumption: str = ""    # 本次裁决成立的关键假设（逻辑止损触发器）
+    stop_loss_hint: str = ""    # 价格止损位或逻辑止损条件
 
 
 class AgentState(BaseModel):

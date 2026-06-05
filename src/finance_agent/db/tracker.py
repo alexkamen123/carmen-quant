@@ -575,6 +575,58 @@ def get_feedback_accuracy(db_path: str | Path | None = None) -> dict:
     }
 
 
+def ticker_signal_stats(ticker: str, db_path: str | Path | None = None) -> str:
+    """
+    返回某只股票的历史买入信号统计行，供飞书卡片展示信服力数据。
+    样本 <5 时返回空字符串；5-19 条加置信警示；≥20 条正常展示。
+    格式：📊 NVDA历史买入信号 | 胜率67%（±23%CI）· 均盈+2.1% · 均亏-1.8% · 盈亏比1.2（12次）
+    """
+    import math
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        rows = con.execute(
+            """SELECT recommendation, position_change, return_7d
+               FROM recommendations
+               WHERE ticker = ? AND return_7d IS NOT NULL
+                 AND (recommendation IN ('买入') OR position_change LIKE '大加%' OR position_change LIKE '小加%')
+               ORDER BY date DESC LIMIT 60""",
+            (ticker.upper(),),
+        ).fetchall()
+
+    if len(rows) < 5:
+        return ""
+
+    wins = [r["return_7d"] for r in rows if r["return_7d"] > 0]
+    losses = [r["return_7d"] for r in rows if r["return_7d"] <= 0]
+    n = len(rows)
+    win_count = len(wins)
+    win_rate = win_count / n
+
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
+    rr = round(avg_win / avg_loss, 1) if avg_loss > 0 else 0.0
+
+    # Wilson 置信区间（95%）
+    z = 1.96
+    ci = z * math.sqrt(win_rate * (1 - win_rate) / n)
+    ci_pct = round(ci * 100)
+
+    win_pct = round(win_rate * 100)
+    avg_win_str = f"+{avg_win:.1f}%"
+    avg_loss_str = f"-{avg_loss:.1f}%"
+
+    if n < 20:
+        return (
+            f"📊 {ticker}历史买入信号（样本偏少，仅参考）｜"
+            f"胜率{win_pct}%（±{ci_pct}%CI）· 均盈{avg_win_str} · 均亏{avg_loss_str} · 盈亏比{rr}（{n}次）"
+        )
+    return (
+        f"📊 {ticker}历史买入信号｜"
+        f"胜率{win_pct}%（±{ci_pct}%CI）· 均盈{avg_win_str} · 均亏{avg_loss_str} · 盈亏比{rr}（{n}次）"
+    )
+
+
 def feedback_summary(db_path: str | Path | None = None) -> str:
     """
     返回一行反馈闭环摘要文字，供注入飞书卡片或月度回顾。
