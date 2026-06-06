@@ -2,8 +2,9 @@ name: Morning Note
 
 on:
   schedule:
-    # 每个交易日北京时间 09:00（UTC 01:00）联网搜索隔夜行情，推送盘前晨报
-    - cron: "0 1 * * 1-5"
+    # 每个交易日北京时间 08:55（UTC 00:55）联网搜索隔夜行情，推送盘前晨报
+    # 比日报(daily_analysis 09:00)早 5 分钟，形成"晨报→日报"的阅读顺序
+    - cron: "55 0 * * 1-5"
   workflow_dispatch:  # 支持手动触发
 
 jobs:
