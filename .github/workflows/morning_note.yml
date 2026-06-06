@@ -1,0 +1,34 @@
+name: Morning Note
+
+on:
+  schedule:
+    # 每个交易日北京时间 09:00（UTC 01:00）联网搜索隔夜行情，推送盘前晨报
+    - cron: "0 1 * * 1-5"
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  morning-note:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run morning note
+        # CI 无 Claude Code CLI，走 ANTHROPIC_API_KEY 的 SDK 后端，
+        # 由原生 web_search 工具完成联网搜索（每次约几次搜索，成本极低）
+        env:
+          FEISHU_WEBHOOK_URL:    ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
+          ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
+        run: uv run finance-agent morning-note
