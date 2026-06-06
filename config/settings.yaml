@@ -30,3 +30,14 @@ notifications:
 backtest:
   lookback_days: 30
   win_threshold_pct: 1.0
+
+# ── 战略约束注入配置（L1 → L2 传导开关）────────────────────────────────────
+# 控制 portfolio.yaml 中 strategy.risk_limits 如何出现在 PM 裁决 prompt 里
+strategy_injection:
+  enabled: true
+  # 在 PM_BATCH_USER prompt 中自动插入红线约束区块
+  inject_into_pm_prompt: true
+  # 在周报配置建议中自动插入战略目标区块
+  inject_into_weekly_report: true
+  # 飞书推送：是否在日报消息头部显示当前红线状态（绿/黄/红）
+  show_limit_status_in_daily: true
