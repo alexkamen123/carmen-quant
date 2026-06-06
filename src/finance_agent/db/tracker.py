@@ -22,6 +22,9 @@ import yfinance as yf
 
 _DEFAULT_DB = Path("data/agent.db")
 
+# 各市场对应的基准指数（用于计算超额收益）
+_BENCHMARK_TICKER = {"us": "SPY", "hk": "^HSI", "cn": "000300.SS"}
+
 
 def _resolve_db(db_path: str | Path | None = None) -> Path:
     """优先使用传入路径，其次环境变量 AGENT_DB_PATH，最后默认值"""
@@ -81,6 +84,17 @@ CREATE INDEX IF NOT EXISTS idx_dip_at     ON dip_alerts(alerted_at);
 """
 
 
+def _migrate_recommendations_table(con: sqlite3.Connection) -> None:
+    """为已存在的 recommendations 表补充 market / benchmark_return_7d 列（向后兼容）"""
+    existing = {row[1] for row in con.execute("PRAGMA table_info(recommendations)").fetchall()}
+    for col, typedef in [("market", "TEXT"), ("benchmark_return_7d", "REAL")]:
+        if col not in existing:
+            try:
+                con.execute(f"ALTER TABLE recommendations ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass
+
+
 @contextmanager
 def _conn(db_path: Path | None = None):
     p = db_path or DB_PATH
@@ -98,6 +112,9 @@ def init_db(db_path: str | Path | None = None) -> None:
     p = _resolve_db(db_path)
     with _conn(p) as con:
         con.executescript(_CREATE_SQL)
+        con.executescript(_CREATE_ACTIONS_SQL)
+        _migrate_actions_table(con)
+        _migrate_recommendations_table(con)
 
 
 # ── 写入当日推荐 ──────────────────────────────────────────────
@@ -105,7 +122,7 @@ def init_db(db_path: str | Path | None = None) -> None:
 def save_recommendations(date: str, records: list[dict],
                          db_path: str | Path | None = None) -> None:
     """
-    records 每项：{ticker, recommendation, confidence, position_change, price_at_rec}
+    records 每项：{ticker, recommendation, confidence, position_change, price_at_rec, market}
     若当天已有记录则跳过（幂等）。
     """
     p = _resolve_db(db_path)
@@ -116,14 +133,14 @@ def save_recommendations(date: str, records: list[dict],
         ).fetchall()}
         rows = [
             (date, r["ticker"], r.get("recommendation"), r.get("confidence"),
-             r.get("position_change"), r.get("price_at_rec"))
+             r.get("position_change"), r.get("price_at_rec"), r.get("market", "us"))
             for r in records
             if r["ticker"] not in existing
         ]
         if rows:
             con.executemany(
                 "INSERT INTO recommendations(date,ticker,recommendation,confidence,"
-                "position_change,price_at_rec) VALUES(?,?,?,?,?,?)",
+                "position_change,price_at_rec,market) VALUES(?,?,?,?,?,?,?)",
                 rows,
             )
             print(f"[Tracker] 保存 {len(rows)} 条推荐记录（{date}）")
@@ -161,6 +178,36 @@ def _fetch_current_price(ticker: str, market: str = "us") -> float | None:
         return None
 
 
+def _fetch_benchmark_return(market: str, rec_date: str) -> float | None:
+    """
+    获取从推荐日起约 7 个交易日的基准指数涨跌幅（%）。
+    用 yfinance 拉历史数据，取第 0 和第 6（最多）个收盘价计算。
+    失败返回 None（不阻塞主流程）。
+    """
+    import time
+    time.sleep(0.3)
+    benchmark = _BENCHMARK_TICKER.get(market, "SPY")
+    try:
+        start_dt = datetime.strptime(rec_date, "%Y-%m-%d")
+        end_dt = start_dt + timedelta(days=15)
+        df = yf.download(benchmark, start=rec_date, end=end_dt.strftime("%Y-%m-%d"),
+                         progress=False, auto_adjust=True)
+        if df.empty or len(df) < 2:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0].lower() for c in df.columns]
+        else:
+            df.columns = [c.lower() for c in df.columns]
+        closes = df["close"].dropna()
+        if len(closes) < 2:
+            return None
+        p0 = float(closes.iloc[0])
+        p7 = float(closes.iloc[min(6, len(closes) - 1)])
+        return round((p7 - p0) / p0 * 100, 2) if p0 > 0 else None
+    except Exception:
+        return None
+
+
 async def fill_7d_returns(db_path: str | Path | None = None) -> int:
     """
     找出 7 个交易日前（日历日 ~10 天）还没有 price_7d 的记录，
@@ -172,7 +219,8 @@ async def fill_7d_returns(db_path: str | Path | None = None) -> int:
 
     with _conn(p) as con:
         pending = con.execute(
-            "SELECT id, ticker, recommendation, position_change, price_at_rec "
+            "SELECT id, ticker, recommendation, position_change, price_at_rec, date, "
+            "COALESCE(market, 'us') as market "
             "FROM recommendations WHERE date <= ? AND price_7d IS NULL",
             (cutoff,),
         ).fetchall()
@@ -184,7 +232,7 @@ async def fill_7d_returns(db_path: str | Path | None = None) -> int:
     filled = 0
     for row in pending:
         price_now = await loop.run_in_executor(
-            None, lambda t=row["ticker"]: _fetch_current_price(t)
+            None, lambda t=row["ticker"], m=row["market"]: _fetch_current_price(t, m)
         )
         if price_now is None or not row["price_at_rec"]:
             continue
@@ -192,15 +240,21 @@ async def fill_7d_returns(db_path: str | Path | None = None) -> int:
         outcome = _determine_outcome(
             row["recommendation"] or "", row["position_change"] or "", ret
         )
+        # 同步拉基准指数同期涨跌，计算超额收益
+        benchmark_ret = await loop.run_in_executor(
+            None, lambda m=row["market"], d=row["date"]: _fetch_benchmark_return(m, d)
+        )
         with _conn(p) as con:
             con.execute(
-                "UPDATE recommendations SET price_7d=?, return_7d=?, outcome=? WHERE id=?",
-                (round(price_now, 4), round(ret, 2), outcome, row["id"]),
+                "UPDATE recommendations SET price_7d=?, return_7d=?, outcome=?, benchmark_return_7d=? WHERE id=?",
+                (round(price_now, 4), round(ret, 2), outcome,
+                 round(benchmark_ret, 2) if benchmark_ret is not None else None,
+                 row["id"]),
             )
         filled += 1
 
     if filled:
-        print(f"[Tracker] 回填 {filled} 条 7 日涨跌记录")
+        print(f"[Tracker] 回填 {filled} 条 7 日涨跌记录（含基准对比）")
     return filled
 
 
@@ -571,6 +625,65 @@ def get_feedback_accuracy(db_path: str | Path | None = None) -> dict:
         "bought": _stats(bought),
         "skipped": _stats(skipped),
     }
+
+
+def ticker_signal_stats(ticker: str, db_path: str | Path | None = None) -> str:
+    """
+    返回某只股票的历史买入信号统计行，供飞书卡片展示信服力数据。
+    样本 <5 时返回空字符串；5-19 条加置信警示；≥20 条正常展示。
+    有基准数据时追加超额收益（alpha）维度：跑赢大盘比例 + 平均超额。
+    格式：📊 NVDA历史买入信号 | 胜率67%（±23%CI）· 超额+2.1%/跑赢大盘58%· 均盈+3.2% · 均亏-1.8% · 盈亏比1.2（12次）
+    """
+    import math
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        rows = con.execute(
+            """SELECT recommendation, position_change, return_7d, benchmark_return_7d
+               FROM recommendations
+               WHERE ticker = ? AND return_7d IS NOT NULL
+                 AND (recommendation IN ('买入') OR position_change LIKE '大加%' OR position_change LIKE '小加%')
+               ORDER BY date DESC LIMIT 60""",
+            (ticker.upper(),),
+        ).fetchall()
+
+    if len(rows) < 5:
+        return ""
+
+    wins = [r["return_7d"] for r in rows if r["return_7d"] > 0]
+    losses = [r["return_7d"] for r in rows if r["return_7d"] <= 0]
+    n = len(rows)
+    win_count = len(wins)
+    win_rate = win_count / n
+
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
+    rr = round(avg_win / avg_loss, 1) if avg_loss > 0 else 0.0
+
+    # Wilson 置信区间（95%）
+    z = 1.96
+    ci = z * math.sqrt(win_rate * (1 - win_rate) / n)
+    ci_pct = round(ci * 100)
+    win_pct = round(win_rate * 100)
+
+    # 超额收益：仅对有基准数据的行计算
+    alpha_str = ""
+    rows_with_bm = [r for r in rows if r["benchmark_return_7d"] is not None]
+    if rows_with_bm:
+        alphas = [r["return_7d"] - r["benchmark_return_7d"] for r in rows_with_bm]
+        avg_alpha = sum(alphas) / len(alphas)
+        beat_count = sum(1 for a in alphas if a > 0)
+        beat_rate = round(beat_count / len(rows_with_bm) * 100)
+        sign = "+" if avg_alpha >= 0 else ""
+        alpha_str = f" · 超额{sign}{avg_alpha:.1f}%/跑赢大盘{beat_rate}%"
+
+    suffix = "（样本偏少，仅参考）" if n < 20 else ""
+    return (
+        f"📊 {ticker}历史买入信号{suffix}｜"
+        f"胜率{win_pct}%（±{ci_pct}%CI）"
+        f"{alpha_str}"
+        f" · 均盈+{avg_win:.1f}% · 均亏-{avg_loss:.1f}% · 盈亏比{rr}（{n}次）"
+    )
 
 
 def feedback_summary(db_path: str | Path | None = None) -> str:

@@ -1,6 +1,8 @@
 # src/finance_agent/agents/portfolio_manager.py
 import asyncio
 import json
+from pathlib import Path
+import yaml
 from finance_agent.graph.state import StockAnalysis
 from finance_agent.agents.prompts import (
     PM_SYSTEM, PM_USER,
@@ -10,6 +12,47 @@ from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli, strip_markdown
 
 MARKET_LABEL = {"us": "美股", "hk": "港股", "cn": "A股"}
+
+_CONFIG_DIR = Path(__file__).parent.parent.parent.parent.parent / "config"
+
+
+def _load_strategy_limits() -> str:
+    """
+    从 portfolio.yaml 读取 strategy.risk_limits，生成供 PM prompt 使用的红线约束段落。
+    同时检查 settings.yaml 的 strategy_injection.inject_into_pm_prompt 开关。
+    若开关关闭或配置不存在，返回空字符串。
+    """
+    try:
+        settings_path = _CONFIG_DIR / "settings.yaml"
+        if settings_path.exists():
+            with open(settings_path) as f:
+                settings = yaml.safe_load(f) or {}
+            injection = settings.get("strategy_injection", {})
+            if not injection.get("enabled", True) or not injection.get("inject_into_pm_prompt", True):
+                return ""
+
+        portfolio_path = _CONFIG_DIR / "portfolio.yaml"
+        if not portfolio_path.exists():
+            return ""
+        with open(portfolio_path) as f:
+            portfolio = yaml.safe_load(f) or {}
+
+        strategy = portfolio.get("strategy", {})
+        limits = strategy.get("risk_limits", [])
+        hedge = strategy.get("hedge_bucket", {})
+        if not limits and not hedge:
+            return ""
+
+        lines = [f"【L1战略红线（{strategy.get('last_updated','?')} 粥卡门配置分析，最高优先级，不可被战术信号突破）】"]
+        for lim in limits:
+            lines.append(f"- {lim['name']}：{lim['rule']}（违反时：{lim.get('action_if_breached','')}）")
+        target_pct = hedge.get("target_pct")
+        if target_pct:
+            lines.append(f"- 对冲桶（IAU/BIL）目标占比：>= {target_pct}%（低于此值不得新建风险仓位）")
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"[PM] 加载战略红线失败（跳过注入）: {e}")
+        return ""
 
 # 各市场换算为美元的汇率因子（港元/人民币 → 美元）
 _FX_TO_USD = {"us": 1.0, "hk": 1 / 7.8, "cn": 1 / 7.2}
@@ -52,6 +95,8 @@ def _parse_decision(d: dict) -> dict:
         "entry_hint":        d.get("entry_hint", ""),
         "key_risk":          d.get("key_risk", ""),
         "one_line":          d.get("one_line", ""),
+        "key_assumption":    d.get("key_assumption", ""),
+        "stop_loss_hint":    d.get("stop_loss_hint", ""),
     }
 
 
@@ -119,6 +164,7 @@ async def run_portfolio_manager_batch(
             cost_basis_str=cost_basis_str,
             thesis=thesis_text,
             signals_str=signals_str,
+            strategy_evidence=s.strategy_evidence or "",
             fundamental_view=s.earnings.fundamental_view or "暂无基本面数据",
             bull_thesis=s.bull_thesis or "无",
             bear_thesis=s.bear_thesis or "无",
@@ -130,12 +176,14 @@ async def run_portfolio_manager_batch(
         "REDUCE_ONLY":       "当前机制偏弱，建议以持有/减仓为主，新增需充分理由",
         "CASH_PRIORITY":     "市场处于收缩/危机机制，建议优先保留现金，避免新增仓位",
     }
+    strategy_limits_str = _load_strategy_limits()
     user_msg = PM_BATCH_USER.format(
         macro_summary=macro_summary or "暂无宏观数据",
         exposure_note=POSTURE_NOTE.get(exposure_posture, exposure_posture),
         sector_summary=sector_str,
         n=len(needs_pm),
         stocks_block="\n\n".join(blocks),
+        strategy_limits=strategy_limits_str,
     )
 
     decisions: list[dict] = []

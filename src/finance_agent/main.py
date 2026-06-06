@@ -22,6 +22,7 @@ from finance_agent.weekly.allocation_advisor import run_allocation_advisor
 from finance_agent.weekly.report_card import build_weekly_card
 from finance_agent.weekly.daily_followup import run_daily_followup
 from finance_agent.monthly.review import run_monthly_review
+from finance_agent.morning.note import run_morning_note
 from finance_agent.memory.mempal_client import (
     ingest_daily_report,
     ingest_weekly_report,
@@ -209,6 +210,24 @@ def show_theses():
     for r in rows:
         console.print(f"\n[bold]{r['ticker']}[/bold]（{r['market']}，更新：{r['updated_at'][:10]}）")
         console.print(f"  {r['preview']}...")
+
+
+@app.command("morning-note")
+def morning_note(
+    skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
+):
+    """盘前晨报：联网搜索隔夜全球市场动态，生成晨报并推送飞书"""
+    asyncio.run(_morning_note(skip_notify=skip_notify))
+
+
+async def _morning_note(skip_notify: bool):
+    console.print("🌅 开始生成盘前晨报（联网搜索中，约需 1-3 分钟）...")
+    card, text, note = await run_morning_note()
+    console.print(f"\n[bold]核心判断：[/bold]{note.get('headline', '')}")
+    console.print(text)
+    if not skip_notify:
+        ok = await send_feishu_card(card, fallback_text=text)
+        console.print("✅ 晨报推送成功" if ok else "❌ 晨报推送失败")
 
 
 @app.command("monthly-review")

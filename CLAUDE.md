@@ -34,7 +34,7 @@
 
 | Workflow | 触发时间 | 命令 |
 |---|---|---|
-| `daily_analysis` | 工作日 09:00 & 21:30 | `run` |
+| `daily_analysis` | 工作日 09:00 | `run` |
 | `daily_followup` | 周二–五 09:30 | `daily-followup` |
 | `weekly_report` | 周一 09:30 | `weekly-report` |
 | `price_alert` | 工作日 09:00–16:00 & 21:00–05:00 每5分钟 | `price-scan` |
