@@ -8,28 +8,28 @@ holdings:
   # ── 美股 ──────────────────────────────────────────────
   - ticker: NVDA
     market: us
-    shares: 2.04
-    cost_basis: 194.82
+    shares: 3.04
+    cost_basis: 201.83
     sector: 半导体/AI算力
     signal_weight: low   # 回测显示技术信号无效，决策依赖宏观预警和持仓逻辑
     peers: ["AMD", "INTC", "TSM"]   # 竞争对手，新闻一并扫描
-    notes: "AI算力核心持仓；2026-05-14 减仓1股@236.00"
+    notes: "AI算力核心持仓；2026-05-14 减仓1股@236.00；2026-05-29 加仓1股@216.13，加权均价201.83"
 
   - ticker: GOOGL
     market: us
-    shares: 1
-    cost_basis: 312.38
+    shares: 2
+    cost_basis: 337.33
     sector: 互联网/AI
     peers: ["MSFT", "META", "AMZN"]
-    notes: ""
+    notes: "原1股@312.38；2026-06-02 加仓1股@362.28，均价337.33"
 
   - ticker: QQQM
     market: us
-    shares: 1
-    cost_basis: 276.50
+    shares: 2
+    cost_basis: 291.32
     sector: 宽基ETF
     is_dca: true
-    notes: "纳指100 ETF，定投"
+    notes: "纳指100 ETF，定投；原1股@276.50；2026-06-02 加仓1股@306.14，均价291.32"
 
   - ticker: VOO
     market: us
@@ -38,6 +38,14 @@ holdings:
     sector: 宽基ETF
     is_dca: true
     notes: "标普500 ETF，零碎定投"
+
+  - ticker: AAPL
+    market: us
+    shares: 1
+    cost_basis: 308.93
+    sector: 消费科技
+    peers: ["MSFT", "GOOGL", "META"]
+    notes: "苹果；2026-06-02 买入1股@308.93"
 
   - ticker: SCHD
     market: us
@@ -62,6 +70,30 @@ holdings:
     peers: ["NVDA", "AMD", "AMAT", "000660.KS"]   # 000660.KS = SK海力士，内存芯片最直接竞对
     notes: "美光科技；2026-05-11 加仓1股@780，加权均价762.84；2026-05-26 减仓1股@881（剩余0.1533碎股）"
 
+  - ticker: TSM
+    market: us
+    shares: 1
+    cost_basis: 429.34
+    sector: 半导体/AI算力
+    peers: ["NVDA", "ASML", "INTC", "000660.KS"]
+    notes: "台积电ADR；2026-05-29 买入1股@429.34（成交价）"
+
+  - ticker: FUTU
+    market: us
+    shares: 1
+    cost_basis: 105.00
+    sector: 互联网券商/金融
+    peers: ["TIGR", "IBKR"]
+    notes: "富途控股；2026-05-28 买入1股@105.00"
+
+  - ticker: QBTS
+    market: us
+    shares: 2
+    cost_basis: 28.81
+    sector: 量子计算
+    peers: ["IONQ", "RGTI"]
+    notes: "D-Wave量子计算；2026-06-01 买入2股@28.81（高投机仓）"
+
   # ── 港股 ──────────────────────────────────────────────
   - ticker: "03032"
     market: hk
@@ -80,10 +112,17 @@ holdings:
 
   - ticker: "07709"
     market: hk
-    shares: 8
-    cost_basis: 91.06
+    shares: 10
+    cost_basis: 108.00
     sector: 半导体/AI算力
-    notes: "南方东英SK海力士ETF；2026-05-15 买入30股@91.06均价；2026-05-21 减仓20股@94.52均价，剩余10股；2026-05-26 减仓2股@109.10，剩余8股"
+    notes: "南方东英SK海力士ETF；2026-05-15 买入30股@91.06均价；2026-05-21 减仓20股@94.52均价，剩余10股；2026-05-26 减仓2股@109.10，剩余8股；2026-05-27 减仓2股@132.15，剩余6股；2026-06-02 加仓2股@133.85，均价101.90，剩余8股；2026-06-04 加仓2股@132.40，均价108.00，剩余10股"
+
+  - ticker: "00100"
+    market: hk
+    shares: 5
+    cost_basis: 708.50
+    sector: 互联网/AI
+    notes: "MiniMax-W（大模型/AI，2026港股新上市）；2026-06-01 买入5股@708.50"
 
 
 watchlist: []
@@ -91,6 +130,52 @@ watchlist: []
 # ── 账户规模配置（供 Position Sizer 计算建议股数）──────────────────────────
 # 填写实际可交易资金规模；risk_per_trade_pct = 单笔操作可接受的最大亏损占比
 account:
-  usd: 1065            # 美股账户规模（USD）
-  hkd: 7589            # 港股账户规模（HKD）
+  usd: 1035            # 美元储蓄余额（2026-06-05 汇丰截图实测）
+  hkd: 390             # 港元储蓄余额（2026-06-05 汇丰截图实测；港元现金基本耗尽）
+  hkd_fixed: 15672     # 定期存款（2026-06-05 汇丰截图；压舱石，不用于股票）
+  cnh: 3220            # 离岸人民币储蓄（2026-06-05 汇丰截图；CNH 可灵活换汇为 HKD/USD，约 $444 等值）
+  investment_hkd: 41282  # 投资账户总市值（2026-06-05 汇丰截图；含所有持仓）
   risk_per_trade_pct: 5.0   # 每笔交易最大亏损 = 账户规模 × 此值%
+
+# ── 战略配置锚点（L1 粥卡门分析输出，最高优先级）──────────────────────────
+# 此区块由粥卡门配置分析会话手动更新，不被日常信号自动覆盖。
+# 更新频率：每月/季度复盘后，或宏观环境发生重大变化时。
+# 最后更新：2026-06-02（粥卡门配置分析 v1）
+strategy:
+  last_updated: "2026-06-02"
+  source: "粥卡门配置分析"
+
+  # 月定投资金分配比例（三桶模型）
+  monthly_dca:
+    passive_beta_pct: 50      # 被动Beta桶：QQQM/VOO等宽基ETF
+    hedge_pct: 25             # 对冲桶：IAU/BIL
+    ammo_pct: 25              # 弹药桶：机动资金，等待战术机会
+
+  # 对冲桶持仓目标（当前尚未建仓，目标：IAU 3股 + SGOV 4股）
+  hedge_bucket:
+    target_pct: 12.0          # 对冲桶占总投资组合最低比例（低于此值触发警告）
+    holdings:
+      - ticker: IAU
+        label: "黄金ETF（减震器）"
+        target_shares: 3
+        notes: "目标3股（约$80/股）；A股已有3克实物黄金敞口，IAU 仓位可偏小"
+      - ticker: SGOV
+        label: "0-3月美债ETF（压舱石）"
+        target_shares: 4
+        notes: "目标4股（约$100/股）；2026-06-07 选用SGOV替代BIL：费率0.09%<0.135%、久期更短(0-3月vs1-3月)、当前SEC收益率~3.55%"
+
+  # 风险红线（PM裁决必须遵守，不可因战术信号突破）
+  risk_limits:
+    - name: "半导体集中度上限"
+      rule: "sector:半导体/AI算力 <= 45%"
+      current: "42.2%"          # 最近一次粥卡门分析时的实际值
+      action_if_breached: "立即停止半导体加仓，触发集中度警告"
+      note: "当前已接近红线，不再加仓任何半导体标的"
+
+    - name: "单只股票上限"
+      rule: "single_ticker <= 15%"
+      action_if_breached: "超过15%须减仓至15%以下"
+
+    - name: "对冲桶下限"
+      rule: "hedge_bucket >= 12%"
+      action_if_breached: "优先补充IAU/SGOV，暂缓其他新建仓"

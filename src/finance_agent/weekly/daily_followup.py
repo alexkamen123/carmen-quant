@@ -119,7 +119,7 @@ def build_followup_card(
 
     # ── 新增超卖信号 ───────────────────────────────────────────────────────
     if new_opps:
-        lines = ["**⚠️ 新增超卖信号**（RSI < 40）"]
+        lines = ["**⚠️ 新增超卖信号**（RSI < 48）"]
         for c in new_opps[:5]:
             lines.append(f"🔻 {_ticker_label(c['ticker'])}　RSI = {c['rsi']}")
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
