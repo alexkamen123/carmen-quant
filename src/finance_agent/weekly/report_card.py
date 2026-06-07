@@ -42,6 +42,41 @@ def build_weekly_card(result: dict) -> dict:
         })
         elements.append({"tag": "hr"})
 
+    # ── 三桶配置漂移（P2）─────────────────────────────────────────────────────
+    drift_rows = result.get("drift_rows", [])
+    if drift_rows:
+        drift_lines = ["**📐 三桶配置漂移**（目标 → 当前）"]
+        for r in drift_rows:
+            sign = "+" if r["drift"] >= 0 else ""
+            drift_lines.append(
+                f"{r['status']} {r['label']}：{r['target_pct']:.0f}% → "
+                f"**{r['current_pct']:.0f}%**（漂移 {sign}{r['drift']:.0f}%）"
+            )
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "\n".join(drift_lines)},
+        })
+        elements.append({"tag": "hr"})
+
+    # ── 上期指导执行情况（P2）─────────────────────────────────────────────────
+    adherence = result.get("guidance_adherence", {})
+    if adherence and any(adherence.get(k) for k in ("followed", "expired", "open")):
+        g_lines = ["**📋 指导执行情况**"]
+        for it in adherence.get("followed", []):
+            g_lines.append(f"✅ 已照做：{it['action']} **{it['ticker']}**")
+        for it in adherence.get("expired", []):
+            g_lines.append(f"❌ 未执行（已过期）：{it['action']} **{it['ticker']}** — {it.get('target', '')}")
+        for it in adherence.get("open", []):
+            g_lines.append(
+                f"⏳ 进行中：{it['action']} **{it['ticker']}** — {it.get('target', '')}"
+                f"（截止 {it.get('due_by', '')}）"
+            )
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "\n".join(g_lines)},
+        })
+        elements.append({"tag": "hr"})
+
     # ── Step 1: 对冲方向 ──────────────────────────────────────────────────────
     if hedge_directions:
         direction_lines = ["**🧭 建议对冲方向**"]
