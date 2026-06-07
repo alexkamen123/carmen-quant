@@ -113,6 +113,7 @@ def init_db(db_path: str | Path | None = None) -> None:
     with _conn(p) as con:
         con.executescript(_CREATE_SQL)
         con.executescript(_CREATE_ACTIONS_SQL)
+        con.executescript(_CREATE_SNAPSHOT_SQL)
         _migrate_actions_table(con)
         _migrate_recommendations_table(con)
 
@@ -344,11 +345,23 @@ CREATE TABLE IF NOT EXISTS user_actions (
     price         REAL,            -- 操作价格（可选）
     note          TEXT,            -- 备注
     rec_date      TEXT,            -- 对应哪天的推荐（空=当天）
-    actual_return REAL,            -- BUY 操作 7 天后的实际涨跌幅（%），自动回填
+    actual_return REAL,            -- 操作后 7 天实际涨跌幅（%），BUY/SELL 均自动回填
+    source        TEXT DEFAULT 'manual',  -- manual=log-action 手动；auto=portfolio.yaml 自动检测
     created_at    TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_actions_ticker ON user_actions(ticker);
 CREATE INDEX IF NOT EXISTS idx_actions_date   ON user_actions(date);
+"""
+
+# 持仓快照：存每只票最新状态，用于和 portfolio.yaml 对比推断买卖操作
+_CREATE_SNAPSHOT_SQL = """
+CREATE TABLE IF NOT EXISTS holdings_snapshot (
+    ticker      TEXT PRIMARY KEY,
+    market      TEXT NOT NULL DEFAULT 'us',
+    shares      REAL NOT NULL,
+    cost_basis  REAL,
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
 """
 
 _MIGRATE_ACTIONS_SQL = """
@@ -364,6 +377,11 @@ def _migrate_actions_table(con: sqlite3.Connection) -> None:
             con.execute("ALTER TABLE user_actions ADD COLUMN actual_return REAL")
         except sqlite3.OperationalError:
             pass  # 并发写入时可能已存在，忽略
+    if "source" not in existing_cols:
+        try:
+            con.execute("ALTER TABLE user_actions ADD COLUMN source TEXT DEFAULT 'manual'")
+        except sqlite3.OperationalError:
+            pass
 
 
 def log_user_action(ticker: str, action: str,
@@ -371,8 +389,9 @@ def log_user_action(ticker: str, action: str,
                     price: float | None = None,
                     note: str = "",
                     rec_date: str = "",
+                    source: str = "manual",
                     db_path: str | Path | None = None) -> None:
-    """记录用户的实际操作（BUY/SELL/TRIM/HOLD/SKIP）"""
+    """记录用户的实际操作（BUY/SELL/TRIM/HOLD/SKIP）。source: manual=手动 / auto=自动检测"""
     p = _resolve_db(db_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with _conn(p) as con:
@@ -380,9 +399,9 @@ def log_user_action(ticker: str, action: str,
         _migrate_actions_table(con)
         today = datetime.today().strftime("%Y-%m-%d")
         con.execute(
-            "INSERT INTO user_actions(date, ticker, action, shares, price, note, rec_date) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?)",
-            (today, ticker.upper(), action.upper(), shares, price, note, rec_date or today),
+            "INSERT INTO user_actions(date, ticker, action, shares, price, note, rec_date, source) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            (today, ticker.upper(), action.upper(), shares, price, note, rec_date or today, source),
         )
     print(f"[UserAction] 已记录：{ticker} {action}" +
           (f" {shares}股" if shares else "") +
@@ -409,6 +428,150 @@ def get_action_history(ticker: str | None = None,
                 (since,),
             ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── 持仓快照与自动采集 ─────────────────────────────────────────
+
+def _load_snapshot(con: sqlite3.Connection) -> dict[str, dict]:
+    """读 holdings_snapshot，返回 {ticker: {market, shares, cost_basis}}"""
+    rows = con.execute(
+        "SELECT ticker, market, shares, cost_basis FROM holdings_snapshot"
+    ).fetchall()
+    return {
+        r["ticker"]: {"market": r["market"], "shares": r["shares"],
+                      "cost_basis": r["cost_basis"]}
+        for r in rows
+    }
+
+
+def _save_snapshot(con: sqlite3.Connection, holdings: list[dict]) -> None:
+    """用当前 holdings 覆盖快照（先清空，以正确处理已清仓消失的票）"""
+    con.execute("DELETE FROM holdings_snapshot")
+    con.executemany(
+        "INSERT INTO holdings_snapshot(ticker, market, shares, cost_basis, updated_at) "
+        "VALUES(?, ?, ?, ?, datetime('now'))",
+        [
+            (str(h["ticker"]), h.get("market", "us"),
+             float(h.get("shares", 0) or 0),
+             (float(h.get("cost_basis") or 0) or None))
+            for h in holdings
+        ],
+    )
+
+
+def _infer_action_price(cur_shares: float, cur_cost: float | None,
+                        prev_shares: float, prev_cost: float | None) -> float | None:
+    """
+    加仓时从加权均价变化反推「本次边际成交价」：
+      (今shares×今cost − 昨shares×昨cost) / Δshares
+    任一 cost 缺失或非加仓则返回 None。
+    """
+    delta = cur_shares - prev_shares
+    if delta <= 0 or cur_cost is None or prev_cost is None:
+        return None
+    price = (cur_shares * cur_cost - prev_shares * prev_cost) / delta
+    return round(price, 4) if price > 0 else None
+
+
+def detect_portfolio_changes(
+    portfolio_path: str | Path = "config/portfolio.yaml",
+    db_path: str | Path | None = None,
+    dry_run: bool = False,
+) -> list[dict]:
+    """
+    对比 portfolio.yaml 与上次快照，推断买卖操作并写入 user_actions（source='auto'）。
+    返回检测到的操作列表 [{ticker, market, action, shares, price, note}]。
+
+    规则：
+      新增 ticker  → BUY 全部，价=cost_basis
+      shares ↑     → BUY Δ，价=反推边际成交价
+      shares ↓     → SELL |Δ|，价=检测日收盘价（近似）
+      ticker 消失  → SELL 全部，价=检测日收盘价
+      shares 不变  → 忽略（cost 微调视为手填修正）
+    首次运行（快照为空）只建基线、返回 []。
+    dry_run=True 只检测不写库、不更新快照。
+    """
+    import yaml
+    p = _resolve_db(db_path)
+    init_db(p)
+
+    with open(Path(portfolio_path)) as f:
+        portfolio = yaml.safe_load(f) or {}
+    holdings = portfolio.get("holdings", [])
+    current = {
+        str(h["ticker"]): {
+            "market": h.get("market", "us"),
+            "shares": float(h.get("shares", 0) or 0),
+            "cost_basis": (float(h.get("cost_basis") or 0) or None),
+        }
+        for h in holdings
+    }
+
+    with _conn(p) as con:
+        prev = _load_snapshot(con)
+
+    # ── 首次运行：只建基线，不生成操作 ──
+    if not prev:
+        if not dry_run:
+            with _conn(p) as con:
+                _save_snapshot(con, holdings)
+        print(f"[AutoDetect] 首次运行，建立持仓基线（{len(current)} 只），不生成操作")
+        return []
+
+    SHARE_EPS = 1e-4
+    detected: list[dict] = []
+    for ticker in sorted(set(prev) | set(current)):
+        c, pv = current.get(ticker), prev.get(ticker)
+        if c and not pv:                                  # 新建仓
+            detected.append({
+                "ticker": ticker, "market": c["market"], "action": "BUY",
+                "shares": round(c["shares"], 4), "price": c["cost_basis"],
+                "note": "自动检测：新建仓",
+            })
+        elif pv and not c:                                # 清仓
+            price = _fetch_current_price(ticker, pv["market"])
+            detected.append({
+                "ticker": ticker, "market": pv["market"], "action": "SELL",
+                "shares": round(pv["shares"], 4),
+                "price": round(price, 4) if price else None,
+                "note": "自动检测：清仓（portfolio.yaml 已移除）",
+            })
+        elif c and pv:
+            delta = c["shares"] - pv["shares"]
+            if delta > SHARE_EPS:                         # 加仓
+                detected.append({
+                    "ticker": ticker, "market": c["market"], "action": "BUY",
+                    "shares": round(delta, 4),
+                    "price": _infer_action_price(c["shares"], c["cost_basis"],
+                                                 pv["shares"], pv["cost_basis"]),
+                    "note": "自动检测：加仓",
+                })
+            elif delta < -SHARE_EPS:                      # 减仓
+                price = _fetch_current_price(ticker, c["market"])
+                detected.append({
+                    "ticker": ticker, "market": c["market"], "action": "SELL",
+                    "shares": round(-delta, 4),
+                    "price": round(price, 4) if price else None,
+                    "note": "自动检测：减仓",
+                })
+            # shares 不变（含 cost 微调）→ 忽略
+
+    if dry_run:
+        return detected
+
+    for a in detected:
+        log_user_action(
+            ticker=a["ticker"], action=a["action"], shares=a["shares"],
+            price=a["price"], note=a["note"], source="auto", db_path=p,
+        )
+    with _conn(p) as con:
+        _save_snapshot(con, holdings)
+
+    if detected:
+        print(f"[AutoDetect] 检测到 {len(detected)} 笔操作，已记入 user_actions（source=auto）")
+    else:
+        print("[AutoDetect] 持仓无变化，未生成操作")
+    return detected
 
 
 # ── 准确率统计摘要 ────────────────────────────────────────────
@@ -524,10 +687,11 @@ def weekly_accuracy_summary(db_path: str | Path | None = None) -> dict:
 
 async def backfill_action_returns(db_path: str | Path | None = None) -> int:
     """
-    回填 BUY 操作 7 天后的实际涨跌幅（actual_return）。
-    - 找出 7+ 天前、actual_return 为空的 BUY 记录
-    - 用 yfinance 拉取操作当天收盘价 → 当前价，计算涨跌幅
-    - 只计算到操作日后第 7 个交易日（近似用 period='10d'）
+    回填 BUY/SELL/TRIM 操作 7 天后的远期涨跌幅（actual_return）。
+    - 找出 7+ 天前、actual_return 为空的记录
+    - 用 yfinance 拉操作当天收盘价 → 第 7 个交易日收盘价，计算涨跌幅
+    - 符号约定：BUY 远期为正=买对了；SELL/TRIM 远期为负=卖对了（躲过下跌）
+    - 港股代码（纯数字）自动转 yfinance 的 NNNN.HK 格式
     """
     p = _resolve_db(db_path)
     init_db(p)
@@ -536,8 +700,8 @@ async def backfill_action_returns(db_path: str | Path | None = None) -> int:
     with _conn(p) as con:
         _migrate_actions_table(con)
         pending = con.execute(
-            "SELECT id, ticker, date, price FROM user_actions "
-            "WHERE action = 'BUY' AND actual_return IS NULL AND date <= ?",
+            "SELECT id, ticker, action, date, price FROM user_actions "
+            "WHERE action IN ('BUY','SELL','TRIM') AND actual_return IS NULL AND date <= ?",
             (cutoff,),
         ).fetchall()
 
@@ -548,12 +712,14 @@ async def backfill_action_returns(db_path: str | Path | None = None) -> int:
     filled = 0
 
     for row in pending:
-        row_id, ticker, buy_date, entry_price = row["id"], row["ticker"], row["date"], row["price"]
+        row_id, ticker, act = row["id"], row["ticker"], row["action"]
+        act_date, entry_price = row["date"], row["price"]
+        # 港股纯数字代码 → NNNN.HK
+        yf_ticker = f"{int(ticker):04d}.HK" if ticker.isdigit() else ticker
         try:
-            # 用 yfinance 拉 buy_date 之后的价格序列
             df = await loop.run_in_executor(
                 None,
-                lambda t=ticker, d=buy_date: yf.download(
+                lambda t=yf_ticker, d=act_date: yf.download(
                     t, start=d, period="15d", progress=False, auto_adjust=True
                 )
             )
@@ -579,7 +745,7 @@ async def backfill_action_returns(db_path: str | Path | None = None) -> int:
                     (ret, row_id),
                 )
             filled += 1
-            print(f"[FeedbackLoop] {ticker} BUY@{base:.2f} → 7d {ret:+.1f}%")
+            print(f"[FeedbackLoop] {ticker} {act}@{base:.2f} → 7d {ret:+.1f}%")
         except Exception as e:
             print(f"[FeedbackLoop] {ticker} 回填失败: {e}")
 
@@ -597,11 +763,15 @@ def get_feedback_accuracy(db_path: str | Path | None = None) -> dict:
     p = _resolve_db(db_path)
     init_db(p)
 
-    def _stats(rows: list) -> dict:
+    def _stats(rows: list, bullish: bool = True) -> dict:
         total = len(rows)
         if total == 0:
             return {"total": 0, "wins": 0, "win_rate": 0.0, "avg_return": 0.0}
-        wins = sum(1 for r in rows if (r["actual_return"] or 0) > 0)
+        # BUY：远期上涨=买对了；SELL：远期下跌=卖对了（躲过下跌）
+        if bullish:
+            wins = sum(1 for r in rows if (r["actual_return"] or 0) > 0)
+        else:
+            wins = sum(1 for r in rows if (r["actual_return"] or 0) < 0)
         avg = sum((r["actual_return"] or 0) for r in rows) / total
         return {
             "total": total,
@@ -616,6 +786,10 @@ def get_feedback_accuracy(db_path: str | Path | None = None) -> dict:
             "SELECT actual_return FROM user_actions "
             "WHERE action = 'BUY' AND actual_return IS NOT NULL"
         ).fetchall()
+        sold = con.execute(
+            "SELECT actual_return FROM user_actions "
+            "WHERE action IN ('SELL', 'TRIM') AND actual_return IS NOT NULL"
+        ).fetchall()
         skipped = con.execute(
             "SELECT actual_return FROM user_actions "
             "WHERE action IN ('SKIP', 'HOLD') AND actual_return IS NOT NULL"
@@ -623,6 +797,7 @@ def get_feedback_accuracy(db_path: str | Path | None = None) -> dict:
 
     return {
         "bought": _stats(bought),
+        "sold": _stats(sold, bullish=False),
         "skipped": _stats(skipped),
     }
 
@@ -693,11 +868,16 @@ def feedback_summary(db_path: str | Path | None = None) -> str:
     """
     s = get_feedback_accuracy(db_path)
     b, k = s["bought"], s["skipped"]
+    sold = s.get("sold", {"total": 0, "wins": 0})
 
     parts = []
     if b["total"] > 0:
         parts.append(
             f"实际买入 {b['total']} 次：胜率 {b['win_rate']}% · 均{'+' if b['avg_return'] >= 0 else ''}{b['avg_return']}%"
+        )
+    if sold["total"] > 0:
+        parts.append(
+            f"卖出 {sold['total']} 次：其中 {sold['wins']} 次成功躲跌（卖后下跌）"
         )
     if k["total"] > 0:
         missed = k["wins"]
