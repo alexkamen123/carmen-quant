@@ -18,7 +18,13 @@ from pathlib import Path
 
 from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli
 from finance_agent.agents.bull_agent import deepseek_chat
-from finance_agent.db.tracker import _resolve_db, _CREATE_SQL, feedback_summary, backfill_action_returns
+from finance_agent.db.tracker import (
+    _resolve_db, _CREATE_SQL, feedback_summary, backfill_action_returns,
+    guidance_month_summary, check_guidance_adherence,
+)
+from finance_agent.monthly.scorecard import (
+    build_trade_review, trade_review_summary, generate_scorecard,
+)
 
 
 REVIEW_SYSTEM = """你是一位家庭投资组合的月度复盘顾问。
@@ -84,7 +90,7 @@ def _get_last_month_stats(db_path: Path) -> dict:
         ).fetchall()
 
     if not rows:
-        return {"month": month_label, "empty": True}
+        return {"month": month_label, "since": since, "until": until, "empty": True}
 
     rows = [dict(r) for r in rows]
     correct = [r for r in rows if r["outcome"] == "正确"]
@@ -121,6 +127,8 @@ def _get_last_month_stats(db_path: Path) -> dict:
 
     return {
         "month": month_label,
+        "since": since,
+        "until": until,
         "overall_acc": f"{acc_pct}%（{len(correct)}✅ {len(wrong)}❌ / 共{total}条）",
         "ticker_acc": "\n".join(ticker_acc_lines),
         "correct_samples": correct_samples,
@@ -140,9 +148,32 @@ def _get_thesis_notes(db_path: Path) -> str:
     return "\n".join(f"  {r['ticker']}: {r['preview']}..." for r in rows)
 
 
-async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, str, dict] | None:
+def _load_cached_drift() -> str:
+    """读 data/weekly_latest.json 的 drift_rows，压成一行；无则返回空串。"""
+    try:
+        path = Path("data/weekly_latest.json")
+        if not path.exists():
+            return ""
+        rows = json.loads(path.read_text()).get("drift_rows", [])
+        if not rows:
+            return ""
+        return " | ".join(
+            f"{r['bucket']} {r['current_pct']:.0f}%/{r['target_pct']:.0f}%{r['status']}"
+            for r in rows
+        )
+    except Exception:
+        return ""
+
+
+def _scorecard_bar(score: int) -> str:
+    """0-10 分 → 进度条，如 4 → ████░░░░░░"""
+    s = max(0, min(10, int(score)))
+    return "█" * s + "░" * (10 - s)
+
+
+async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, str, dict, dict] | None:
     """
-    生成月度回顾，返回 (飞书卡片 dict, AI复盘文本, stats dict)。
+    生成月度回顾，返回 (飞书卡片 dict, AI复盘文本, stats dict, scorecard dict)。
     若上月无数据则返回 None。
     """
     db_path = _resolve_db(db_path_str)
@@ -177,6 +208,45 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, 
         print(f"[MonthlyReview] Claude 失败，降级 DeepSeek: {e}")
         summary = await deepseek_chat(REVIEW_SYSTEM, user_msg)
 
+    # ── P3: 逐笔反事实复盘 + 5 维行为打分 ──
+    reviewed = build_trade_review(stats["since"], stats["until"], db_path=str(db_path))
+    # 先刷新历史指导执行状态（月报可能晚于下次周报，否则计数陈旧），再读计数
+    check_guidance_adherence(db_path=str(db_path))
+    g_counts = guidance_month_summary(stats["since"], stats["until"], db_path=str(db_path))
+    drift_str = _load_cached_drift() or "暂无（本月未跑周报）"
+    scorecard = await generate_scorecard({
+        "month": stats["month"],
+        "overall_acc": stats["overall_acc"],
+        "feedback": fb_summary,
+        "g_followed": g_counts["followed"],
+        "g_expired": g_counts["expired"],
+        "g_open": g_counts["open"],
+        "drift": drift_str,
+        "trade_review": trade_review_summary(reviewed),
+    })
+
+    # 行为评分区块
+    sc_lines = ["**🎯 行为评分**"]
+    for d in scorecard.get("dimensions", []):
+        sc_lines.append(
+            f"{d['name']}　{_scorecard_bar(d['score'])} {d['score']}/10\n　{d.get('reason', '')}"
+        )
+    if scorecard.get("overall"):
+        sc_lines.append(f"\n**总评：** {scorecard['overall']}")
+
+    # 逐笔复盘区块
+    if reviewed:
+        tr_lines = ["**🔍 逐笔复盘**（已回填收益的操作）"]
+        for t in reviewed:
+            price = f"@{t['price']:g}" if t.get("price") else ""
+            sh = f"{t['shares']:g}股" if t.get("shares") is not None else ""
+            tr_lines.append(
+                f"{t['grade']} **{t['ticker']}** {t['action']} {sh}{price}"
+                f" → 7日 {t['actual_return']:+.1f}% · {t['note']}"
+            )
+    else:
+        tr_lines = ["**🔍 逐笔复盘**", "本月无已回填收益的操作"]
+
     # ── 构建飞书卡片 ──
     card = {
         "config": {"wide_screen_mode": True},
@@ -206,6 +276,16 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, 
             {"tag": "hr"},
             {
                 "tag": "div",
+                "text": {"tag": "lark_md", "content": "\n".join(sc_lines)},
+            },
+            {"tag": "hr"},
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": "\n".join(tr_lines)},
+            },
+            {"tag": "hr"},
+            {
+                "tag": "div",
                 "text": {"tag": "lark_md", "content": f"💡 **月度复盘**\n\n{summary.strip()}"},
             },
             {"tag": "hr"},
@@ -216,4 +296,4 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, 
             },
         ],
     }
-    return card, summary, stats
+    return card, summary, stats, scorecard

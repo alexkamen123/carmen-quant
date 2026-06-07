@@ -450,6 +450,22 @@ def get_action_history(ticker: str | None = None,
     return [dict(r) for r in rows]
 
 
+def get_period_actions(since: str, until: str,
+                       db_path: str | Path | None = None) -> list[dict]:
+    """返回 [since, until] 区间内、actual_return 已回填的操作（逐笔复盘用）。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        rows = con.execute(
+            "SELECT date, ticker, action, shares, price, actual_return "
+            "FROM user_actions "
+            "WHERE date >= ? AND date <= ? AND actual_return IS NOT NULL "
+            "ORDER BY date",
+            (since, until),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ── 持仓快照与自动采集 ─────────────────────────────────────────
 
 def _load_snapshot(con: sqlite3.Connection) -> dict[str, dict]:
@@ -704,6 +720,25 @@ def get_open_guidance(db_path: str | Path | None = None) -> list[dict]:
             "SELECT * FROM guidance WHERE status='open' ORDER BY created_date DESC"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def guidance_month_summary(since: str, until: str,
+                           db_path: str | Path | None = None) -> dict:
+    """返回 [since, until] 内创建的 guidance 按状态计数（行为打分输入用）。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        rows = con.execute(
+            "SELECT status, COUNT(*) AS n FROM guidance "
+            "WHERE created_date >= ? AND created_date <= ? GROUP BY status",
+            (since, until),
+        ).fetchall()
+    counts = {r["status"]: r["n"] for r in rows}
+    return {
+        "followed": counts.get("followed", 0),
+        "expired": counts.get("expired", 0),
+        "open": counts.get("open", 0),
+    }
 
 
 # ── 准确率统计摘要 ────────────────────────────────────────────
