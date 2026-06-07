@@ -253,8 +253,10 @@ async def _monthly_review(skip_notify: bool):
     if result is None:
         console.print("⚪ 上月无已回填数据，跳过月度回顾")
         return
-    card, summary, stats = result
+    card, summary, stats, scorecard = result
     console.print("✅ 月度回顾已生成")
+    for d in scorecard.get("dimensions", []):
+        console.print(f"   {d['name']}: {d['score']}/10 — {d.get('reason', '')}")
     ingest_monthly_review(summary, stats)
     if not skip_notify:
         ok = await send_feishu_card(card)
