@@ -114,6 +114,7 @@ def init_db(db_path: str | Path | None = None) -> None:
         con.executescript(_CREATE_SQL)
         con.executescript(_CREATE_ACTIONS_SQL)
         con.executescript(_CREATE_SNAPSHOT_SQL)
+        con.executescript(_CREATE_GUIDANCE_SQL)
         _migrate_actions_table(con)
         _migrate_recommendations_table(con)
 
@@ -364,6 +365,25 @@ CREATE TABLE IF NOT EXISTS holdings_snapshot (
 );
 """
 
+# 指导台账：周报/月报生成的纠偏建议，下期比对 user_actions 检验是否执行
+_CREATE_GUIDANCE_SQL = """
+CREATE TABLE IF NOT EXISTS guidance (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_date  TEXT NOT NULL,
+    source        TEXT NOT NULL,          -- weekly / monthly
+    ticker        TEXT,                   -- 相关标的，可逗号分隔（IAU,SGOV）
+    action        TEXT,                   -- 建仓/补仓/减仓/清仓
+    target        TEXT,                   -- 目标描述
+    rationale     TEXT,
+    due_by        TEXT,
+    status        TEXT DEFAULT 'open',    -- open / followed / expired
+    resolved_date TEXT,
+    note          TEXT,
+    created_at    TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_guidance_status ON guidance(status);
+"""
+
 _MIGRATE_ACTIONS_SQL = """
 ALTER TABLE user_actions ADD COLUMN actual_return REAL;
 """
@@ -572,6 +592,118 @@ def detect_portfolio_changes(
     else:
         print("[AutoDetect] 持仓无变化，未生成操作")
     return detected
+
+
+# ── 指导台账（guidance ledger）─────────────────────────────────
+
+_BUY_GUIDANCE = {"建仓", "补仓", "买入", "加仓"}
+_SELL_GUIDANCE = {"减仓", "清仓", "卖出"}
+
+
+def save_guidance(items: list[dict], source: str = "weekly",
+                  db_path: str | Path | None = None) -> int:
+    """
+    批量写入指导项，返回新增条数。
+    去重：同 (source, ticker, action) 在近 7 天内已有 open 记录则跳过（避免每周重复）。
+    items 每项：{ticker, action, target, rationale, due_by?}
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    today = datetime.today().strftime("%Y-%m-%d")
+    recent = (datetime.today() - timedelta(days=7)).strftime("%Y-%m-%d")
+    added = 0
+    with _conn(p) as con:
+        for it in items:
+            ticker = (it.get("ticker") or "").upper()
+            action = it.get("action") or ""
+            dup = con.execute(
+                "SELECT 1 FROM guidance WHERE source=? AND ticker=? AND action=? "
+                "AND status='open' AND created_date >= ? LIMIT 1",
+                (source, ticker, action, recent),
+            ).fetchone()
+            if dup:
+                continue
+            due_by = it.get("due_by") or (
+                datetime.today() + timedelta(days=14)).strftime("%Y-%m-%d")
+            con.execute(
+                "INSERT INTO guidance(created_date, source, ticker, action, target, "
+                "rationale, due_by, status) VALUES(?,?,?,?,?,?,?,'open')",
+                (today, source, ticker, action, it.get("target", ""),
+                 it.get("rationale", ""), due_by),
+            )
+            added += 1
+    if added:
+        print(f"[Guidance] 写入 {added} 条新指导（source={source}）")
+    return added
+
+
+def check_guidance_adherence(db_path: str | Path | None = None) -> dict:
+    """
+    遍历所有 open 指导项，比对 created_date 之后的 user_actions：
+      建仓/补仓/买入/加仓 → 找 BUY；减仓/清仓/卖出 → 找 SELL/TRIM
+      ticker 逗号分隔，任一匹配即算执行
+    命中 → followed + resolved_date；已过 due_by 未命中 → expired
+    返回 {followed:[...], expired:[...], open:[...]}，每项含 ticker/action/target/due_by。
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    today = datetime.today().strftime("%Y-%m-%d")
+    result: dict[str, list] = {"followed": [], "expired": [], "open": []}
+
+    with _conn(p) as con:
+        rows = con.execute("SELECT * FROM guidance WHERE status='open'").fetchall()
+        for g in rows:
+            tickers = [t.strip().upper() for t in (g["ticker"] or "").split(",") if t.strip()]
+            action = g["action"] or ""
+            if action in _BUY_GUIDANCE:
+                want = ("BUY",)
+            elif action in _SELL_GUIDANCE:
+                want = ("SELL", "TRIM")
+            else:
+                want = ()
+
+            matched = None
+            if tickers and want:
+                tk_ph = ",".join("?" * len(tickers))
+                act_ph = ",".join("?" * len(want))
+                matched = con.execute(
+                    f"SELECT date FROM user_actions "
+                    f"WHERE ticker IN ({tk_ph}) AND action IN ({act_ph}) AND date >= ? "
+                    f"ORDER BY date LIMIT 1",
+                    (*tickers, *want, g["created_date"]),
+                ).fetchone()
+
+            item = {"id": g["id"], "ticker": g["ticker"], "action": action,
+                    "target": g["target"], "due_by": g["due_by"]}
+
+            if matched:
+                con.execute(
+                    "UPDATE guidance SET status='followed', resolved_date=? WHERE id=?",
+                    (matched["date"], g["id"]),
+                )
+                item["resolved_date"] = matched["date"]
+                result["followed"].append(item)
+            elif g["due_by"] and today > g["due_by"]:
+                con.execute(
+                    "UPDATE guidance SET status='expired', resolved_date=? WHERE id=?",
+                    (today, g["id"]),
+                )
+                result["expired"].append(item)
+            else:
+                result["open"].append(item)
+
+    return result
+
+
+def get_open_guidance(db_path: str | Path | None = None) -> list[dict]:
+    """列出所有未结（open）指导项，按创建日期倒序。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        rows = con.execute(
+            "SELECT * FROM guidance WHERE status='open' ORDER BY created_date DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── 准确率统计摘要 ────────────────────────────────────────────
