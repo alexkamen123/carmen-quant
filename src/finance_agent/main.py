@@ -15,7 +15,7 @@ from finance_agent.db.thesis_generator import generate_all_theses, generate_thes
 from finance_agent.db.tracker import (
     list_theses, log_user_action, get_action_history,
     backfill_action_returns, get_feedback_accuracy, feedback_summary,
-    get_dip_stats, backfill_dip_outcomes,
+    get_dip_stats, backfill_dip_outcomes, detect_portfolio_changes,
 )
 from finance_agent.alerts.earnings_trigger import check_and_alert_earnings
 from finance_agent.weekly.allocation_advisor import run_allocation_advisor
@@ -52,6 +52,15 @@ def run(
 async def _run(skip_notify: bool, backfill: bool):
     Path("data").mkdir(exist_ok=True)
     await init_db(DB_PATH)
+
+    # Step 0: 检测 portfolio.yaml 持仓变更，自动记录买卖操作（喂行为闭环）
+    try:
+        changes = detect_portfolio_changes(db_path=DB_PATH)
+        for c in changes:
+            price = f"@{c['price']}" if c.get("price") else ""
+            console.print(f"   🔄 自动记录 {c['ticker']} {c['action']} {c['shares']}股{price}")
+    except Exception as e:
+        console.print(f"[yellow]⚠️ 持仓变更检测跳过：{e}[/yellow]")
 
     # Step 1: 回填昨日胜率 + 暴跌告警回测
     if backfill:
@@ -250,6 +259,22 @@ async def _monthly_review(skip_notify: bool):
     if not skip_notify:
         ok = await send_feishu_card(card)
         console.print("✅ 月度回顾推送成功" if ok else "❌ 月度回顾推送失败")
+
+
+@app.command("sync-actions")
+def sync_actions(
+    dry_run: bool = typer.Option(False, "--dry-run", help="只检测不写库，预览将记录的操作"),
+):
+    """检测 portfolio.yaml 持仓变更，自动记录为买卖操作（喂给行为闭环）"""
+    changes = detect_portfolio_changes(db_path=DB_PATH, dry_run=dry_run)
+    if not changes:
+        console.print("⚪ 未检测到持仓变更（或首次建立基线）")
+        return
+    tag = "（dry-run，未写库）" if dry_run else ""
+    console.print(f"✅ 检测到 {len(changes)} 笔操作{tag}：")
+    for c in changes:
+        price = f"@{c['price']}" if c.get("price") else "（价格未知）"
+        console.print(f"   {c['ticker']} {c['action']} {c['shares']}股 {price}  [{c['note']}]")
 
 
 @app.command("log-action")
