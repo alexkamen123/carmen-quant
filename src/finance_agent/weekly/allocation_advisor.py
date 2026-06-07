@@ -19,7 +19,10 @@ import yfinance as yf
 from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli, strip_markdown
 from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.data.macro import fetch_macro_context
-from finance_agent.db.tracker import weekly_accuracy_summary
+from finance_agent.db.tracker import (
+    weekly_accuracy_summary, save_guidance, check_guidance_adherence,
+)
+from finance_agent.weekly.drift import bucket_of, compute_drift, derive_guidance
 
 
 async def _claude_json(system: str, user: str, timeout: int = 120,
@@ -282,6 +285,8 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
 
     # ── 计算持仓集中度 ──
     sector_value: dict[str, float] = {}
+    bucket_value: dict[str, float] = {}   # 三桶漂移用（P2）
+    holding_value: dict[str, float] = {}  # 单票集中度用（P2）
     total_value = 0.0
     holdings_lines = []
     for h in holdings:
@@ -306,6 +311,9 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
         _FX = {"us": 1.0, "hk": 1 / 7.8, "cn": 1 / 7.2}
         usd_value = shares * price * _FX.get(market, 1.0)
         sector_value[sector] = sector_value.get(sector, 0.0) + usd_value
+        bucket = bucket_of(h)
+        bucket_value[bucket] = bucket_value.get(bucket, 0.0) + usd_value
+        holding_value[ticker] = holding_value.get(ticker, 0.0) + usd_value
         total_value += usd_value
         holdings_lines.append(
             f"  {ticker}（{sector}）{shares}股 × {price:.2f} ≈ ${usd_value:.0f}"
@@ -411,6 +419,17 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
     ]
     print(f"[AllocationAdvisor] 本次周报完整度：{' | '.join(completeness)}")
 
+    # ── 三桶漂移 + 指导台账（P2）──
+    strategy = portfolio.get("strategy", {})
+    drift_rows = compute_drift(bucket_value, total_value, strategy)
+    save_guidance(derive_guidance(drift_rows, holding_value, total_value, strategy),
+                  source="weekly")
+    guidance_adherence = check_guidance_adherence()   # 检验历史指导执行情况
+    print("[AllocationAdvisor] 三桶漂移：" + " | ".join(
+        f"{r['bucket']} {r['current_pct']:.0f}%/{r['target_pct']:.0f}%{r['status']}"
+        for r in drift_rows
+    ))
+
     result: dict[str, Any] = {
         "date": __import__("datetime").date.today().isoformat(),
         "iso_week": current_week,
@@ -421,6 +440,8 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
         "opportunities": opportunities,
         "candidates_screened": len(all_candidates),
         "weekly_stats": weekly_stats,
+        "drift_rows": drift_rows,
+        "guidance_adherence": guidance_adherence,
         # 跟进用：本次推荐的所有 instrument tickers
         "watch_tickers": list({
             ins["ticker"]
