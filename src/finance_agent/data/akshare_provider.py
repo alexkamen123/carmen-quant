@@ -81,14 +81,27 @@ class AkShareProvider(DataProvider):
                         None,
                         lambda: _download_with_retry(yf_ticker, period=f"{days + 10}d")
                     )
-                if df_yf.empty:
-                    raise ValueError(f"yfinance 也无法获取 {ticker} 数据")
-                if isinstance(df_yf.columns, pd.MultiIndex):
-                    df_yf.columns = [c[0].lower() for c in df_yf.columns]
-                else:
-                    df_yf.columns = [c.lower() for c in df_yf.columns]
-                df_yf.index = pd.to_datetime(df_yf.index)
-                return df_yf[["open", "high", "low", "close", "volume"]].tail(days)
+                if not df_yf.empty:
+                    if isinstance(df_yf.columns, pd.MultiIndex):
+                        df_yf.columns = [c[0].lower() for c in df_yf.columns]
+                    else:
+                        df_yf.columns = [c.lower() for c in df_yf.columns]
+                    df_yf.index = pd.to_datetime(df_yf.index)
+                    result_yf = df_yf[["open", "high", "low", "close", "volume"]].tail(days)
+                    if len(result_yf) >= 20:
+                        return result_yf
+                    # yfinance 收录不足（如新股 yahoo 仅零星数据）→ 落到腾讯兜底
+                    print(f"[AkShare] {ticker} yfinance 仅 {len(result_yf)} 条，尝试腾讯兜底")
+
+                # AkShare 与 yfinance 均不可用 → 腾讯港股接口兜底（覆盖 yahoo 未收录的新股）
+                from .tencent_provider import fetch_hk_daily_tencent
+                df_tx = await loop.run_in_executor(
+                    None, lambda: fetch_hk_daily_tencent(ticker, days)
+                )
+                if df_tx is not None and not df_tx.empty:
+                    print(f"[Tencent] {ticker} 兜底成功，取得 {len(df_tx)} 条日K")
+                    return df_tx
+                raise ValueError(f"AkShare/yfinance/腾讯 均无法获取 {ticker} 数据")
         else:
             # A股
             df = await loop.run_in_executor(
