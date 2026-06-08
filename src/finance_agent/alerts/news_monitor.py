@@ -743,36 +743,38 @@ async def _send_us_macro_alert(title: str, published: str, impact: int, sentimen
 # 暴跌机会分析
 # ─────────────────────────────────────────────────────────────────────────────
 
-DIP_SYSTEM = """你是一位家庭投资顾问，专门识别「长期逻辑不变、短期非理性下跌」的买入机会。
+DIP_SYSTEM = """你是一位家庭投资顾问。注意：**触发本次分析的标的都是用户【已经持有】的持仓**，
+所以你的任务不是"要不要建仓抄底"，而是"这次下跌后，这笔已有持仓该怎么处理"。
 
 严格按以下 JSON 格式输出（不要其他内容）：
 {
   "thesis_intact": true | false,
   "impact_chain": {
     "direct": "直接触发因素（一句话：什么事件/情绪导致这次下跌）",
-    "spillover": "传导风险（这次下跌会不会蔓延到其他持仓？如'半导体板块联动影响NVDA/MU'，若无关联写'暂无明显传导'）",
+    "spillover": "传导风险（会不会蔓延到其他持仓？如'半导体板块联动影响NVDA/MU'，无则写'暂无明显传导'）",
     "recovery": "修复条件（什么情况下会修复？如'联储暂停加息'或'Q2财报确认增速'）"
   },
-  "drop_reason": "一句话综合判断：情绪恐慌/板块联动/还是基本面恶化",
-  "opportunity": "高" | "中" | "低" | "无",
-  "entry_plan": [
-    {"tranche": 1, "condition": "第一批什么时候买（用具体价格锚定，如'布林下轨87.2附近'或'当前价稳住'）", "size": "轻仓，总计划仓位的30%"},
-    {"tranche": 2, "condition": "第二批条件（再跌1-2个ATR时加仓，给出具体价格）", "size": "加仓，再加30%"},
-    {"tranche": 3, "condition": "第三批条件（越后面越轻）", "size": "收尾，最多20%"}
-  ],
-  "stop_loss": "具体止损价格（建议用2×ATR计算，如'跌破82.6即止损'）",
-  "one_line": "一句大白话告诉普通投资者现在该怎么做"
+  "drop_reason": "一句话综合判断：情绪恐慌 / 板块联动 / 还是基本面恶化",
+  "action": "加仓" | "持有观望" | "减仓" | "清仓离场",
+  "action_reason": "为什么是这个动作，必须结合 thesis（持仓逻辑）是否被破坏来解释",
+  "add_trigger": "仅当 action=加仓：给一个【必须严格低于当前价】的加仓触发价或条件（如'回踩XXX企稳后'）；其他动作一律留空字符串",
+  "add_limit": "仅当 action=加仓：加仓上限（如'不超过现有仓位的30%'）；其他动作留空字符串",
+  "invalidation": "认错信号：出现什么情况就说明你看错了、应当离场（可定性，如'跌破前低且下季财报指引转弱'，不必是精确止损价）",
+  "one_line": "一句大白话告诉用户现在这笔持仓该怎么做"
 }
 
-分析原则：
-- 大盘情绪/板块联动导致的下跌 + 持仓逻辑未破坏 → opportunity=高/中
-- 个股基本面利空（业绩暴雷/监管/竞争恶化）→ opportunity=低/无
-- impact_chain.spillover 要结合用户其他持仓判断传导风险（如半导体下跌影响哪些标的）
-- entry_plan 的 condition 必须包含具体价格，优先用布林下轨和ATR锚定
-- stop_loss 必须是具体价格（用 2×ATR 计算），不能只写跌幅百分比"""
+决策原则：
+- 持仓逻辑未破坏 + 下跌由大盘情绪/板块联动驱动 → action=加仓 或 持有观望
+- 持仓逻辑的核心判断被证伪（基本面恶化/业绩暴雷/竞争格局逆转）→ action=减仓 或 清仓离场，不论当前盈亏
+- **add_trigger 必须严格低于当前价**——下跌后是在更低位置加仓，绝不能给出高于或等于现价的"加仓价"
+- 禁止输出"分批建仓 30%/30%/20%"这类建新仓话术——用户已经持有，只需说清 加 / 持 / 减 / 离场
+- 用 invalidation（认错离场的信号）替代机械的"2×ATR 止损"；可以是价格，也可以是基本面事件
+- impact_chain.spillover 要结合用户其他持仓判断传导风险
+- 若该股波动极大（ATR 占价很高），价格锚只作参考，更应强调【条件】而非精确点位"""
 
-DIP_USER = """股票：{ticker}（{market}市场）
+DIP_USER = """股票：{ticker}（{market}市场）——⚠️ 这是用户的【现有持仓】，请按"持仓如何处理"而非"建仓抄底"来分析。
 1小时跌幅：{drop_pct}%（从 {price_1h_ago} 跌到 {price_now}）
+当前价：{price_now}
 
 【板块联动判断】
 {sector_note}
@@ -780,7 +782,7 @@ DIP_USER = """股票：{ticker}（{market}市场）
 【技术指标（日线）】
 {tech_summary}
 
-【持仓逻辑】
+【这笔持仓的逻辑（thesis）】
 {thesis}
 
 【近期新闻摘要】
@@ -789,7 +791,7 @@ DIP_USER = """股票：{ticker}（{market}市场）
 【其他持仓（判断传导风险用）】
 {other_holdings}
 
-请结合布林下轨和ATR给出有具体价格锚的分批入场建议，止损用2×ATR计算。"""
+请基于"这笔已有持仓现在该 加 / 持 / 减 / 离场"给出决策。若建议加仓，add_trigger 必须严格低于当前价 {price_now}。"""
 
 
 def _load_thesis(ticker: str) -> str:
@@ -837,12 +839,54 @@ def _shares_hint(price_now: float, atr: float, market: str, account: dict) -> in
     return shares
 
 
+def _thesis_from_portfolio(ticker: str) -> str:
+    """theses 表无记录时的兜底：用 portfolio.yaml 的 sector + notes 拼出持仓逻辑，
+    避免 AI 因「读不到 thesis」而误判「持仓逻辑不明 / 可能破坏」。"""
+    try:
+        for h in _load_portfolio_account().get("holdings", []):
+            if h.get("ticker") == ticker:
+                parts = []
+                if h.get("sector"):
+                    parts.append(f"板块：{h['sector']}")
+                if h.get("notes"):
+                    parts.append(f"持仓备注：{h['notes']}")
+                return "；".join(parts)
+    except Exception:
+        pass
+    return ""
+
+
+def _extract_price(text: str) -> float | None:
+    """从自然语言中提取第一个像价格的数字（用于加仓价的自洽性校验）。"""
+    if not text:
+        return None
+    import re
+    m = re.search(r"\d+(?:\.\d+)?", str(text).replace(",", ""))
+    return float(m.group()) if m else None
+
+
+def _validate_dip_plan(analysis: dict, price_now: float) -> tuple[dict, list]:
+    """自洽性闸门：消除「加仓价高于现价」这类自相矛盾，矛盾项就地降级为定性条件。
+    这是彻底杜绝「63 买 / 81 止损」式矛盾卡片的最后一道保险。
+    返回 (修正后的 analysis, 警告列表)。"""
+    warnings: list = []
+    if not analysis:
+        return analysis, warnings
+    if analysis.get("action") == "加仓":
+        p = _extract_price(analysis.get("add_trigger", ""))
+        # 加仓价必须严格低于现价；否则剔除矛盾的具体价，降级为「等企稳」
+        if p is not None and price_now > 0 and p >= price_now:
+            analysis["add_trigger"] = "等回踩企稳后再加（模型给出的加仓价不低于现价，已剔除以避免矛盾）"
+            warnings.append(f"加仓价 {p} ≥ 现价 {price_now}，已降级")
+    return analysis, warnings
+
+
 async def _analyze_dip(ticker: str, market: str, drop_pct: float,
                         price_now: float, price_1h_ago: float,
                         signals=None, mkt_drop: float = 0.0,
                         gap_up_pct: float = 0.0, **_extra) -> dict:
     """调用 DeepSeek 分析暴跌是否是机会，返回结构化建议（含链式影响和股数建议）。"""
-    thesis = _load_thesis(ticker) or "暂无持仓逻辑记录"
+    thesis = _load_thesis(ticker) or _thesis_from_portfolio(ticker) or "暂无持仓逻辑记录"
     news_list = _get_fresh_news(ticker, market, hours=4)
     news_summary = "\n".join(f"- {n['title']}" for n in news_list[:5]) or "暂无近期新闻"
     market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
@@ -857,21 +901,26 @@ async def _analyze_dip(ticker: str, market: str, drop_pct: float,
     other_holdings = "、".join(other[:8]) if other else "暂无"
 
     if signals:
-        # BB 下轨合理性检查：若低于当前价 50% 以上，说明历史数据跨度导致失真，用 MA20 替代
-        bb_lower_valid = signals.bb_lower >= price_now * 0.5
+        # BB 下轨合理性检查：偏离当前价超 20% 视为历史数据跨度失真，改用 MA20
+        bb_lower_valid = signals.bb_lower >= price_now * 0.8
         if bb_lower_valid:
-            bb_anchor = f"布林下轨：{signals.bb_lower:.2f}（可作为入场锚）"
+            bb_anchor = f"布林下轨：{signals.bb_lower:.2f}（可作为参考支撑）"
         else:
             bb_anchor = (
-                f"布林下轨：{signals.bb_lower:.2f}（⚠️ 历史数据跨度大导致失真，不建议用作入场锚）\n"
-                f"建议用 MA20 {signals.ma20:.2f} 作为近期支撑参考"
+                f"布林下轨：{signals.bb_lower:.2f}（⚠️ 偏离现价过大、数据跨度失真，勿作价格锚）\n"
+                f"改用 MA20 {signals.ma20:.2f} 作为近期支撑参考"
+            )
+        volatility_note = ""
+        if signals.atr_pct > 8:
+            volatility_note = (
+                f"\n⚡ 高波动品种（ATR 占价 {signals.atr_pct:.1f}%），价格锚仅供参考，重在条件而非精确点位"
             )
         tech_summary = (
             f"{bb_anchor}\n"
             f"ATR(14)：{signals.atr:.2f}（占价格 {signals.atr_pct:.1f}%）\n"
             f"RSI(14)：{signals.rsi:.1f}（{signals.rsi_signal}）\n"
-            f"MA20：{signals.ma20:.2f}　MA60：{signals.ma60:.2f}\n"
-            f"2×ATR止损参考：{price_now - 2 * signals.atr:.2f}"
+            f"MA20：{signals.ma20:.2f}　MA60：{signals.ma60:.2f}"
+            f"{volatility_note}"
         )
         # 计算建议股数
         hint = _shares_hint(price_now, signals.atr, market, portfolio_data["account"])
@@ -916,6 +965,10 @@ async def _analyze_dip(ticker: str, market: str, drop_pct: float,
         )
         start, end = raw.find("{"), raw.rfind("}") + 1
         result = json.loads(raw[start:end])
+        # 自洽性闸门：剔除「加仓价 ≥ 现价」等矛盾
+        result, _gate_warn = _validate_dip_plan(result, price_now)
+        if _gate_warn:
+            print(f"[Alert] {ticker} 自洽闸门修正：{'；'.join(_gate_warn)}")
         if hint is not None:
             result["shares_hint"] = hint
         return result
@@ -1106,19 +1159,20 @@ async def _send_price_drop_alert(ticker: str, market: str,
     name = TICKER_NAMES.get(ticker, "")
     display = f"**{ticker}** {name}" if name else f"**{ticker}**"
 
-    OPP_EMOJI = {"高": "🔥", "中": "✨", "低": "⚠️", "无": "🚫"}
+    ACTION_EMOJI = {"加仓": "🟢 加仓", "持有观望": "⚪ 持有观望", "减仓": "🟠 减仓", "清仓离场": "🔴 清仓离场"}
     THESIS_EMOJI = {True: "✅ 持仓逻辑完好", False: "❌ 持仓逻辑可能破坏"}
 
     tech_ref = ""
     if signals:
-        bb_lower_valid = signals.bb_lower >= price_now * 0.5
+        bb_lower_valid = signals.bb_lower >= price_now * 0.8
         bb_ref = (
             f"BB下轨：{signals.bb_lower:.2f}" if bb_lower_valid
             else f"MA20：{signals.ma20:.2f}（BB下轨失真，用MA20替代）"
         )
+        vol_tag = f"　⚡高波动{signals.atr_pct:.0f}%" if signals.atr_pct > 8 else ""
         tech_ref = (
             f"\n{bb_ref}　ATR：{signals.atr:.2f}"
-            f"　RSI：{signals.rsi:.0f}　2×ATR止损：{price_now - 2 * signals.atr:.2f}"
+            f"　RSI：{signals.rsi:.0f}{vol_tag}"
         )
 
     # 发送时价 vs 检测时价：LLM 分析期间可能已回升
@@ -1164,25 +1218,26 @@ async def _send_price_drop_alert(ticker: str, market: str,
 
     if analysis:
         thesis_ok = analysis.get("thesis_intact", True)
-        opp = analysis.get("opportunity", "低")
+        action = analysis.get("action", "持有观望")
+        action_reason = analysis.get("action_reason", "")
         drop_reason = analysis.get("drop_reason", "")
         one_line = analysis.get("one_line", "")
-        entry_plan = analysis.get("entry_plan", [])
-        stop_loss = analysis.get("stop_loss", "")
+        add_trigger = analysis.get("add_trigger", "")
+        add_limit = analysis.get("add_limit", "")
+        invalidation = analysis.get("invalidation", "")
         impact_chain = analysis.get("impact_chain", {})
         shares_hint = analysis.get("shares_hint")
 
-        # 机会判断
+        # 持仓决策（加 / 持 / 减 / 离场）
+        decision_content = (
+            f"{THESIS_EMOJI.get(thesis_ok, '')}　建议动作：**{ACTION_EMOJI.get(action, action)}**\n"
+            f"💡 {drop_reason}"
+        )
+        if action_reason:
+            decision_content += f"\n📌 {action_reason}"
         elements.append({
             "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": (
-                    f"{THESIS_EMOJI.get(thesis_ok, '')}　"
-                    f"机会评级：{OPP_EMOJI.get(opp, '')} **{opp}**\n"
-                    f"💡 {drop_reason}"
-                ),
-            },
+            "text": {"tag": "lark_md", "content": decision_content},
         })
         elements.append({"tag": "hr"})
 
@@ -1201,21 +1256,25 @@ async def _send_price_drop_alert(ticker: str, market: str,
             })
             elements.append({"tag": "hr"})
 
-        # 分批入场计划（仅 opportunity != 无 才展示）
-        if entry_plan and opp != "无":
-            plan_lines = ["**📋 分批入场建议**"]
-            for ep in entry_plan:
-                plan_lines.append(
-                    f"第 {ep.get('tranche', '?')} 批：{ep.get('condition', '')}　{ep.get('size', '')}"
-                )
+        # 加仓建议（仅 action=加仓 才展示具体加仓计划；加仓价已过自洽闸门校验 < 现价）
+        if action == "加仓" and add_trigger:
+            plan_lines = ["**📈 加仓建议**", f"触发：{add_trigger}"]
+            if add_limit:
+                plan_lines.append(f"上限：{add_limit}")
             if shares_hint:
-                currency = "股" if market != "hk" else "股（约1%风险预算）"
-                plan_lines.append(f"📐 **建议首批股数：** {shares_hint} {currency}")
-            if stop_loss:
-                plan_lines.append(f"🛑 **止损：** {stop_loss}")
+                unit = "股（约1%风险预算）" if market == "hk" else "股"
+                plan_lines.append(f"📐 **参考加仓股数：** {shares_hint} {unit}")
             elements.append({
                 "tag": "div",
                 "text": {"tag": "lark_md", "content": "\n".join(plan_lines)},
+            })
+            elements.append({"tag": "hr"})
+
+        # 认错离场信号（替代机械止损，可定性可定量）
+        if invalidation:
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"🚨 **认错离场信号：** {invalidation}"},
             })
             elements.append({"tag": "hr"})
 
@@ -1230,19 +1289,21 @@ async def _send_price_drop_alert(ticker: str, market: str,
         "elements": [{"tag": "plain_text", "content": "价格异动 · AI 辅助判断，不构成投资建议，请结合自身情况决策"}],
     })
 
-    has_opp = analysis and analysis.get("opportunity") in ("高", "中")
+    _act = analysis.get("action") if analysis else None
+    is_add = _act == "加仓"
+    HEADER_TPL = {"加仓": "green", "持有观望": "blue", "减仓": "orange", "清仓离场": "red"}
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text",
-                       "content": f"{'🔥 暴跌机会' if has_opp else '⚠️ 价格异动'} · {ticker}（{market_label}）"},
-            "template": "green" if has_opp else "orange",
+                       "content": f"{'🟢 暴跌·可加仓' if is_add else '⚠️ 持仓异动'} · {ticker}（{market_label}）"},
+            "template": HEADER_TPL.get(_act, "orange"),
         },
         "elements": elements,
     }
     await send_feishu_card(card)
-    opp_tag = f" 机会={analysis.get('opportunity')}" if analysis else ""
-    print(f"[Alert] 已推送{'暴跌机会' if has_opp else '价格异动'}：{ticker} 1h跌幅={abs(drop_pct):.2f}%{opp_tag}")
+    act_tag = f" 动作={_act}" if analysis else ""
+    print(f"[Alert] 已推送持仓异动：{ticker} 1h跌幅={abs(drop_pct):.2f}%{act_tag}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
