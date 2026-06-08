@@ -25,11 +25,15 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      - name: Install Claude Code CLI（供 OAuth Token 的联网搜索路径使用）
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: Run morning note
-        # CI 无 Claude Code CLI，走 ANTHROPIC_API_KEY 的 SDK 后端，
-        # 由原生 web_search 工具完成联网搜索（每次约几次搜索，成本极低）
+        # 本仓库用 CLAUDE_CODE_OAUTH_TOKEN（Apple 订阅，免 API 费）→ 走 Claude Code CLI
+        # 的 WebSearch 工具完成联网搜索；若日后配了 ANTHROPIC_API_KEY 则自动改走 SDK 原生 web_search。
         env:
-          FEISHU_WEBHOOK_URL:    ${{ secrets.FEISHU_WEBHOOK_URL }}
-          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
-          ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
+          FEISHU_WEBHOOK_URL:      ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_SECRET:   ${{ secrets.FEISHU_WEBHOOK_SECRET }}
+          ANTHROPIC_API_KEY:       ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: uv run finance-agent morning-note
