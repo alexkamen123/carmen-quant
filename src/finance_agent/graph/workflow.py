@@ -450,13 +450,29 @@ async def format_report_node(state: AgentState) -> AgentState:
             {"tag": "hr"},
         ]
 
+    # ── 今日速览 TL;DR（置顶：把"该干啥"从逐股列表里拎到最前）──
+    buy_t = [s.ticker for s in state.stocks
+             if s.recommendation == "买入" or (s.position_change or "").startswith(("大加", "小加"))]
+    sell_t = [s.ticker for s in state.stocks
+              if s.recommendation in ("减仓", "卖出") or (s.position_change or "").startswith("减仓")]
+    tldr_parts = []
+    if buy_t:
+        tldr_parts.append(f"🟢 加/买：{'、'.join(buy_t)}")
+    if sell_t:
+        tldr_parts.append(f"🔴 减/卖：{'、'.join(sell_t)}")
+    tldr_body = "　·　".join(tldr_parts) if tldr_parts else "今日无买卖建议，持有/定投为主"
+    tldr_elements = [
+        {"tag": "div", "text": {"tag": "lark_md", "content": f"**📋 今日速览**\n{tldr_body}"}},
+        {"tag": "hr"},
+    ]
+
     report_card = {
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": f"📊 卡门智投日报 · {state.date}"},
             "template": TEMPLATE.get(dominant, "blue"),
         },
-        "elements": macro_elements + elements,
+        "elements": tldr_elements + macro_elements + elements,
     }
 
     return state.model_copy(update={"report_text": report_text, "report_card": report_card})
