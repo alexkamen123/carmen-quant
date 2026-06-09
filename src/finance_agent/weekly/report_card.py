@@ -26,6 +26,31 @@ def build_weekly_card(result: dict) -> dict:
 
     elements = []
 
+    # ── 本周速览 TL;DR（置顶：漂移 + 指导待办状态）──────────────────────────────
+    drift_rows = result.get("drift_rows", [])
+    adherence = result.get("guidance_adherence", {})
+    tldr_bits = []
+    reds = [r for r in drift_rows if r.get("status") == "🔴"]
+    if reds:
+        worst = max(reds, key=lambda r: abs(r["drift"]))
+        tldr_bits.append(
+            f"⚠️ {worst['label'].split('（')[0]}偏离最大"
+            f"（当前{worst['current_pct']:.0f}%/目标{worst['target_pct']:.0f}%）"
+        )
+    n_open = len(adherence.get("open", []))
+    n_exp = len(adherence.get("expired", []))
+    if n_open or n_exp:
+        g = f"指导待办 {n_open} 条"
+        if n_exp:
+            g += f"、过期未做 {n_exp} 条"
+        tldr_bits.append(g)
+    if tldr_bits:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "**📋 本周速览**\n" + "　·　".join(tldr_bits)},
+        })
+        elements.append({"tag": "hr"})
+
     # ── 诊断摘要 ──────────────────────────────────────────────────────────────
     diag_lines = []
     if concentration_risk:
