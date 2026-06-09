@@ -225,7 +225,9 @@ def _lower_cols(df):
 def _fetch_paired_window(ticker: str, market: str, rec_date: str, fwd_td: int = 7):
     """
     个股腿：rec_date 起第 0 个交易日收盘 → 第 min(fwd_td, len-1) 个交易日收盘。
-    返回 (p0, p_exit, exit_date, n_td)；产出 exit_date 供基准腿对齐到【同一窗口】。失败 None。
+    返回 (p0, p_exit, start_date, exit_date, n_td)；start_date/exit_date 是个股【真实】
+    首末交易日（rec_date 当天停牌会漂移），供基准腿 asof 对齐到同一窗口。失败 None。
+    脏数据（0 或负复权价）当作取数失败丢弃，避免算出 -100% 级假跌幅。
     """
     import time
     time.sleep(0.4)
@@ -241,30 +243,40 @@ def _fetch_paired_window(ticker: str, market: str, rec_date: str, fwd_td: int = 
             return None
         p0 = float(closes.iloc[0])
         exit_idx = min(fwd_td, len(closes) - 1)
-        return (p0, float(closes.iloc[exit_idx]),
+        p_exit = float(closes.iloc[exit_idx])
+        if p0 <= 0 or p_exit <= 0:
+            return None
+        return (p0, p_exit,
+                closes.index[0].strftime("%Y-%m-%d"),
                 closes.index[exit_idx].strftime("%Y-%m-%d"), exit_idx)
     except Exception:
         return None
 
 
-def _fetch_benchmark_window(market: str, rec_date: str, exit_date: str) -> float | None:
-    """基准腿：与个股腿【同起点(rec_date 首个交易日) 同终点(exit_date)】，消除两腿窗口错位。"""
+def _fetch_benchmark_window(market: str, start_date: str, exit_date: str) -> float | None:
+    """
+    基准腿：与个股腿【同起点同终点】asof 对齐——起点取个股真实首个交易日(start_date)
+    之后的首根基准收盘，终点 asof exit_date。两端显式对齐，消除两腿窗口错位
+    （个股 rec 日停牌漂移、跨市场日历不一致都被覆盖）。
+    """
     import time
     time.sleep(0.3)
     benchmark = _BENCHMARK_TICKER.get(market, "SPY")
     try:
         end_dt = datetime.strptime(exit_date, "%Y-%m-%d") + timedelta(days=4)
-        df = yf.download(benchmark, start=rec_date, end=end_dt.strftime("%Y-%m-%d"),
+        df = yf.download(benchmark, start=start_date, end=end_dt.strftime("%Y-%m-%d"),
                          progress=False, auto_adjust=True)
         if df.empty:
             return None
         closes = _lower_cols(df)["close"].dropna()
         if len(closes) < 2:
             return None
-        b0 = float(closes.iloc[0])
-        le = closes[closes.index <= pd.Timestamp(exit_date)]   # asof exit_date
-        b_exit = float(le.iloc[-1]) if not le.empty else float(closes.iloc[-1])
-        return round((b_exit - b0) / b0 * 100, 2) if b0 > 0 else None
+        b0 = float(closes.iloc[0])                              # 首根 >= start_date（asof 起点）
+        le = closes[closes.index <= pd.Timestamp(exit_date)]    # asof exit_date
+        if le.empty:
+            return None                                          # 窗口内无基准数据，不许越窗取数
+        b_exit = float(le.iloc[-1])
+        return round((b_exit - b0) / b0 * 100, 2) if (b0 > 0 and b_exit > 0) else None
     except Exception:
         return None
 
@@ -298,16 +310,14 @@ async def fill_7d_returns(db_path: str | Path | None = None) -> int:
         )
         if win is None:
             continue
-        p0, p_exit, exit_date, _n = win
-        if p0 <= 0:
-            continue
+        p0, p_exit, start_date, exit_date, _n = win
         ret = (p_exit - p0) / p0 * 100
         outcome = _determine_outcome(
             row["recommendation"] or "", row["position_change"] or "", ret
         )
-        # 基准腿与个股腿同起点同终点（exit_date），消除窗口错位
+        # 基准腿与个股腿同起点（个股真实首交易日 asof）同终点（exit_date），消除窗口错位
         benchmark_ret = await loop.run_in_executor(
-            None, lambda m=row["market"], d=row["date"], e=exit_date: _fetch_benchmark_window(m, d, e)
+            None, lambda m=row["market"], s=start_date, e=exit_date: _fetch_benchmark_window(m, s, e)
         )
         with _conn(p) as con:
             con.execute(
@@ -328,7 +338,10 @@ async def realign_alpha(db_path: str | Path | None = None, dry_run: bool = True,
     """
     一次性重算历史 alpha（修旧版两腿窗口错位的伪 alpha）：对所有 price_7d 或 benchmark
     已填的行，用配对窗口重算 return_7d/price_7d/benchmark_return_7d/outcome。
-    dry_run=True 只返回 old→new 对照不写库；幂等可重跑。返回 {checked, changed, samples}。
+    dry_run=True 只返回 old→new 对照不写库；幂等可重跑。
+    【原子迁移】单行必须两腿都取数成功才改写——任一腿失败整行跳过并计入 failed
+    （绝不把有效 benchmark 抹成 NULL、绝不混搭新旧两腿），重跑直至 failed=0 才算迁移完成。
+    返回 {checked, changed, failed, dry_run, samples, failed_samples}。
     """
     p = _resolve_db(db_path)
     init_db(p)
@@ -343,19 +356,32 @@ async def realign_alpha(db_path: str | Path | None = None, dry_run: bool = True,
 
     loop = asyncio.get_event_loop()
     changed = 0
+    failed = 0
     samples: list[dict] = []
+    failed_samples: list[dict] = []
+
+    def _mark_failed(row, reason: str):
+        nonlocal failed
+        failed += 1
+        if len(failed_samples) < 25:
+            failed_samples.append({"ticker": row["ticker"], "date": row["date"], "reason": reason})
+
     for row in rows:
         win = await loop.run_in_executor(
             None, lambda t=row["ticker"], m=row["market"], d=row["date"]: _fetch_paired_window(t, m, d)
         )
-        if win is None or win[0] <= 0:
+        if win is None:
+            _mark_failed(row, "no_window")          # 个股腿取数失败/脏数据，整行保留旧值
             continue
-        p0, p_exit, exit_date, _n = win
+        p0, p_exit, start_date, exit_date, _n = win
         new_ret = round((p_exit - p0) / p0 * 100, 2)
         new_bm = await loop.run_in_executor(
-            None, lambda m=row["market"], d=row["date"], e=exit_date: _fetch_benchmark_window(m, d, e)
+            None, lambda m=row["market"], s=start_date, e=exit_date: _fetch_benchmark_window(m, s, e)
         )
-        new_bm = round(new_bm, 2) if new_bm is not None else None
+        if new_bm is None:
+            _mark_failed(row, "no_benchmark")       # 基准腿失败：不写 NULL 覆盖、不混搭新旧两腿
+            continue
+        new_bm = round(new_bm, 2)
         new_outcome = _determine_outcome(row["recommendation"] or "", row["position_change"] or "", new_ret)
         old_ret, old_bm = row["return_7d"], row["benchmark_return_7d"]
         if old_ret == new_ret and old_bm == new_bm:
@@ -363,12 +389,12 @@ async def realign_alpha(db_path: str | Path | None = None, dry_run: bool = True,
         changed += 1
         if len(samples) < 40:
             oa = (old_ret - old_bm) if (old_ret is not None and old_bm is not None) else None
-            na = (new_ret - new_bm) if new_bm is not None else None
+            na = new_ret - new_bm
             samples.append({
                 "ticker": row["ticker"], "date": row["date"],
                 "old_ret": old_ret, "new_ret": new_ret,
                 "old_alpha": round(oa, 2) if oa is not None else None,
-                "new_alpha": round(na, 2) if na is not None else None,
+                "new_alpha": round(na, 2),
             })
         if not dry_run:
             with _conn(p) as con:
@@ -377,7 +403,8 @@ async def realign_alpha(db_path: str | Path | None = None, dry_run: bool = True,
                     "benchmark_return_7d=? WHERE id=?",
                     (round(p_exit, 4), new_ret, new_outcome, new_bm, row["id"]),
                 )
-    return {"checked": len(rows), "changed": changed, "dry_run": dry_run, "samples": samples}
+    return {"checked": len(rows), "changed": changed, "failed": failed,
+            "dry_run": dry_run, "samples": samples, "failed_samples": failed_samples}
 
 
 def backfill_market(db_path: str | Path | None = None) -> int:
