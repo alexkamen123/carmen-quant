@@ -247,6 +247,11 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, 
     else:
         tr_lines = ["**🔍 逐笔复盘**", "本月无已回填收益的操作"]
 
+    # ── 本月一句话 TL;DR（置顶：总评 + 行为均分）──
+    _dims = scorecard.get("dimensions", [])
+    _avg = round(sum(d["score"] for d in _dims) / len(_dims), 1) if _dims else 0
+    tldr_content = f"**📋 本月一句话**\n{scorecard.get('overall', '')}（行为均分 {_avg}/10）"
+
     # ── 构建飞书卡片 ──
     card = {
         "config": {"wide_screen_mode": True},
@@ -255,6 +260,8 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, 
             "template": "indigo",
         },
         "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": tldr_content}},
+            {"tag": "hr"},
             {
                 "tag": "div",
                 "text": {
