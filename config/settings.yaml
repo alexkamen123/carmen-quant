@@ -41,3 +41,9 @@ strategy_injection:
   inject_into_weekly_report: true
   # 飞书推送：是否在日报消息头部显示当前红线状态（绿/黄/红）
   show_limit_status_in_daily: true
+
+# ── 防追高护栏（L3a，PM 裁决后确定性 clamp）──────────────────────────────────
+# 只把"加仓/买入"降级为"维持/观望"，绝不反向激进；误报最坏=踏空，不会乱买。
+# 一键关：误报时临时设 false，无需删代码。
+anti_chase_guard:
+  enabled: true
