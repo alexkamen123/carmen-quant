@@ -686,13 +686,42 @@ def check_guidance_adherence(db_path: str | Path | None = None) -> dict:
     p = _resolve_db(db_path)
     init_db(p)
     today = datetime.today().strftime("%Y-%m-%d")
-    result: dict[str, list] = {"followed": [], "expired": [], "open": []}
+    # followed/expired/open 用于正向指导（该做的做没做）；
+    # guardrail_* 用于护栏（反向语义：照做=忍住没买）；分开避免污染正向指导计数。
+    result: dict[str, list] = {"followed": [], "expired": [], "open": [],
+                               "guardrail_resisted": [], "guardrail_ignored": []}
 
     with _conn(p) as con:
         rows = con.execute("SELECT * FROM guidance WHERE status='open'").fetchall()
         for g in rows:
             tickers = [t.strip().upper() for t in (g["ticker"] or "").split(",") if t.strip()]
             action = g["action"] or ""
+            item = {"id": g["id"], "ticker": g["ticker"], "action": action,
+                    "target": g["target"], "due_by": g["due_by"]}
+
+            # ── 护栏(反向语义)：买了=没忍住(ignored)；到期没买=忍住了(resisted)──
+            if g["source"] == "guardrail":
+                bought = None
+                if tickers:
+                    tk_ph = ",".join("?" * len(tickers))
+                    bought = con.execute(
+                        f"SELECT date FROM user_actions WHERE ticker IN ({tk_ph}) "
+                        f"AND action = 'BUY' AND date >= ? ORDER BY date LIMIT 1",
+                        (*tickers, g["created_date"]),
+                    ).fetchone()
+                if bought:
+                    con.execute("UPDATE guidance SET status='gr_ignored', resolved_date=? WHERE id=?",
+                                (bought["date"], g["id"]))
+                    item["resolved_date"] = bought["date"]
+                    result["guardrail_ignored"].append(item)
+                elif g["due_by"] and today > g["due_by"]:
+                    con.execute("UPDATE guidance SET status='gr_resisted', resolved_date=? WHERE id=?",
+                                (today, g["id"]))
+                    result["guardrail_resisted"].append(item)
+                else:
+                    result["open"].append(item)
+                continue
+
             if action in _BUY_GUIDANCE:
                 want = ("BUY",)
             elif action in _SELL_GUIDANCE:
@@ -710,9 +739,6 @@ def check_guidance_adherence(db_path: str | Path | None = None) -> dict:
                     f"ORDER BY date LIMIT 1",
                     (*tickers, *want, g["created_date"]),
                 ).fetchone()
-
-            item = {"id": g["id"], "ticker": g["ticker"], "action": action,
-                    "target": g["target"], "due_by": g["due_by"]}
 
             if matched:
                 con.execute(

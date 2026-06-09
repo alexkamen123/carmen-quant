@@ -10,10 +10,15 @@ from finance_agent.agents.prompts import (
 )
 from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli, strip_markdown
+from finance_agent.agents.guards import (
+    guard_enabled, load_portfolio, parse_limits, exempt_tickers,
+    recent_buy_velocity, apply_anti_chase, CLUSTER_MIN_DISTINCT, BUY_WINDOW_DAYS,
+)
+from finance_agent.db.tracker import save_guidance
 
 MARKET_LABEL = {"us": "美股", "hk": "港股", "cn": "A股"}
 
-_CONFIG_DIR = Path(__file__).parent.parent.parent.parent.parent / "config"
+_CONFIG_DIR = Path(__file__).parents[3] / "config"   # .../finance-agent/config（原多一级 parent，L1红线一直没注入）
 
 
 def _load_strategy_limits() -> str:
@@ -233,9 +238,51 @@ async def run_portfolio_manager_batch(
         print(f"[PM] DeepSeek 降级完成（{len(decisions)} 只）")
 
     decision_by_ticker = {d.get("ticker", ""): d for d in decisions}
+
+    # ── 防追高护栏：PM 裁决后确定性 clamp（只降级偏多，绝不激进）──
+    guard_ctx = None
+    if guard_enabled():
+        try:
+            pf = load_portfolio()
+            sec_limits, single_limit = parse_limits(pf)
+            exempt = exempt_tickers(pf)
+            n_distinct, buy_tickers = recent_buy_velocity(exempt)
+            sector_pct: dict[str, float] = {}
+            ticker_pct: dict[str, float] = {}
+            if total_value > 0:
+                for s in stocks:
+                    if s.shares > 0 and s.signals:
+                        v = _usd_value(s)
+                        ticker_pct[s.ticker.upper()] = v / total_value * 100
+                        if s.sector:
+                            sector_pct[s.sector] = sector_pct.get(s.sector, 0.0) + v / total_value * 100
+            guard_ctx = dict(n_distinct=n_distinct, sector_pct=sector_pct, ticker_pct=ticker_pct,
+                             sector_limits=sec_limits, single_limit=single_limit, exempt=exempt)
+            if n_distinct >= CLUSTER_MIN_DISTINCT:
+                print(f"[Guard] 近{BUY_WINDOW_DAYS}天扎堆买入 {n_distinct} 只：{buy_tickers}")
+        except Exception as e:
+            print(f"[Guard] 护栏上下文构建失败（跳过）: {e}")
+            guard_ctx = None
+
+    clamped_items: list[dict] = []
     for s in needs_pm:
         d = decision_by_ticker.get(s.ticker, {})
-        result_map[s.ticker] = s.model_copy(update=_parse_decision(d))
+        dec = _parse_decision(d)
+        if guard_ctx is not None:
+            dec, hits = apply_anti_chase(s, dec, **guard_ctx)
+            if hits:
+                clamped_items.append({"ticker": s.ticker, "action": "观望",
+                                      "target": "护栏:暂缓追高/降集中度",
+                                      "rationale": "；".join(hits)})
+                print(f"[Guard] ⛔ {s.ticker} 触发护栏，降级观望：{'；'.join(hits)}")
+        result_map[s.ticker] = s.model_copy(update=dec)
+
+    # 写 guidance 台账（source='guardrail'）——下期比对用户是否真的忍住了，形成行为闭环
+    if clamped_items:
+        try:
+            save_guidance(clamped_items, source="guardrail")
+        except Exception as e:
+            print(f"[Guard] guidance 台账写入失败（不影响主流程）: {e}")
 
     return [result_map[s.ticker] for s in stocks]
 
