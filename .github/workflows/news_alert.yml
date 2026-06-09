@@ -10,12 +10,8 @@ name: 盘中新闻扫描
 # yfinance news API 会返回各自市场的新闻，两段 cron 共用同一 job 即可。
 
 on:
-  schedule:
-    # 港股时段：UTC 01-08，每小时整点（周一到周五）
-    - cron: "0 1-8 * * 1-5"
-    # 美股时段：UTC 13-22，每小时整点（周一到周五）
-    # 注：UTC 22 = 北京次日 06:00，覆盖美股盘后
-    - cron: "0 13-22 * * 1-5"
+  # ⚠️ 定时已迁至本地 launchd（com.zhouyihao.carmen-news，工作日 09:30/13:30/21:30）。
+  # GitHub schedule 已停用，避免与本地重复推送；保留 workflow_dispatch 供手动触发。
   workflow_dispatch:
     inputs:
       threshold:
