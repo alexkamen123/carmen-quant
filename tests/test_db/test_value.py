@@ -163,6 +163,31 @@ def test_verdict_orange_positive_alpha_low_winrate(tmp_path, monkeypatch):
     assert "不如躺平" not in m["verdict"]["text"]
 
 
+def test_backfill_market(tmp_path):
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    with tracker._conn(db) as con:
+        con.execute("INSERT INTO recommendations(date,ticker,recommendation,market) VALUES('2026-05-01','07709','持有',NULL)")
+        con.execute("INSERT INTO recommendations(date,ticker,recommendation,market) VALUES('2026-05-01','NVDA','持有',NULL)")
+        con.execute("INSERT INTO recommendations(date,ticker,recommendation,market) VALUES('2026-05-01','AAPL','持有','us')")
+    n = tracker.backfill_market(db)
+    assert n == 2  # 仅补 NULL，已有 us 的不动
+    with tracker._conn(db) as con:
+        mk = {r["ticker"]: r["market"] for r in con.execute("SELECT ticker,market FROM recommendations").fetchall()}
+    assert mk["07709"] == "hk" and mk["NVDA"] == "us" and mk["AAPL"] == "us"
+
+
+def test_card_taokong_yellow_and_summary(tmp_path):
+    """卡片可读性：踏空标🟡(不与真亏红混)+ 行为段大白话总结。"""
+    db = tmp_path / "t.db"
+    _seed(db)  # user_actions: NVDA BUY+5(赚) / INTC SELL-3(躲跌✓) / MU SELL+10(踏空)
+    m = compute_value_metrics(db)
+    import json
+    blob = json.dumps(build_value_card(m), ensure_ascii=False)
+    assert "🟡" in blob              # 踏空黄色
+    assert "卖早" in blob and "真亏" in blob  # 大白话总结行
+
+
 def test_verdict_gate_passed_no_benchmark_no_crash(tmp_path, monkeypatch):
     """关键回归：闸门通过但 avg_alpha 为 None 时不得 round(None) 崩溃/输出 +None%。"""
     _lower_gates(monkeypatch, n=2, tk=1, bm=0.0)

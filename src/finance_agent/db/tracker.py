@@ -260,6 +260,28 @@ async def fill_7d_returns(db_path: str | Path | None = None) -> int:
     return filled
 
 
+def backfill_market(db_path: str | Path | None = None) -> int:
+    """
+    为 market 为 NULL 的历史推荐按 ticker 推断补齐（纯数字→hk，其余→us）。
+    纯元数据修正，不重算 return_7d / benchmark_return_7d（历史基准值仍为旧口径，
+    重算留 L1b）。返回补齐条数。
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    n = 0
+    with _conn(p) as con:
+        rows = con.execute(
+            "SELECT id, ticker FROM recommendations WHERE market IS NULL"
+        ).fetchall()
+        for r in rows:
+            mkt = "hk" if str(r["ticker"]).isdigit() else "us"
+            con.execute("UPDATE recommendations SET market = ? WHERE id = ?", (mkt, r["id"]))
+            n += 1
+    if n:
+        print(f"[Tracker] 回填 {n} 条 market 标注（按 ticker 推断）")
+    return n
+
+
 # ── Thesis CRUD ──────────────────────────────────────────────
 
 def save_thesis(ticker: str, market: str, thesis_text: str,
