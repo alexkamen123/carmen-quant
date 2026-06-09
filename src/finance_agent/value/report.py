@@ -8,6 +8,7 @@ from finance_agent.db.tracker import (
     backfill_market,
 )
 from finance_agent.value.metrics import compute_value_metrics
+from finance_agent.value.strategy_scorecard import compute_strategy_edge, format_strategy_edge_section
 
 _TEMPLATE = {"grey": "grey", "orange": "orange", "green": "green"}
 
@@ -110,12 +111,22 @@ def _meta_section(m: dict) -> str:
     ])
 
 
+def _strategy_edge_text() -> str:
+    """策略 edge 记分牌（锚 302 回测金矿）。读取失败时降级提示，不崩。"""
+    try:
+        return format_strategy_edge_section(compute_strategy_edge())
+    except Exception as e:
+        return f"**🧪 策略 edge（回测）**：读取失败（{e}）"
+
+
 def build_value_card(m: dict) -> dict:
     v = m["verdict"]
     elements = [
         {"tag": "div", "text": {"tag": "lark_md", "content": f"{v['text']}\n\n`{v['badge']}`"}},
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": _adv_section(m)}},
+        {"tag": "hr"},
+        {"tag": "div", "text": {"tag": "lark_md", "content": _strategy_edge_text()}},
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": _behavior_section(m)}},
         {"tag": "hr"},
@@ -140,7 +151,8 @@ def _build_text(m: dict) -> str:
     return "\n".join([
         f"🏆 卡门智投 · 价值体检 {m['data_through'] or ''}",
         v["text"], v["badge"], "",
-        _adv_section(m), "", _behavior_section(m), "", _dip_section(m), "", _meta_section(m),
+        _adv_section(m), "", _strategy_edge_text(), "", _behavior_section(m), "",
+        _dip_section(m), "", _meta_section(m),
     ])
 
 

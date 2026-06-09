@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -32,6 +33,32 @@ def _strategy_label(name: str) -> str:
         if name.startswith(prefix):
             return label
     return name
+
+
+def _t_stat(data: dict) -> float:
+    """单调显著性 t = avg_alpha / (std_alpha / sqrt(n))；样本/方差不足返回 0。"""
+    n = data.get("n_signals", 0) or 0
+    std = data.get("std_alpha", 0) or 0.0
+    a = data.get("avg_alpha", 0) or 0.0
+    if n < 2 or std <= 0:
+        return 0.0
+    return a / (std / math.sqrt(n))
+
+
+def _wilson_low(beat_rate: float, n: int, z: float = 1.96) -> float:
+    if n <= 0:
+        return 0.0
+    p = beat_rate
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = (z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / denom
+    return max(0.0, centre - half)
+
+
+def _is_reliable(data: dict) -> bool:
+    """高信赖 = t≥2 且 beat_rate 的 Wilson 下界≥50%（防把高α小样本噪音当强证据）。"""
+    return _t_stat(data) >= 2.0 and _wilson_low(data.get("beat_rate", 0) or 0,
+                                                 data.get("n_signals", 0) or 0) >= 0.5
 
 
 def _load_valid_map() -> dict[tuple[str, str], dict]:
@@ -91,9 +118,12 @@ def get_active_signals(ticker: str) -> list[dict]:
                 "avg_alpha": data["avg_alpha"],
                 "beat_rate": data["beat_rate"],
                 "n_signals": data["n_signals"],
+                "t_stat":    round(_t_stat(data), 1),
+                "reliable":  _is_reliable(data),
             })
 
-    active.sort(key=lambda x: x["avg_alpha"], reverse=True)
+    # 高信赖优先，再按 t-stat 降序——不再用裸 avg_alpha（避免把高α小样本噪音排最前喂给 PM）
+    active.sort(key=lambda x: (x["reliable"], x["t_stat"]), reverse=True)
     return active
 
 
@@ -113,10 +143,12 @@ def format_strategy_evidence(ticker: str) -> str:
 
     lines = ["【量化策略信号（历史验证）】"]
     for sig in active[:3]:
+        tag = (f"，t={sig['t_stat']}（高信赖）" if sig["reliable"]
+               else "，⚠样本不足/不显著仅参考")
         lines.append(
             f"  {sig['label']}（{sig['strategy']}）→ "
             f"历史{sig['n_signals']}次，"
             f"超额{sig['avg_alpha']:+.2f}%，"
-            f"胜率{sig['beat_rate']:.0%}"
+            f"胜率{sig['beat_rate']:.0%}{tag}"
         )
     return "\n".join(lines)
