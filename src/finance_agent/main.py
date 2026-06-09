@@ -15,7 +15,7 @@ from finance_agent.db.thesis_generator import generate_all_theses, generate_thes
 from finance_agent.db.tracker import (
     list_theses, log_user_action, get_action_history,
     backfill_action_returns, get_feedback_accuracy, feedback_summary,
-    get_dip_stats, backfill_dip_outcomes, detect_portfolio_changes,
+    get_dip_stats, backfill_dip_outcomes, detect_portfolio_changes, realign_alpha,
 )
 from finance_agent.alerts.earnings_trigger import check_and_alert_earnings
 from finance_agent.weekly.allocation_advisor import run_allocation_advisor
@@ -238,6 +238,41 @@ async def _morning_note(skip_notify: bool):
     if not skip_notify:
         ok = await send_feishu_card(card, fallback_text=text)
         console.print("✅ 晨报推送成功" if ok else "❌ 晨报推送失败")
+
+
+@app.command("backfill-realign")
+def backfill_realign(
+    apply: bool = typer.Option(False, "--apply", help="真正写库（默认 dry-run 只看 diff）"),
+):
+    """一次性重算历史 alpha（修两腿窗口错位的伪 alpha）。默认 dry-run；--apply 前自动备份 DB"""
+    asyncio.run(_backfill_realign(apply=apply))
+
+
+async def _backfill_realign(apply: bool):
+    import shutil
+    from datetime import datetime as _dt
+    from finance_agent.db.tracker import _resolve_db
+    db = _resolve_db(None)   # 与日报流水线同源（AGENT_DB_PATH 优先），避免双库分歧
+    if apply:
+        bak = f"{db}.bak-prealign-{_dt.now():%Y%m%d-%H%M%S}"   # 带时间戳，绝不覆盖旧备份
+        shutil.copy2(db, bak)
+        console.print(f"💾 已备份 DB → {bak}")
+    console.print("🔧 重算历史 alpha（联网拉配对窗口，较慢）...")
+    res = await realign_alpha(db_path=db, dry_run=not apply)
+    if res["checked"] == 0:
+        console.print(f"[yellow]⚠️ 0 行待重算——确认 DB 路径是否正确（{db}）[/yellow]")
+        return
+    console.print(f"\n检查 {res['checked']} 行，{'已改写' if apply else '将改写'} {res['changed']} 行：")
+    for s in res["samples"][:25]:
+        console.print(f"  {s['date']} {s['ticker']:6s} ret {s['old_ret']}→{s['new_ret']}"
+                      f"  alpha {s['old_alpha']}→{s['new_alpha']}")
+    if res["failed"]:
+        console.print(f"\n[yellow]⚠️ {res['failed']} 行取数失败未迁移（仍为旧口径，与新口径混算会污染记分牌）"
+                      f"——联网恢复后重跑直至 failed=0[/yellow]")
+        for s in res["failed_samples"][:10]:
+            console.print(f"  [dim]{s['date']} {s['ticker']} ({s['reason']})[/dim]")
+    if not apply and res["changed"]:
+        console.print("\n[dim]确认无误后加 --apply 写库（会先自动备份）[/dim]")
 
 
 @app.command("value-report")
