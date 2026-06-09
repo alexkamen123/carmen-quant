@@ -5,6 +5,7 @@
 """
 from finance_agent.db.tracker import (
     _resolve_db, fill_7d_returns, backfill_action_returns, backfill_dip_outcomes,
+    backfill_market,
 )
 from finance_agent.value.metrics import compute_value_metrics
 
@@ -46,12 +47,31 @@ def _adv_section(m: dict) -> str:
 
 def _behavior_section(m: dict) -> str:
     beh = m["behavior"]
+    trades = beh["trades"]
     lines = [f"**💰 你的操作（交易者的行为对不对）** · 已回填 {beh['n']} 笔"]
-    if not beh["trades"]:
+    if not trades:
         lines.append("暂无已回填的实操记录")
-    for t in beh["trades"]:
+        return "\n".join(lines)
+
+    # 大白话总结：把"红多"拆成 真亏 / 卖早(没亏) / 赚，避免误读
+    real_loss = sum(1 for t in trades if t["verdict"] == "亏")
+    sold_early = sum(1 for t in trades if t["verdict"] == "踏空")
+    good = sum(1 for t in trades if t["verdict"] in ("赚", "躲跌✓"))
+    lines.append(
+        f"📊 _{beh['n']} 笔里：真亏 **{real_loss}** 笔、卖早(踏空，没亏只少赚) **{sold_early}** 笔、"
+        f"赚/卖对 **{good}** 笔。红≠全做错，🟡是卖早。_"
+    )
+
+    for t in trades:
         sign = "+" if t["ret"] >= 0 else ""
-        icon = "🟢" if t["verdict"] in ("赚", "躲跌✓") else ("🔴" if t["verdict"] in ("亏", "踏空") else "➖")
+        if t["verdict"] in ("赚", "躲跌✓"):
+            icon = "🟢"
+        elif t["verdict"] == "亏":
+            icon = "🔴"
+        elif t["verdict"] == "踏空":
+            icon = "🟡"   # 卖早=少赚，不是亏，单独黄色，不与真亏混
+        else:
+            icon = "➖"
         lines.append(f"{icon} {t['date'][5:]} **{t['ticker']}** {t['action']} → 7日 {sign}{t['ret']}% · {t['verdict']}")
     lines.append(f"_{beh['symbol_note']}_")
     return "\n".join(lines)
@@ -84,8 +104,8 @@ def _meta_section(m: dict) -> str:
         f"• 建议构成：已回填 {comp['filled']} 条中仅 {comp['directional']} 条可裁决"
         f"（占 {int(comp['actionable_ratio'] * 100)}%），其余 {comp['neutral_or_passive']} 条为持有/定投，**不计入命中率**",
         "• 已知方法学缺陷（团队已知，L1b 修）：① alpha 两条腿窗口可能不对齐"
-        "（个股用回填时最新价 vs 基准取 rec 日起 7 交易日）② market 列大面积 NULL，港股可能错用 SPY 而非恒指 "
-        "③ 同票多日推荐样本重叠、自相关",
+        "（个股用回填时最新价 vs 基准取 rec 日起 7 交易日）② market 已按 ticker 推断回填（港股归恒指），"
+        "但历史已回填的 benchmark 仍为旧口径（部分港股曾按 SPY 算），重算留 L1b ③ 同票多日推荐样本重叠、自相关",
         f"• 数据截至 {m['data_through'] or '—'}；纯数据计算，无 AI 叙事。",
     ])
 
@@ -132,6 +152,10 @@ async def run_value_report(db_path: str = "data/agent.db") -> tuple[dict, str, d
             await coro
         except Exception as e:
             print(f"[ValueReport] {label} 跳过：{e}")
+    try:
+        backfill_market(p)   # 纯元数据：补齐 NULL market（港股归恒指口径），不重算历史基准
+    except Exception as e:
+        print(f"[ValueReport] market 回填跳过：{e}")
     try:
         backfill_dip_outcomes(db_path=p)
     except Exception as e:
