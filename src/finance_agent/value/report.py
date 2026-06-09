@@ -104,9 +104,8 @@ def _meta_section(m: dict) -> str:
         f"（下结论需 n≥{th['min_n']} 且 ≥{th['min_tickers']}票 且 benchmark≥{int(th['min_bm_cov'] * 100)}%，阈值写死防粉饰）",
         f"• 建议构成：已回填 {comp['filled']} 条中仅 {comp['directional']} 条可裁决"
         f"（占 {int(comp['actionable_ratio'] * 100)}%），其余 {comp['neutral_or_passive']} 条为持有/定投，**不计入命中率**",
-        "• 已知方法学缺陷（团队已知，L1b 修）：① alpha 两条腿窗口可能不对齐"
-        "（个股用回填时最新价 vs 基准取 rec 日起 7 交易日）② market 已按 ticker 推断回填（港股归恒指），"
-        "但历史已回填的 benchmark 仍为旧口径（部分港股曾按 SPY 算），重算留 L1b ③ 同票多日推荐样本重叠、自相关",
+        "• 方法学口径：alpha 两腿已配对窗口对齐（个股与基准同起点同终点，历史已全量重算，"
+        "2026-06-10 迁移）；仍知缺陷：① 同票多日推荐样本重叠、自相关 ② 仅 7 日窗口（30/90 日留后续）",
         f"• 数据截至 {m['data_through'] or '—'}；纯数据计算，无 AI 叙事。",
     ])
 
