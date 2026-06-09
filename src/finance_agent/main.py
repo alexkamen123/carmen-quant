@@ -23,6 +23,7 @@ from finance_agent.weekly.report_card import build_weekly_card
 from finance_agent.weekly.daily_followup import run_daily_followup
 from finance_agent.monthly.review import run_monthly_review
 from finance_agent.morning.note import run_morning_note
+from finance_agent.value.report import run_value_report
 from finance_agent.memory.mempal_client import (
     ingest_daily_report,
     ingest_weekly_report,
@@ -237,6 +238,23 @@ async def _morning_note(skip_notify: bool):
     if not skip_notify:
         ok = await send_feishu_card(card, fallback_text=text)
         console.print("✅ 晨报推送成功" if ok else "❌ 晨报推送失败")
+
+
+@app.command("value-report")
+def value_report(
+    skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
+):
+    """价值体检：诚实量化我们的建议/用户行为/风险预警到底有没有创造投资价值"""
+    asyncio.run(_value_report(skip_notify=skip_notify))
+
+
+async def _value_report(skip_notify: bool):
+    console.print("🏆 生成价值体检报告（回填最新数据中）...")
+    card, text, m = await run_value_report(db_path=DB_PATH)
+    console.print("\n" + text)
+    if not skip_notify:
+        ok = await send_feishu_card(card, fallback_text=text)
+        console.print("✅ 价值体检推送成功" if ok else "❌ 价值体检推送失败")
 
 
 @app.command("monthly-review")
