@@ -15,7 +15,7 @@ from finance_agent.db.thesis_generator import generate_all_theses, generate_thes
 from finance_agent.db.tracker import (
     list_theses, log_user_action, get_action_history,
     backfill_action_returns, get_feedback_accuracy, feedback_summary,
-    get_dip_stats, backfill_dip_outcomes, detect_portfolio_changes,
+    get_dip_stats, backfill_dip_outcomes, detect_portfolio_changes, realign_alpha,
 )
 from finance_agent.alerts.earnings_trigger import check_and_alert_earnings
 from finance_agent.weekly.allocation_advisor import run_allocation_advisor
@@ -238,6 +238,30 @@ async def _morning_note(skip_notify: bool):
     if not skip_notify:
         ok = await send_feishu_card(card, fallback_text=text)
         console.print("✅ 晨报推送成功" if ok else "❌ 晨报推送失败")
+
+
+@app.command("backfill-realign")
+def backfill_realign(
+    apply: bool = typer.Option(False, "--apply", help="真正写库（默认 dry-run 只看 diff）"),
+):
+    """一次性重算历史 alpha（修两腿窗口错位的伪 alpha）。默认 dry-run；--apply 前自动备份 DB"""
+    asyncio.run(_backfill_realign(apply=apply))
+
+
+async def _backfill_realign(apply: bool):
+    import shutil
+    if apply:
+        bak = f"{DB_PATH}.bak-prealign"
+        shutil.copy(DB_PATH, bak)
+        console.print(f"💾 已备份 DB → {bak}")
+    console.print("🔧 重算历史 alpha（联网拉配对窗口，较慢）...")
+    res = await realign_alpha(db_path=DB_PATH, dry_run=not apply)
+    console.print(f"\n检查 {res['checked']} 行，{'已改写' if apply else '将改写'} {res['changed']} 行：")
+    for s in res["samples"][:25]:
+        console.print(f"  {s['date']} {s['ticker']:6s} ret {s['old_ret']}→{s['new_ret']}"
+                      f"  alpha {s['old_alpha']}→{s['new_alpha']}")
+    if not apply and res["changed"]:
+        console.print("\n[dim]确认无误后加 --apply 写库（会先自动备份）[/dim]")
 
 
 @app.command("value-report")

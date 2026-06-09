@@ -210,10 +210,70 @@ def _fetch_benchmark_return(market: str, rec_date: str) -> float | None:
         return None
 
 
+def _yf_ticker(ticker: str, market: str) -> str:
+    return f"{int(ticker):04d}.HK" if (market == "hk" and str(ticker).isdigit()) else ticker
+
+
+def _lower_cols(df):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0].lower() for c in df.columns]
+    else:
+        df.columns = [c.lower() for c in df.columns]
+    return df
+
+
+def _fetch_paired_window(ticker: str, market: str, rec_date: str, fwd_td: int = 7):
+    """
+    个股腿：rec_date 起第 0 个交易日收盘 → 第 min(fwd_td, len-1) 个交易日收盘。
+    返回 (p0, p_exit, exit_date, n_td)；产出 exit_date 供基准腿对齐到【同一窗口】。失败 None。
+    """
+    import time
+    time.sleep(0.4)
+    try:
+        start_dt = datetime.strptime(rec_date, "%Y-%m-%d")
+        end_dt = start_dt + timedelta(days=fwd_td * 2 + 14)   # 留足交易日余量（含长假）
+        df = yf.download(_yf_ticker(ticker, market), start=rec_date,
+                         end=end_dt.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
+        if df.empty:
+            return None
+        closes = _lower_cols(df)["close"].dropna()
+        if len(closes) < 2:
+            return None
+        p0 = float(closes.iloc[0])
+        exit_idx = min(fwd_td, len(closes) - 1)
+        return (p0, float(closes.iloc[exit_idx]),
+                closes.index[exit_idx].strftime("%Y-%m-%d"), exit_idx)
+    except Exception:
+        return None
+
+
+def _fetch_benchmark_window(market: str, rec_date: str, exit_date: str) -> float | None:
+    """基准腿：与个股腿【同起点(rec_date 首个交易日) 同终点(exit_date)】，消除两腿窗口错位。"""
+    import time
+    time.sleep(0.3)
+    benchmark = _BENCHMARK_TICKER.get(market, "SPY")
+    try:
+        end_dt = datetime.strptime(exit_date, "%Y-%m-%d") + timedelta(days=4)
+        df = yf.download(benchmark, start=rec_date, end=end_dt.strftime("%Y-%m-%d"),
+                         progress=False, auto_adjust=True)
+        if df.empty:
+            return None
+        closes = _lower_cols(df)["close"].dropna()
+        if len(closes) < 2:
+            return None
+        b0 = float(closes.iloc[0])
+        le = closes[closes.index <= pd.Timestamp(exit_date)]   # asof exit_date
+        b_exit = float(le.iloc[-1]) if not le.empty else float(closes.iloc[-1])
+        return round((b_exit - b0) / b0 * 100, 2) if b0 > 0 else None
+    except Exception:
+        return None
+
+
 async def fill_7d_returns(db_path: str | Path | None = None) -> int:
     """
-    找出 7 个交易日前（日历日 ~10 天）还没有 price_7d 的记录，
-    拉当前价格回填，返回回填条数。
+    找出 7 个交易日前（日历日 ~10 天）还没有 price_7d 的记录，回填。
+    用【配对窗口】：个股与基准同起点(rec日)同终点(rec+7交易日)，消除旧版"个股用回填时
+    最新价 vs 基准取固定第6交易日"的窗口错位伪 alpha（L1b 核心修复）。
     """
     p = _resolve_db(db_path)
     init_db(p)
@@ -233,23 +293,26 @@ async def fill_7d_returns(db_path: str | Path | None = None) -> int:
     loop = asyncio.get_event_loop()
     filled = 0
     for row in pending:
-        price_now = await loop.run_in_executor(
-            None, lambda t=row["ticker"], m=row["market"]: _fetch_current_price(t, m)
+        win = await loop.run_in_executor(
+            None, lambda t=row["ticker"], m=row["market"], d=row["date"]: _fetch_paired_window(t, m, d)
         )
-        if price_now is None or not row["price_at_rec"]:
+        if win is None:
             continue
-        ret = (price_now - row["price_at_rec"]) / row["price_at_rec"] * 100
+        p0, p_exit, exit_date, _n = win
+        if p0 <= 0:
+            continue
+        ret = (p_exit - p0) / p0 * 100
         outcome = _determine_outcome(
             row["recommendation"] or "", row["position_change"] or "", ret
         )
-        # 同步拉基准指数同期涨跌，计算超额收益
+        # 基准腿与个股腿同起点同终点（exit_date），消除窗口错位
         benchmark_ret = await loop.run_in_executor(
-            None, lambda m=row["market"], d=row["date"]: _fetch_benchmark_return(m, d)
+            None, lambda m=row["market"], d=row["date"], e=exit_date: _fetch_benchmark_window(m, d, e)
         )
         with _conn(p) as con:
             con.execute(
                 "UPDATE recommendations SET price_7d=?, return_7d=?, outcome=?, benchmark_return_7d=? WHERE id=?",
-                (round(price_now, 4), round(ret, 2), outcome,
+                (round(p_exit, 4), round(ret, 2), outcome,
                  round(benchmark_ret, 2) if benchmark_ret is not None else None,
                  row["id"]),
             )
@@ -258,6 +321,63 @@ async def fill_7d_returns(db_path: str | Path | None = None) -> int:
     if filled:
         print(f"[Tracker] 回填 {filled} 条 7 日涨跌记录（含基准对比）")
     return filled
+
+
+async def realign_alpha(db_path: str | Path | None = None, dry_run: bool = True,
+                        limit: int | None = None) -> dict:
+    """
+    一次性重算历史 alpha（修旧版两腿窗口错位的伪 alpha）：对所有 price_7d 或 benchmark
+    已填的行，用配对窗口重算 return_7d/price_7d/benchmark_return_7d/outcome。
+    dry_run=True 只返回 old→new 对照不写库；幂等可重跑。返回 {checked, changed, samples}。
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        rows = con.execute(
+            "SELECT id, ticker, recommendation, position_change, date, return_7d, "
+            "benchmark_return_7d, COALESCE(market,'us') AS market FROM recommendations "
+            "WHERE price_7d IS NOT NULL OR benchmark_return_7d IS NOT NULL ORDER BY date"
+        ).fetchall()
+    if limit:
+        rows = rows[:limit]
+
+    loop = asyncio.get_event_loop()
+    changed = 0
+    samples: list[dict] = []
+    for row in rows:
+        win = await loop.run_in_executor(
+            None, lambda t=row["ticker"], m=row["market"], d=row["date"]: _fetch_paired_window(t, m, d)
+        )
+        if win is None or win[0] <= 0:
+            continue
+        p0, p_exit, exit_date, _n = win
+        new_ret = round((p_exit - p0) / p0 * 100, 2)
+        new_bm = await loop.run_in_executor(
+            None, lambda m=row["market"], d=row["date"], e=exit_date: _fetch_benchmark_window(m, d, e)
+        )
+        new_bm = round(new_bm, 2) if new_bm is not None else None
+        new_outcome = _determine_outcome(row["recommendation"] or "", row["position_change"] or "", new_ret)
+        old_ret, old_bm = row["return_7d"], row["benchmark_return_7d"]
+        if old_ret == new_ret and old_bm == new_bm:
+            continue
+        changed += 1
+        if len(samples) < 40:
+            oa = (old_ret - old_bm) if (old_ret is not None and old_bm is not None) else None
+            na = (new_ret - new_bm) if new_bm is not None else None
+            samples.append({
+                "ticker": row["ticker"], "date": row["date"],
+                "old_ret": old_ret, "new_ret": new_ret,
+                "old_alpha": round(oa, 2) if oa is not None else None,
+                "new_alpha": round(na, 2) if na is not None else None,
+            })
+        if not dry_run:
+            with _conn(p) as con:
+                con.execute(
+                    "UPDATE recommendations SET price_7d=?, return_7d=?, outcome=?, "
+                    "benchmark_return_7d=? WHERE id=?",
+                    (round(p_exit, 4), new_ret, new_outcome, new_bm, row["id"]),
+                )
+    return {"checked": len(rows), "changed": changed, "dry_run": dry_run, "samples": samples}
 
 
 def backfill_market(db_path: str | Path | None = None) -> int:
