@@ -413,7 +413,7 @@ async def format_report_node(state: AgentState) -> AgentState:
 
     # 读取战略红线状态，生成红绿灯行
     try:
-        _cfg = Path(__file__).parent.parent.parent.parent.parent / "config"
+        _cfg = Path(__file__).parents[3] / "config"   # .../finance-agent/config（原多一级 parent，红绿灯一直没显示）
         _settings = yaml.safe_load(open(_cfg / "settings.yaml")) or {}
         _inj = _settings.get("strategy_injection", {})
         if _inj.get("enabled", True) and _inj.get("show_limit_status_in_daily", True):
