@@ -85,12 +85,29 @@ CREATE INDEX IF NOT EXISTS idx_dip_at     ON dip_alerts(alerted_at);
 
 
 def _migrate_recommendations_table(con: sqlite3.Connection) -> None:
-    """为已存在的 recommendations 表补充 market / benchmark_return_7d 列（向后兼容）"""
+    """为已存在的 recommendations 表补充新列（向后兼容）。
+    30/90 日列默认 NULL = 未回填/窗口未成熟（0.0 是合法收益值，绝不可作默认）。"""
     existing = {row[1] for row in con.execute("PRAGMA table_info(recommendations)").fetchall()}
-    for col, typedef in [("market", "TEXT"), ("benchmark_return_7d", "REAL")]:
+    for col, typedef in [
+        ("market", "TEXT"), ("benchmark_return_7d", "REAL"),
+        ("price_30d", "REAL"), ("return_30d", "REAL"), ("benchmark_return_30d", "REAL"),
+        ("price_90d", "REAL"), ("return_90d", "REAL"), ("benchmark_return_90d", "REAL"),
+    ]:
         if col not in existing:
             try:
                 con.execute(f"ALTER TABLE recommendations ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass
+
+
+def _migrate_dip_alerts_table(con: sqlite3.Connection) -> None:
+    """为已存在的 dip_alerts 表补充 action 决策五字段（向后兼容）。
+    旧行五列 NULL = 落库功能上线前的史前行；'' = 模型对该字段输出为空。"""
+    existing = {row[1] for row in con.execute("PRAGMA table_info(dip_alerts)").fetchall()}
+    for col in ("action", "action_reason", "add_trigger", "add_limit", "invalidation"):
+        if col not in existing:
+            try:
+                con.execute(f"ALTER TABLE dip_alerts ADD COLUMN {col} TEXT")
             except sqlite3.OperationalError:
                 pass
 
@@ -117,6 +134,7 @@ def init_db(db_path: str | Path | None = None) -> None:
         con.executescript(_CREATE_GUIDANCE_SQL)
         _migrate_actions_table(con)
         _migrate_recommendations_table(con)
+        _migrate_dip_alerts_table(con)
 
 
 # ── 写入当日推荐 ──────────────────────────────────────────────
@@ -286,6 +304,8 @@ async def fill_7d_returns(db_path: str | Path | None = None) -> int:
     找出 7 个交易日前（日历日 ~10 天）还没有 price_7d 的记录，回填。
     用【配对窗口】：个股与基准同起点(rec日)同终点(rec+7交易日)，消除旧版"个股用回填时
     最新价 vs 基准取固定第6交易日"的窗口错位伪 alpha（L1b 核心修复）。
+    注意：与 fill_long_returns 的成熟度/原子口径【有意分叉】——7d 容忍短窗(exit_idx=min())
+    且两腿非原子（历史有 realign_alpha 兜底）；30/90d 无兜底路径，故那边是严格闸门+原子两腿。
     """
     p = _resolve_db(db_path)
     init_db(p)
@@ -405,6 +425,71 @@ async def realign_alpha(db_path: str | Path | None = None, dry_run: bool = True,
                 )
     return {"checked": len(rows), "changed": changed, "failed": failed,
             "dry_run": dry_run, "samples": samples, "failed_samples": failed_samples}
+
+
+_LONG_WINDOWS = [
+    # (fwd_td, col_suffix, cutoff_calendar_days)  30日≈21交易日 / 90日≈63交易日
+    (21, "30d", 30),
+    (63, "90d", 90),
+]
+
+
+async def fill_long_returns(db_path: str | Path | None = None) -> dict:
+    """
+    回填 30/90 日窗口收益（配对窗口，与 7d 同两腿 asof 对齐）。
+    与 fill_7d_returns 的两点【有意分叉】（勿统一，7d 口径已完成 102 行校准）：
+      1. 成熟度严格闸门：n_td < fwd_td 整行跳过（exit_idx=min() 的宽松口径在长窗口
+         会把中途价写死成 90 日收益，且因 IS NULL 待办键消失而永不重算）；
+      2. 原子两腿（与 realign_alpha 对齐）：任一腿失败整行不写——pending 键是
+         return_{suffix} IS NULL，写 return 留 bm NULL 会被永久 strand，腐蚀 alpha 标尺
+         （30/90 没有 realign 兜底路径）。
+    90d dormancy 由 cutoff 数据机制实现：窗口未到时 pending 恒为空集，零网络。
+    返回 {"filled": int, "immature": int, "failed": int}（两窗口合计）。
+    列名来自模块内封闭列表 _LONG_WINDOWS，f-string 拼 SQL 无注入面。
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    loop = asyncio.get_event_loop()
+    filled = immature = failed = 0
+
+    for fwd_td, suffix, cutoff_days in _LONG_WINDOWS:
+        cutoff = (datetime.today() - timedelta(days=cutoff_days)).strftime("%Y-%m-%d")
+        with _conn(p) as con:
+            pending = con.execute(
+                f"SELECT id, ticker, date, COALESCE(market,'us') AS market "
+                f"FROM recommendations WHERE date <= ? AND return_{suffix} IS NULL",
+                (cutoff,),
+            ).fetchall()
+        for row in pending:
+            win = await loop.run_in_executor(
+                None, lambda t=row["ticker"], m=row["market"], d=row["date"],
+                f=fwd_td: _fetch_paired_window(t, m, d, fwd_td=f)
+            )
+            if win is None:
+                failed += 1
+                continue
+            p0, p_exit, start_date, exit_date, n_td = win
+            if n_td < fwd_td:
+                immature += 1            # 窗口未走满，保持 NULL，下轮重试
+                continue
+            bm = await loop.run_in_executor(
+                None, lambda m=row["market"], s=start_date, e=exit_date: _fetch_benchmark_window(m, s, e)
+            )
+            if bm is None:
+                failed += 1              # 原子两腿：基准失败整行不写，防 strand
+                continue
+            with _conn(p) as con:
+                con.execute(
+                    f"UPDATE recommendations SET price_{suffix}=?, return_{suffix}=?, "
+                    f"benchmark_return_{suffix}=? WHERE id=?",
+                    (round(p_exit, 4), round((p_exit - p0) / p0 * 100, 2),
+                     round(bm, 2), row["id"]),
+                )
+            filled += 1
+
+    if filled or immature or failed:
+        print(f"[Tracker] 回填 {filled} 条 30/90 日窗口（immature={immature} failed={failed}）")
+    return {"filled": filled, "immature": immature, "failed": failed}
 
 
 def backfill_market(db_path: str | Path | None = None) -> int:
@@ -1264,13 +1349,20 @@ def save_dip_alert(ticker: str, market: str, drop_pct: float,
     with _conn(p) as con:
         cur = con.execute(
             """INSERT INTO dip_alerts
-               (ticker, market, drop_pct, price_at_alert, opportunity, thesis_intact, drop_reason)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (ticker, market, drop_pct, price_at_alert, opportunity, thesis_intact, drop_reason,
+                action, action_reason, add_trigger, add_limit, invalidation)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 ticker, market, round(drop_pct, 2), round(price_at_alert, 4),
                 analysis.get("opportunity", ""),
                 1 if analysis.get("thesis_intact") else 0,
                 analysis.get("drop_reason", ""),
+                # or ""：防 LLM 显式 null 经 json.loads 成 None 入库（NULL 语义保留给史前行）
+                analysis.get("action") or "",
+                analysis.get("action_reason") or "",
+                analysis.get("add_trigger") or "",   # 存过 _validate_dip_plan 闸门后的值=用户实际看到的
+                analysis.get("add_limit") or "",
+                analysis.get("invalidation") or "",
             ),
         )
         return cur.lastrowid
