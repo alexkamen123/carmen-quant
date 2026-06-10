@@ -1256,6 +1256,102 @@ def get_feedback_accuracy(db_path: str | Path | None = None) -> dict:
     }
 
 
+def _load_settings_block(key: str, defaults: dict) -> dict:
+    """从 config/settings.yaml 读取一个顶层配置块，缺失/解析失败时回落 defaults。
+    路径用 parents[3]（PR#11 教训：数 .parent 会静默读不到 config）。"""
+    cfg = dict(defaults)
+    try:
+        import yaml
+        p = Path(__file__).parents[3] / "config" / "settings.yaml"
+        if p.exists():
+            with open(p) as f:
+                s = yaml.safe_load(f) or {}
+            user = s.get(key) or {}
+            if isinstance(user, dict):
+                cfg.update({k: user[k] for k in defaults if k in user})
+    except Exception:
+        pass
+    return cfg
+
+
+# ── L2b 实盘反馈回流（order7）────────────────────────────────────────────────
+
+_LIVE_FEEDBACK_DEFAULTS = {"enabled": True}
+_LIVE_FEEDBACK_MIN_N = 3      # buy+sell 方向合并样本闸门，不足完全静默
+_LIVE_FEEDBACK_SMALL_N = 10   # 低于此值标注小样本
+
+_BUY_DIR_SQL = ("(recommendation = '买入' OR position_change LIKE '大加%' "
+                "OR position_change LIKE '小加%')")
+_SELL_DIR_SQL = ("(recommendation IN ('减仓', '卖出') OR position_change LIKE '减仓%')")
+
+
+def get_live_feedback(ticker: str, db_path: str | Path | None = None) -> dict | None:
+    """
+    某只股票历史实盘建议的 7 日结果（买入方向胜率/均值 + 卖出方向后续均值）。
+    买卖方向合并样本 < 3 时返回 None（小样本诚实：不足不注入）。
+    SELL 方向的 return_7d 是"卖出建议后该股 7 日涨跌"——为正 = 卖早/卖飞。
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        buy_rows = con.execute(
+            f"""SELECT return_7d, benchmark_return_7d FROM recommendations
+                WHERE ticker = ? AND return_7d IS NOT NULL AND {_BUY_DIR_SQL}
+                ORDER BY date DESC LIMIT 60""",
+            (ticker.upper(),),
+        ).fetchall()
+        sell_rows = con.execute(
+            f"""SELECT return_7d FROM recommendations
+                WHERE ticker = ? AND return_7d IS NOT NULL AND {_SELL_DIR_SQL}
+                ORDER BY date DESC LIMIT 60""",
+            (ticker.upper(),),
+        ).fetchall()
+
+    n_buy, n_sell = len(buy_rows), len(sell_rows)
+    if n_buy + n_sell < _LIVE_FEEDBACK_MIN_N:
+        return None
+
+    out: dict = {"ticker": ticker.upper(), "n_total": n_buy + n_sell,
+                 "buy": None, "sell": None}
+    if n_buy:
+        wins = sum(1 for r in buy_rows if r["return_7d"] > 0)
+        avg = sum(r["return_7d"] for r in buy_rows) / n_buy
+        out["buy"] = {"n": n_buy, "win_rate": round(wins / n_buy * 100),
+                      "avg": round(avg, 2)}
+    if n_sell:
+        avg_next = sum(r["return_7d"] for r in sell_rows) / n_sell
+        out["sell"] = {"n": n_sell, "avg_next": round(avg_next, 2)}
+    return out
+
+
+def format_live_feedback(ticker: str, db_path: str | Path | None = None) -> str:
+    """
+    渲染实盘反馈区块（注入 PM prompt 的 strategy_evidence 槽）。
+    settings live_feedback_injection.enabled=false 或样本不足时返回 ""（0 字符，不产生噪音）。
+    """
+    if not _load_settings_block("live_feedback_injection", _LIVE_FEEDBACK_DEFAULTS)["enabled"]:
+        return ""
+    fb = get_live_feedback(ticker, db_path)
+    if fb is None:
+        return ""
+
+    lines = [f"【实盘反馈】我们近期对 {fb['ticker']} 建议的实际结果（7日口径）："]
+    if fb["buy"]:
+        b = fb["buy"]
+        lines.append(
+            f"- 买入信号{b['n']}次：胜率{b['win_rate']}%，平均{b['avg']:+.1f}%"
+        )
+    if fb["sell"]:
+        s = fb["sell"]
+        tag = "（系统性卖早，卖出建议宜更谨慎）" if s["avg_next"] > 0 else ""
+        lines.append(
+            f"- 减仓/卖出{s['n']}次：后续7日平均{s['avg_next']:+.1f}%{tag}"
+        )
+    if fb["n_total"] < _LIVE_FEEDBACK_SMALL_N:
+        lines.append("（小样本参考，权重宜低）")
+    return "\n".join(lines)
+
+
 def ticker_signal_stats(ticker: str, db_path: str | Path | None = None) -> str:
     """
     返回某只股票的历史买入信号统计行，供飞书卡片展示信服力数据。
