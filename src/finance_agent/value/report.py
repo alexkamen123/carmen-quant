@@ -4,10 +4,13 @@
 置顶三态结论（灰/橙/绿）由数据确定性生成，零 LLM 叙事。
 """
 from finance_agent.db.tracker import (
-    _resolve_db, fill_7d_returns, backfill_action_returns, backfill_dip_outcomes,
-    backfill_market,
+    _resolve_db, fill_7d_returns, fill_long_returns, backfill_action_returns,
+    backfill_dip_outcomes, backfill_market,
 )
-from finance_agent.value.metrics import compute_value_metrics
+from finance_agent.value.metrics import (
+    compute_value_metrics,
+    DIP_BUCKET_OPPORTUNITY, DIP_BUCKET_BROKEN, DIP_BUCKET_WATCH,
+)
 from finance_agent.value.strategy_scorecard import compute_strategy_edge, format_strategy_edge_section
 
 _TEMPLATE = {"grey": "grey", "orange": "orange", "green": "green"}
@@ -79,6 +82,8 @@ def _behavior_section(m: dict) -> str:
 
 
 def _dip_section(m: dict) -> str:
+    """风险预警段：规则分级（thesis 完好性 × 下跌归因），硬性预算 ≤4 行。
+    注：opportunity 字段已死（DIP_SYSTEM 不再输出），呈现一律用 bucket 替代。"""
     dip = m["dip"]
     if dip["n"] == 0:
         return "**🛡️ 风险预警**：暂无已回填的暴跌预警记录"
@@ -87,12 +92,23 @@ def _dip_section(m: dict) -> str:
         for c in dip["cases"][:5]:
             r7 = c.get("return_7d")
             r7s = (("+" if r7 >= 0 else "") + str(r7) + "%") if r7 is not None else "待回填"
-            cases.append(f"{c['ticker']}（{c.get('opportunity') or '—'}机会，7日 {r7s}）")
+            cases.append(f"{c['ticker']}（{c.get('bucket', '—')}，7日 {r7s}）")
         return (f"**🛡️ 风险预警** · 仅 {dip['n']} 条（样本不足，作个案不作命中率）\n"
                 + "；".join(cases))
-    hits = sum(1 for c in dip["cases"]
-               if c.get("opportunity") in ("高", "中") and (c.get("return_7d") or 0) > 0)
-    return f"**🛡️ 风险预警** · {dip['n']} 条，抄底机会事后上涨 {hits} 次"
+    lines = [f"**🛡️ 风险预警** · {dip['n']} 条（规则分级：thesis 完好性 × 下跌归因）"]
+    notes = {DIP_BUCKET_BROKEN: "（续跌=预警对）", DIP_BUCKET_WATCH: "（矛盾/史前记录，不计结论）"}
+    for bucket in (DIP_BUCKET_OPPORTUNITY, DIP_BUCKET_BROKEN, DIP_BUCKET_WATCH):
+        st = dip["buckets"].get(bucket)
+        if not st:
+            continue   # 空桶不显示
+        note = notes.get(bucket, "")
+        if st["filled"]:
+            sign = "+" if st["avg_ret7"] >= 0 else ""
+            lines.append(f"　{bucket} {st['n']} 条：事后7日已回填 {st['filled']}，"
+                         f"{st['up']} 涨 / 平均 {sign}{st['avg_ret7']}%{note}")
+        else:
+            lines.append(f"　{bucket} {st['n']} 条：事后7日均待回填{note}")
+    return "\n".join(lines)
 
 
 def _meta_section(m: dict) -> str:
@@ -105,7 +121,8 @@ def _meta_section(m: dict) -> str:
         f"• 建议构成：已回填 {comp['filled']} 条中仅 {comp['directional']} 条可裁决"
         f"（占 {int(comp['actionable_ratio'] * 100)}%），其余 {comp['neutral_or_passive']} 条为持有/定投，**不计入命中率**",
         "• 方法学口径：alpha 两腿已配对窗口对齐（个股与基准同起点同终点，历史已全量重算，"
-        "2026-06-10 迁移）；仍知缺陷：① 同票多日推荐样本重叠、自相关 ② 仅 7 日窗口（30/90 日留后续）",
+        "2026-06-10 迁移）；仍知缺陷：① 同票多日推荐样本重叠、自相关 "
+        "② 30/90 日窗口（=21/63 个交易日）回填中、样本未成熟，verdict 仍以 7 日为准",
         f"• 数据截至 {m['data_through'] or '—'}；纯数据计算，无 AI 叙事。",
     ])
 
@@ -158,7 +175,8 @@ def _build_text(m: dict) -> str:
 async def run_value_report(db_path: str = "data/agent.db") -> tuple[dict, str, dict]:
     """先确保数据回填最新，再算价值记分牌。返回 (飞书卡片, 纯文本, metrics)。"""
     p = _resolve_db(db_path)
-    for label, coro in (("7日回填", fill_7d_returns(p)), ("操作回填", backfill_action_returns(p))):
+    for label, coro in (("7日回填", fill_7d_returns(p)), ("30/90日回填", fill_long_returns(p)),
+                        ("操作回填", backfill_action_returns(p))):
         try:
             await coro
         except Exception as e:
