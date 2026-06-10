@@ -88,6 +88,32 @@ def test_settings_disabled_silences_format(tmp_path, monkeypatch):
     assert tracker.get_live_feedback("NVDA", db_path=db) is not None
 
 
+def test_contradictory_row_counted_once_bullish_first(tmp_path):
+    """对抗审查 P1 回归：recommendation='买入' + position_change='减仓' 的矛盾行
+    只计入 buy 方向（bullish 优先，与 _determine_outcome 同语义），不污染 sell 均值。"""
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    _seed(db, "X", rec="买入", pos="减仓", ret=8.0)    # 矛盾行
+    _seed(db, "X", rec="买入", ret=1.0)
+    _seed(db, "X", rec="卖出", ret=-2.0)
+    fb = tracker.get_live_feedback("X", db_path=db)
+    assert fb["n_total"] == 3                      # 不许 4（双重计入）
+    assert fb["buy"]["n"] == 2
+    assert fb["sell"] == {"n": 1, "avg_next": -2.0}   # 矛盾行的 +8 没混进 sell
+
+
+def test_per_direction_small_sample_tag(tmp_path):
+    """对抗审查 P2 回归：n_total>=10 但单方向 n<5 → 该方向独立标注，不许裸出单例胜率。"""
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    _seed(db, "Y", rec="买入", ret=3.0)                # n_buy=1
+    for i in range(9):
+        _seed(db, "Y", rec="减仓", ret=-1.0, date=f"2026-05-{i+1:02d}")
+    out = tracker.format_live_feedback("Y", db_path=db)
+    assert "买入信号1次" in out and "仅1次，参考意义有限" in out
+    assert "小样本参考，权重宜低" not in out          # n_total=10 总标注不触发，方向标注兜住
+
+
 def test_large_sample_no_small_tag(tmp_path):
     db = tmp_path / "t.db"
     tracker.init_db(db)

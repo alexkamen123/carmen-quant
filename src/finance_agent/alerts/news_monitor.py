@@ -1154,9 +1154,15 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
 
         # Stage 2：ATR 自适应精确判定（两个条件统一用 effective 阈值）
         atr_pct = signals.atr_pct if signals else 0.0
-        effective_threshold = _effective_drop_threshold(atr_pct, gap_up_pct)
+        cfg = _load_dip_atr_cfg()
+        effective_threshold = _effective_drop_threshold(atr_pct, gap_up_pct, cfg)
         triggered_by_1h = drop_1h <= -effective_threshold
-        open_triggered = drop_from_open <= -(effective_threshold * 1.5)
+        if cfg.get("enabled", True):
+            open_triggered = drop_from_open <= -(effective_threshold * 1.5)
+        else:
+            # 一键关回退改动前行为：open 触发用裸 base*1.5，不受 gap/ATR 影响
+            # （改动前 gap 抬升只作用于 1h 条件，open 条件始终是 threshold_pct*1.5）
+            open_triggered = drop_from_open <= -(threshold_pct * 1.5)
         if not triggered_by_1h and not open_triggered:
             print(f"[Alert] {ticker} 过预筛但未过 ATR 自适应阈值 "
                   f"{effective_threshold:.1f}%（ATR占价 {atr_pct:.1f}%），按正常波动忽略")

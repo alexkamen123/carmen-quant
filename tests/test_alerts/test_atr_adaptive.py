@@ -81,6 +81,27 @@ def test_open_triggered_uses_effective(monkeypatch):
     assert nm._check_price_drop("GAPDN", "us", 3.0) is None
 
 
+def test_disabled_open_trigger_matches_pre_change(monkeypatch):
+    """对抗审查 P1 回归：一键关后 open 触发必须回退裸 base*1.5（不受 gap/ATR 影响）。
+    gap_up=15%、较开盘 -5%：改动前会发卡（-5<=-4.5），关掉开关后也必须发卡。"""
+    closes = [100.0] + [95.0] * 20   # 1h 横盘，较开盘 -5%
+    _wire_check_drop(monkeypatch, closes, atr_pct=11.0)
+    monkeypatch.setattr(nm, "_load_dip_atr_cfg", lambda: {**_CFG, "enabled": False})
+    # 注入 gap_up=15%：让 2d 日线前收远低于开盘
+    idx = pd.date_range("2026-06-09", periods=2, freq="D")
+    df_2d = pd.DataFrame({"close": [100.0 / 1.15, 100.0]}, index=idx)
+    orig_dl = nm.yf.download
+
+    def dl(tkr, period=None, interval=None, **k):
+        if period == "2d":
+            return df_2d
+        return orig_dl(tkr, period=period, interval=interval, **k)
+
+    monkeypatch.setattr(nm.yf, "download", dl)
+    info = nm._check_price_drop("OFFSW", "us", 3.0)
+    assert info is not None and info["open_triggered"] is True
+
+
 def test_stage1_early_return_skips_daily_fetch(monkeypatch):
     """两条件都不过 base 预筛 → 立即 None，绝不触日线/信号网络请求。"""
     closes = [100.0] * 12   # 无跌幅
