@@ -47,3 +47,29 @@ strategy_injection:
 # 一键关：误报时临时设 false，无需删代码。
 anti_chase_guard:
   enabled: true
+
+# ── L2b 实盘反馈回流注入（order7）────────────────────────────────────────────
+# 把该票历史实盘建议的 7d 胜率/均值注入 PM 裁决材料（strategy_evidence 槽）。
+# 样本闸门：买入+卖出方向合并 n>=3 才注入，不足完全静默。
+# 一键关：误导/过载时设 false，无需删代码。
+live_feedback_injection:
+  enabled: true
+
+# ── dip 预警 ATR 自适应阈值（order8）────────────────────────────────────────
+# effective = max(base_pct, min(k * atr_pct, cap_pct))；gap_up 抬升叠加在此结果上。
+# 只抬升不下调（effective >= base_pct），低波动票不会被降阈值。
+# 一键关：设 false 回退写死 3.0%，行为与改动前一致。
+dip_atr_adaptive:
+  enabled: true
+  base_pct: 3.0
+  k: 0.8
+  cap_pct: 7.0
+
+# ── 用户行为时机提示（order9）────────────────────────────────────────────────
+# dip 加仓卡片 + log-action BUY 时展示用户历史买入行为统计（描述性，不说教）。
+# 样本闸门：已回填 BUY 数 < min_n_buy 完全静默。
+# 一键关：觉得烦时临时设 false，无需改代码。
+behavior_hint:
+  enabled: true
+  min_n_buy: 5
+  sell_regret_pct: 5.0
