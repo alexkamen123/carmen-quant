@@ -1033,12 +1033,50 @@ def _is_market_open(market: str) -> bool:
     return True  # 其他市场不做限制
 
 
+def _load_dip_atr_cfg() -> dict:
+    """settings.yaml dip_atr_adaptive 配置块；缺失/解析失败回落默认值。"""
+    cfg = {"enabled": True, "base_pct": 3.0, "k": 0.8, "cap_pct": 7.0}
+    try:
+        p = Path(__file__).parents[3] / "config" / "settings.yaml"
+        if p.exists():
+            with open(p) as f:
+                s = yaml.safe_load(f) or {}
+            user = s.get("dip_atr_adaptive") or {}
+            if isinstance(user, dict):
+                cfg.update({k: user[k] for k in cfg if k in user})
+    except Exception:
+        pass
+    return cfg
+
+
+def _effective_drop_threshold(atr_pct: float, gap_up_pct: float,
+                              cfg: dict | None = None) -> float:
+    """
+    ATR 自适应触发阈值（order8）：effective = max(base, min(k*atr_pct, cap))。
+    只抬升不下调（>= base），高波动票的日常震荡不再误报为暴跌。
+    gap_up > 10% 的抬升叠加在 ATR 结果上（原实现叠加在写死 3.0% 上，已修正）。
+    atr_pct 取不到（signals 失败/为 0）或开关关闭时静默回落 base。
+    """
+    cfg = cfg or _load_dip_atr_cfg()
+    base = float(cfg.get("base_pct", 3.0))
+    if cfg.get("enabled", True) and atr_pct and atr_pct > 0:
+        eff = max(base, min(float(cfg.get("k", 0.8)) * atr_pct,
+                            float(cfg.get("cap_pct", 7.0))))
+    else:
+        eff = base
+    if gap_up_pct > 10:
+        eff = eff * (1 + gap_up_pct / 20)
+    return round(eff, 2)
+
+
 def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> dict | None:
     """
-    用 yfinance 5min K 线检测价格异动，触发条件之一满足即报警：
-    1. 过去 1 小时跌幅 >= threshold_pct（捕捉突发急跌）
-    2. 较今日开盘跌幅 >= threshold_pct * 1.5（捕捉开盘就跌、扫描延迟场景）
-    当天跳空大涨（vs 前收 > 10%）时，阈值自动抬升，避免正常散热被误报为暴跌机会。
+    用 yfinance 5min K 线检测价格异动，两阶段判定：
+    Stage 1（宽松预筛，base 阈值）：1 小时跌幅或较开盘跌幅(×1.5)任一过线才继续，
+      否则直接返回 None，省掉后续日线/技术指标网络开销。
+    Stage 2（精确判定，ATR 自适应阈值）：用日线 ATR% 抬升阈值
+      effective = max(base, min(k*atr_pct, cap))，gap_up>10% 再叠加抬升；
+      两个触发条件都按 effective 重新判（修复原 open_triggered 用 base 的 bug）。
     市场收盘后直接跳过，避免用过期收盘数据误报。
     """
     if not _is_market_open(market):
@@ -1066,7 +1104,10 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
         # 条件2：较今日开盘跌幅（第一根 K 线开盘价）
         open_price = float(close.iloc[0])
         drop_from_open = (price_now - open_price) / open_price * 100 if open_price > 0 else 0.0
-        open_triggered = drop_from_open <= -(threshold_pct * 1.5)
+
+        # Stage 1：宽松预筛（base 阈值），两条件都不过线直接退出，不触日线网络请求
+        if drop_1h > -threshold_pct and drop_from_open > -(threshold_pct * 1.5):
+            return None
 
         # 当天跳空幅度：对比前一日收盘（用 2d 日线取昨收）
         gap_up_pct = 0.0
@@ -1083,16 +1124,6 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
                     gap_up_pct = (open_price - prev_close) / prev_close * 100
         except Exception:
             pass
-
-        # 当天大涨时动态抬升触发阈值：涨 10% → 需回调 6%，涨 20% → 需回调 9%
-        # 防止暴涨后正常散热（3-5%）被误报为买入机会
-        effective_threshold = threshold_pct
-        if gap_up_pct > 10:
-            effective_threshold = threshold_pct * (1 + gap_up_pct / 20)
-
-        triggered_by_1h = drop_1h <= -effective_threshold
-        if not triggered_by_1h and not open_triggered:
-            return None
 
         # 用更严重的那个作为报告跌幅；保留两个数据供消息展示
         drop_pct = min(drop_1h, drop_from_open)  # 取绝对值更大的（更负的）
@@ -1121,6 +1152,22 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
         except Exception as sig_err:
             print(f"[Alert] 技术指标计算失败 {ticker}: {sig_err}")
 
+        # Stage 2：ATR 自适应精确判定（两个条件统一用 effective 阈值）
+        atr_pct = signals.atr_pct if signals else 0.0
+        cfg = _load_dip_atr_cfg()
+        effective_threshold = _effective_drop_threshold(atr_pct, gap_up_pct, cfg)
+        triggered_by_1h = drop_1h <= -effective_threshold
+        if cfg.get("enabled", True):
+            open_triggered = drop_from_open <= -(effective_threshold * 1.5)
+        else:
+            # 一键关回退改动前行为：open 触发用裸 base*1.5，不受 gap/ATR 影响
+            # （改动前 gap 抬升只作用于 1h 条件，open 条件始终是 threshold_pct*1.5）
+            open_triggered = drop_from_open <= -(threshold_pct * 1.5)
+        if not triggered_by_1h and not open_triggered:
+            print(f"[Alert] {ticker} 过预筛但未过 ATR 自适应阈值 "
+                  f"{effective_threshold:.1f}%（ATR占价 {atr_pct:.1f}%），按正常波动忽略")
+            return None
+
         return {
             "ticker": ticker,
             "market": market,
@@ -1134,6 +1181,7 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
             "recovery_pct": round(recovery_pct, 2),
             "recovering": recovering,
             "gap_up_pct": round(gap_up_pct, 2),
+            "effective_threshold": effective_threshold,
             "signals": signals,
         }
     except Exception as e:
@@ -1269,6 +1317,21 @@ async def _send_price_drop_alert(ticker: str, market: str,
                 "text": {"tag": "lark_md", "content": "\n".join(plan_lines)},
             })
             elements.append({"tag": "hr"})
+
+        # 行为时机提示（order9）：仅 action=加仓 时展示，描述性不说教，闸门在 stats 函数内
+        if action == "加仓":
+            try:
+                from finance_agent.db.tracker import (format_behavior_hint,
+                                                      get_behavior_hint_stats)
+                _bh = get_behavior_hint_stats()
+                if _bh:
+                    elements.append({
+                        "tag": "note",
+                        "elements": [{"tag": "plain_text",
+                                      "content": format_behavior_hint(_bh)}],
+                    })
+            except Exception as bh_err:
+                print(f"[Alert] 行为提示生成失败（跳过）: {bh_err}")
 
         # 认错离场信号（替代机械止损，可定性可定量）
         if invalidation:
@@ -1532,6 +1595,8 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
             None, _check_price_drop, ticker, market, threshold_pct
         )
         if drop_info:
+            _eff = drop_info.get("effective_threshold", threshold_pct)
+            print(f"[PriceScan] {ticker} 触发（有效阈值 {_eff:.1f}%，ATR 自适应）")
             dedup_key = f"price_drop_10m:{ticker}:{slot_5m}"
             if dedup_key not in alerted:
                 mkt_drop = hk_mkt_drop if market == "hk" else us_mkt_drop
@@ -1559,7 +1624,7 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
             else:
                 print(f"[PriceScan] {ticker} 10分钟内已推送，跳过")
         else:
-            print(f"[PriceScan] {ticker} 无异动（1h跌幅 < {threshold_pct}%，较开盘跌幅 < {threshold_pct*1.5:.1f}%）")
+            print(f"[PriceScan] {ticker} 无异动（预筛：1h跌幅 < {threshold_pct}% 且较开盘 < {threshold_pct*1.5:.1f}%；或未过 ATR 自适应阈值）")
 
     if pushed == 0:
         print(f"[PriceScan] 本次无价格异动")

@@ -1256,6 +1256,169 @@ def get_feedback_accuracy(db_path: str | Path | None = None) -> dict:
     }
 
 
+def _load_settings_block(key: str, defaults: dict) -> dict:
+    """从 config/settings.yaml 读取一个顶层配置块，缺失/解析失败时回落 defaults。
+    路径用 parents[3]（PR#11 教训：数 .parent 会静默读不到 config）。"""
+    cfg = dict(defaults)
+    try:
+        import yaml
+        p = Path(__file__).parents[3] / "config" / "settings.yaml"
+        if p.exists():
+            with open(p) as f:
+                s = yaml.safe_load(f) or {}
+            user = s.get(key) or {}
+            if isinstance(user, dict):
+                cfg.update({k: user[k] for k in defaults if k in user})
+    except Exception:
+        pass
+    return cfg
+
+
+# ── 用户行为时机提示（order9）────────────────────────────────────────────────
+
+_BEHAVIOR_HINT_DEFAULTS = {"enabled": True, "min_n_buy": 5, "sell_regret_pct": 5.0}
+_BEHAVIOR_HINT_SMALL_N = 15   # 低于此值标注"样本少，仅参考"
+
+
+def get_behavior_hint_stats(db_path: str | Path | None = None) -> dict | None:
+    """
+    用户历史买入行为统计（供 dip 加仓卡片 / log-action BUY 时机提示）。
+    符号约定（backfill_action_returns）：BUY 的 actual_return = 买后 7 日涨幅（正=买对）；
+    SELL/TRIM 的 actual_return = 卖后 7 日涨幅（正=卖飞）。
+    开关关闭或已回填 BUY 数 < min_n_buy 时返回 None（完全静默）。
+    """
+    cfg = _load_settings_block("behavior_hint", _BEHAVIOR_HINT_DEFAULTS)
+    if not cfg["enabled"]:
+        return None
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        buys = con.execute(
+            "SELECT actual_return FROM user_actions "
+            "WHERE action = 'BUY' AND actual_return IS NOT NULL"
+        ).fetchall()
+        regret = float(cfg.get("sell_regret_pct", 5.0))
+        n_sell_regret = con.execute(
+            "SELECT COUNT(*) FROM user_actions "
+            "WHERE action IN ('SELL', 'TRIM') AND actual_return >= ?",
+            (regret,),
+        ).fetchone()[0]
+
+    n_buy = len(buys)
+    if n_buy < int(cfg.get("min_n_buy", 5)):
+        return None
+    avg_buy = sum(r["actual_return"] for r in buys) / n_buy
+    return {
+        "n_buy": n_buy,
+        "avg_buy": round(avg_buy, 2),
+        "n_sell_regret": n_sell_regret,
+        "sell_regret_pct": regret,
+        "small_sample": n_buy < _BEHAVIOR_HINT_SMALL_N,
+    }
+
+
+def format_behavior_hint(stats: dict, style: str = "feishu") -> str:
+    """渲染行为提示一行文案。描述性不说教：只报事实（笔数+均值），决定权在用户。"""
+    n, avg = stats["n_buy"], stats["avg_buy"]
+    tag = "（样本少，仅参考）" if stats.get("small_sample") else ""
+    if style == "cli":
+        return f"参考：你过去 {n} 次买入 7日均{avg:+.1f}%{tag}，确认这笔在计划内？"
+    line = f"⚠️ 行为提示：你过去 {n} 次买入 · 7日平均 {avg:+.1f}%{tag}"
+    if stats.get("n_sell_regret", 0) >= 2:
+        regret = stats.get("sell_regret_pct", 5.0)
+        line += f"；{stats['n_sell_regret']} 次卖出后涨了 {regret:g}%+"
+    return line
+
+
+# ── L2b 实盘反馈回流（order7）────────────────────────────────────────────────
+
+_LIVE_FEEDBACK_DEFAULTS = {"enabled": True}
+_LIVE_FEEDBACK_MIN_N = 3      # buy+sell 方向合并样本闸门，不足完全静默
+_LIVE_FEEDBACK_SMALL_N = 10   # 低于此值标注小样本
+
+# IFNULL 包裹：NULL 列让 NOT (...) 落进 SQL 三值逻辑黑洞（NULL≠FALSE），整行被静默排除
+_BUY_DIR_SQL = ("(IFNULL(recommendation, '') = '买入' "
+                "OR IFNULL(position_change, '') LIKE '大加%' "
+                "OR IFNULL(position_change, '') LIKE '小加%')")
+# sell 方向排除已判 bullish 的矛盾行（如 recommendation='买入' AND position_change='减仓'），
+# bullish 优先与 _determine_outcome 同语义；防同一行双重计入 n_total / 污染两侧均值
+_SELL_DIR_SQL = ("((IFNULL(recommendation, '') IN ('减仓', '卖出') "
+                 "OR IFNULL(position_change, '') LIKE '减仓%') "
+                 f"AND NOT {_BUY_DIR_SQL})")
+
+
+def get_live_feedback(ticker: str, db_path: str | Path | None = None) -> dict | None:
+    """
+    某只股票历史实盘建议的 7 日结果（买入方向胜率/均值 + 卖出方向后续均值）。
+    买卖方向合并样本 < 3 时返回 None（小样本诚实：不足不注入）。
+    SELL 方向的 return_7d 是"卖出建议后该股 7 日涨跌"——为正 = 卖早/卖飞。
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        buy_rows = con.execute(
+            f"""SELECT return_7d, benchmark_return_7d FROM recommendations
+                WHERE ticker = ? AND return_7d IS NOT NULL AND {_BUY_DIR_SQL}
+                ORDER BY date DESC LIMIT 60""",
+            (ticker.upper(),),
+        ).fetchall()
+        sell_rows = con.execute(
+            f"""SELECT return_7d FROM recommendations
+                WHERE ticker = ? AND return_7d IS NOT NULL AND {_SELL_DIR_SQL}
+                ORDER BY date DESC LIMIT 60""",
+            (ticker.upper(),),
+        ).fetchall()
+
+    n_buy, n_sell = len(buy_rows), len(sell_rows)
+    if n_buy + n_sell < _LIVE_FEEDBACK_MIN_N:
+        return None
+
+    out: dict = {"ticker": ticker.upper(), "n_total": n_buy + n_sell,
+                 "buy": None, "sell": None}
+    if n_buy:
+        wins = sum(1 for r in buy_rows if r["return_7d"] > 0)
+        avg = sum(r["return_7d"] for r in buy_rows) / n_buy
+        out["buy"] = {"n": n_buy, "win_rate": round(wins / n_buy * 100),
+                      "avg": round(avg, 2)}
+    if n_sell:
+        avg_next = sum(r["return_7d"] for r in sell_rows) / n_sell
+        out["sell"] = {"n": n_sell, "avg_next": round(avg_next, 2)}
+    return out
+
+
+def format_live_feedback(ticker: str, db_path: str | Path | None = None) -> str:
+    """
+    渲染实盘反馈区块（注入 PM prompt 的 strategy_evidence 槽）。
+    settings live_feedback_injection.enabled=false 或样本不足时返回 ""（0 字符，不产生噪音）。
+    """
+    if not _load_settings_block("live_feedback_injection", _LIVE_FEEDBACK_DEFAULTS)["enabled"]:
+        return ""
+    fb = get_live_feedback(ticker, db_path)
+    if fb is None:
+        return ""
+
+    # 小样本按方向独立标注（对抗审查 P2：n_total 合并判断会漏标 n_buy=1 的单例胜率）
+    _PER_DIR_SMALL_N = 5
+    lines = [f"【实盘反馈】我们近期对 {fb['ticker']} 建议的实际结果（7日口径）："]
+    if fb["buy"]:
+        b = fb["buy"]
+        small = f"（仅{b['n']}次，参考意义有限）" if b["n"] < _PER_DIR_SMALL_N else ""
+        lines.append(
+            f"- 买入信号{b['n']}次：胜率{b['win_rate']}%，平均{b['avg']:+.1f}%{small}"
+        )
+    if fb["sell"]:
+        s = fb["sell"]
+        # 措辞只收紧卖出方向，不许被倒推为加仓依据（对抗审查 P1）
+        tag = "（系统性卖早，减仓宜慎重；不构成加仓依据）" if s["avg_next"] > 0 else ""
+        small = f"（仅{s['n']}次，参考意义有限）" if s["n"] < _PER_DIR_SMALL_N else ""
+        lines.append(
+            f"- 减仓/卖出{s['n']}次：后续7日平均{s['avg_next']:+.1f}%{tag}{small}"
+        )
+    if fb["n_total"] < _LIVE_FEEDBACK_SMALL_N:
+        lines.append("（小样本参考，权重宜低）")
+    return "\n".join(lines)
+
+
 def ticker_signal_stats(ticker: str, db_path: str | Path | None = None) -> str:
     """
     返回某只股票的历史买入信号统计行，供飞书卡片展示信服力数据。
