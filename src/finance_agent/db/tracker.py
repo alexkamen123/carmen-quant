@@ -1336,9 +1336,15 @@ _LIVE_FEEDBACK_DEFAULTS = {"enabled": True}
 _LIVE_FEEDBACK_MIN_N = 3      # buy+sell 方向合并样本闸门，不足完全静默
 _LIVE_FEEDBACK_SMALL_N = 10   # 低于此值标注小样本
 
-_BUY_DIR_SQL = ("(recommendation = '买入' OR position_change LIKE '大加%' "
-                "OR position_change LIKE '小加%')")
-_SELL_DIR_SQL = ("(recommendation IN ('减仓', '卖出') OR position_change LIKE '减仓%')")
+# IFNULL 包裹：NULL 列让 NOT (...) 落进 SQL 三值逻辑黑洞（NULL≠FALSE），整行被静默排除
+_BUY_DIR_SQL = ("(IFNULL(recommendation, '') = '买入' "
+                "OR IFNULL(position_change, '') LIKE '大加%' "
+                "OR IFNULL(position_change, '') LIKE '小加%')")
+# sell 方向排除已判 bullish 的矛盾行（如 recommendation='买入' AND position_change='减仓'），
+# bullish 优先与 _determine_outcome 同语义；防同一行双重计入 n_total / 污染两侧均值
+_SELL_DIR_SQL = ("((IFNULL(recommendation, '') IN ('减仓', '卖出') "
+                 "OR IFNULL(position_change, '') LIKE '减仓%') "
+                 f"AND NOT {_BUY_DIR_SQL})")
 
 
 def get_live_feedback(ticker: str, db_path: str | Path | None = None) -> dict | None:
@@ -1391,17 +1397,22 @@ def format_live_feedback(ticker: str, db_path: str | Path | None = None) -> str:
     if fb is None:
         return ""
 
+    # 小样本按方向独立标注（对抗审查 P2：n_total 合并判断会漏标 n_buy=1 的单例胜率）
+    _PER_DIR_SMALL_N = 5
     lines = [f"【实盘反馈】我们近期对 {fb['ticker']} 建议的实际结果（7日口径）："]
     if fb["buy"]:
         b = fb["buy"]
+        small = f"（仅{b['n']}次，参考意义有限）" if b["n"] < _PER_DIR_SMALL_N else ""
         lines.append(
-            f"- 买入信号{b['n']}次：胜率{b['win_rate']}%，平均{b['avg']:+.1f}%"
+            f"- 买入信号{b['n']}次：胜率{b['win_rate']}%，平均{b['avg']:+.1f}%{small}"
         )
     if fb["sell"]:
         s = fb["sell"]
-        tag = "（系统性卖早，卖出建议宜更谨慎）" if s["avg_next"] > 0 else ""
+        # 措辞只收紧卖出方向，不许被倒推为加仓依据（对抗审查 P1）
+        tag = "（系统性卖早，减仓宜慎重；不构成加仓依据）" if s["avg_next"] > 0 else ""
+        small = f"（仅{s['n']}次，参考意义有限）" if s["n"] < _PER_DIR_SMALL_N else ""
         lines.append(
-            f"- 减仓/卖出{s['n']}次：后续7日平均{s['avg_next']:+.1f}%{tag}"
+            f"- 减仓/卖出{s['n']}次：后续7日平均{s['avg_next']:+.1f}%{tag}{small}"
         )
     if fb["n_total"] < _LIVE_FEEDBACK_SMALL_N:
         lines.append("（小样本参考，权重宜低）")
