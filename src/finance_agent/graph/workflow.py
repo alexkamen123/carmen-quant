@@ -13,7 +13,7 @@ from finance_agent.agents.bull_agent import run_bull_analysis
 from finance_agent.agents.bear_agent import run_bear_analysis
 from finance_agent.agents.portfolio_manager import run_portfolio_manager_batch, _sector_summary
 from finance_agent.db.tracker import (
-    save_recommendations, fill_7d_returns, accuracy_summary,
+    save_recommendations, fill_7d_returns, fill_long_returns, accuracy_summary,
     load_all_theses, get_thesis_ages, ticker_signal_stats,
 )
 from finance_agent.notifications.glossary import build_glossary_element
@@ -482,6 +482,11 @@ async def track_node(state: AgentState) -> AgentState:
     """保存当日推荐到 SQLite，并回填 10 天前的历史记录"""
     # 先回填历史（7 个交易日 ≈ 10 日历日）
     await fill_7d_returns()
+    # 30/90 日窗口回填（pending 为空时仅一次 SQL 零网络）；不许炸掉日报主链路
+    try:
+        await fill_long_returns()
+    except Exception as e:
+        print(f"[Tracker] 30/90日回填跳过：{e}")
 
     # 保存今日推荐
     records = [

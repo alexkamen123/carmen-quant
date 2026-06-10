@@ -22,6 +22,42 @@ GATE_MIN_TICKERS = 8
 GATE_MIN_BM_COV = 0.70
 NEUTRAL_BAND = 1.0   # |7日收益| < 1% 记中性，不进命中率分子分母
 
+# ── 暴跌分级（order6）：纯规则零 LLM，词表写死可审计（沿用 GATE_* 防 p-hacking 风格）──
+DIP_BUCKET_OPPORTUNITY = "机会型回调"   # thesis 完好 + 情绪/板块/技术性驱动
+DIP_BUCKET_BROKEN      = "基本面破裂"   # LLM 判 thesis 已破坏
+DIP_BUCKET_WATCH       = "待观察"       # 史前行（intact=NULL）或证据矛盾，保守挂起
+
+_DIP_FUND_KW = ("基本面恶化", "基本面转弱", "业绩恶化", "业绩暴雷", "业绩爆雷",
+                "暴雷", "爆雷", "不及预期", "指引下调", "下调指引", "指引转弱",
+                "证伪", "财务造假", "竞争格局逆转")
+_DIP_NEG_PREFIXES = ("非", "并非", "不是", "无", "没有", "排除", "而非",
+                     "未见", "无明显", "不存在")
+
+
+def _has_unnegated_fund_kw(text: str) -> bool:
+    """定位检查：只有紧邻关键词前 4 字内无否定词才算命中（防'非基本面恶化'误伤，
+    也防'业绩暴雷，并非情绪问题'里别处的否定词误放行）。"""
+    for kw in _DIP_FUND_KW:
+        start = 0
+        while (i := text.find(kw, start)) != -1:
+            prefix = text[max(0, i - 4):i]
+            if not any(prefix.endswith(neg) for neg in _DIP_NEG_PREFIXES):
+                return True
+            start = i + len(kw)
+    return False
+
+
+def classify_dip(thesis_intact: int | None, drop_reason: str | None) -> str:
+    """dip 分桶：以 thesis_intact 布尔为主轴，词表只做矛盾检测。
+    错误退化方向恒保守（宁待观察、不虚标机会）。"""
+    if thesis_intact is None:
+        return DIP_BUCKET_WATCH                 # 史前行：五字段落库前的历史警报
+    if not thesis_intact:
+        return DIP_BUCKET_BROKEN
+    if _has_unnegated_fund_kw(drop_reason or ""):
+        return DIP_BUCKET_WATCH                 # intact=1 却归因基本面 → 证据矛盾，挂起
+    return DIP_BUCKET_OPPORTUNITY
+
 
 def _is_bullish(rec: str, pc: str) -> bool:
     return rec == "买入" or (pc or "").startswith(("大加", "小加"))
@@ -191,9 +227,22 @@ def compute_value_metrics(db_path=None) -> dict:
         "symbol_note": "卖出：续跌=对(躲跌)、续涨=踏空(卖飞，绝对收益虽正但属卖错时点)",
     }
 
-    # ── 风险预警：个案，不算比率 ──
+    # ── 风险预警：规则分桶 + 每桶事后 7 日表现（个案保留向后兼容）──
     dips = get_dip_stats(days=3650, db_path=p)
-    dip = {"n": len(dips), "cases": dips}
+    buckets: dict[str, dict] = {}
+    for c in dips:
+        c["bucket"] = classify_dip(c.get("thesis_intact"), c.get("drop_reason"))
+        st = buckets.setdefault(c["bucket"], {"n": 0, "filled": 0, "up": 0, "_sum": 0.0})
+        st["n"] += 1
+        r7 = c.get("return_7d")
+        if r7 is not None:
+            st["filled"] += 1
+            st["up"] += 1 if r7 > 0 else 0
+            st["_sum"] += r7
+    for st in buckets.values():
+        s = st.pop("_sum")
+        st["avg_ret7"] = round(s / st["filled"], 2) if st["filled"] else None
+    dip = {"n": len(dips), "cases": dips, "buckets": buckets}
 
     # ── 置顶三态结论（确定性）──
     badge = (f"n={n_dir} · {n_tk}票 · {span}天 · 回填{filled}/{total}")
