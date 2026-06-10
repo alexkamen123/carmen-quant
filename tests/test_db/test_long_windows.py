@@ -142,6 +142,38 @@ async def test_fill_90d_dormant(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fill_exit_bar_is_last_immature(tmp_path, monkeypatch):
+    """exit bar 恰为最后一根（22 根，last_idx==fwd_td）→ 可能是当日盘中半根，
+    判 immature 多等一个交易日，防把盘中价永久写死（30/90 无 realign 兜底）。"""
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    rec_date = _days_ago(40)
+    _seed(db, rec_date)
+    monkeypatch.setattr(tracker.yf, "download",
+                        lambda *a, **k: _mk_df([100 + i for i in range(22)], start=rec_date))
+
+    res = await tracker.fill_long_returns(db_path=db)
+    assert res == {"filled": 0, "immature": 1, "failed": 0}
+    with tracker._conn(db) as con:
+        assert con.execute("SELECT return_30d FROM recommendations").fetchone()["return_30d"] is None
+
+
+@pytest.mark.asyncio
+async def test_fill_permanent_pending_floor(tmp_path, monkeypatch):
+    """超过固定下载窗口+宽限（30d: 63 天）仍 NULL 的行 = 永久不可回填，退出 pending 不再触网。"""
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    _seed(db, _days_ago(70), ticker="DEAD")   # 退市票：70 > 21*2+14+7=63
+
+    def boom(*a, **k):
+        raise AssertionError("永久死行不该再触网")
+
+    monkeypatch.setattr(tracker.yf, "download", boom)
+    res = await tracker.fill_long_returns(db_path=db)
+    assert res == {"filled": 0, "immature": 0, "failed": 0}
+
+
+@pytest.mark.asyncio
 async def test_fill_dirty_price(tmp_path, monkeypatch):
     """exit 价为 0（停牌/脏复权）→ 源头当取数失败，failed 计数、不写库。"""
     db = tmp_path / "t.db"

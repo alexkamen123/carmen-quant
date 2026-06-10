@@ -69,3 +69,16 @@ def test_save_dip_alert_missing_or_none(tmp_path):
         row = con.execute("SELECT * FROM dip_alerts").fetchone()
     for c in _FIVE:
         assert row[c] == ""
+    assert row["thesis_intact"] == 0   # 显式 False → 0
+
+
+def test_save_dip_alert_intact_three_state(tmp_path):
+    """thesis_intact 缺键/显式 null → 存 NULL（classify_dip 落'待观察'），不许折叠成 0。"""
+    from finance_agent.value.metrics import classify_dip, DIP_BUCKET_WATCH
+    db = tmp_path / "t.db"
+    tracker.save_dip_alert("A", "us", -9.0, 80.0, {"drop_reason": "大盘恐慌"}, db_path=db)       # 缺键
+    tracker.save_dip_alert("B", "us", -9.0, 80.0, {"thesis_intact": None}, db_path=db)            # 显式 null
+    with tracker._conn(db) as con:
+        rows = con.execute("SELECT ticker, thesis_intact FROM dip_alerts ORDER BY ticker").fetchall()
+    assert rows[0]["thesis_intact"] is None and rows[1]["thesis_intact"] is None
+    assert classify_dip(rows[0]["thesis_intact"], "大盘恐慌") == DIP_BUCKET_WATCH
