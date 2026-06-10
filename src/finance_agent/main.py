@@ -344,6 +344,21 @@ def log_action(
     log_user_action(ticker=ticker, action=action, shares=shares,
                     price=price, note=note, db_path=DB_PATH)
     console.print(f"✅ 已记录：{ticker.upper()} {action.upper()}")
+    if action.upper() == "BUY":
+        _try_print_behavior_hint()
+
+
+def _try_print_behavior_hint() -> None:
+    """order9 触点 B：手动记 BUY 时打印历史买入行为统计（描述性，失败静默）。
+    auto detect（detect_portfolio_changes→log_user_action）不经过此 handler，不会触发。"""
+    try:
+        from finance_agent.db.tracker import (format_behavior_hint,
+                                              get_behavior_hint_stats)
+        stats = get_behavior_hint_stats(db_path=DB_PATH)
+        if stats:
+            console.print(f"[dim]{format_behavior_hint(stats, style='cli')}[/dim]")
+    except Exception:
+        pass
 
 
 @app.command("show-actions")

@@ -1312,6 +1312,21 @@ async def _send_price_drop_alert(ticker: str, market: str,
             })
             elements.append({"tag": "hr"})
 
+        # 行为时机提示（order9）：仅 action=加仓 时展示，描述性不说教，闸门在 stats 函数内
+        if action == "加仓":
+            try:
+                from finance_agent.db.tracker import (format_behavior_hint,
+                                                      get_behavior_hint_stats)
+                _bh = get_behavior_hint_stats()
+                if _bh:
+                    elements.append({
+                        "tag": "note",
+                        "elements": [{"tag": "plain_text",
+                                      "content": format_behavior_hint(_bh)}],
+                    })
+            except Exception as bh_err:
+                print(f"[Alert] 行为提示生成失败（跳过）: {bh_err}")
+
         # 认错离场信号（替代机械止损，可定性可定量）
         if invalidation:
             elements.append({

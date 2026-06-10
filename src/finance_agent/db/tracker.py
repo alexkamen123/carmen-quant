@@ -1274,6 +1274,62 @@ def _load_settings_block(key: str, defaults: dict) -> dict:
     return cfg
 
 
+# ── 用户行为时机提示（order9）────────────────────────────────────────────────
+
+_BEHAVIOR_HINT_DEFAULTS = {"enabled": True, "min_n_buy": 5, "sell_regret_pct": 5.0}
+_BEHAVIOR_HINT_SMALL_N = 15   # 低于此值标注"样本少，仅参考"
+
+
+def get_behavior_hint_stats(db_path: str | Path | None = None) -> dict | None:
+    """
+    用户历史买入行为统计（供 dip 加仓卡片 / log-action BUY 时机提示）。
+    符号约定（backfill_action_returns）：BUY 的 actual_return = 买后 7 日涨幅（正=买对）；
+    SELL/TRIM 的 actual_return = 卖后 7 日涨幅（正=卖飞）。
+    开关关闭或已回填 BUY 数 < min_n_buy 时返回 None（完全静默）。
+    """
+    cfg = _load_settings_block("behavior_hint", _BEHAVIOR_HINT_DEFAULTS)
+    if not cfg["enabled"]:
+        return None
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        buys = con.execute(
+            "SELECT actual_return FROM user_actions "
+            "WHERE action = 'BUY' AND actual_return IS NOT NULL"
+        ).fetchall()
+        regret = float(cfg.get("sell_regret_pct", 5.0))
+        n_sell_regret = con.execute(
+            "SELECT COUNT(*) FROM user_actions "
+            "WHERE action IN ('SELL', 'TRIM') AND actual_return >= ?",
+            (regret,),
+        ).fetchone()[0]
+
+    n_buy = len(buys)
+    if n_buy < int(cfg.get("min_n_buy", 5)):
+        return None
+    avg_buy = sum(r["actual_return"] for r in buys) / n_buy
+    return {
+        "n_buy": n_buy,
+        "avg_buy": round(avg_buy, 2),
+        "n_sell_regret": n_sell_regret,
+        "sell_regret_pct": regret,
+        "small_sample": n_buy < _BEHAVIOR_HINT_SMALL_N,
+    }
+
+
+def format_behavior_hint(stats: dict, style: str = "feishu") -> str:
+    """渲染行为提示一行文案。描述性不说教：只报事实（笔数+均值），决定权在用户。"""
+    n, avg = stats["n_buy"], stats["avg_buy"]
+    tag = "（样本少，仅参考）" if stats.get("small_sample") else ""
+    if style == "cli":
+        return f"参考：你过去 {n} 次买入 7日均{avg:+.1f}%{tag}，确认这笔在计划内？"
+    line = f"⚠️ 行为提示：你过去 {n} 次买入 · 7日平均 {avg:+.1f}%{tag}"
+    if stats.get("n_sell_regret", 0) >= 2:
+        regret = stats.get("sell_regret_pct", 5.0)
+        line += f"；{stats['n_sell_regret']} 次卖出后涨了 {regret:g}%+"
+    return line
+
+
 # ── L2b 实盘反馈回流（order7）────────────────────────────────────────────────
 
 _LIVE_FEEDBACK_DEFAULTS = {"enabled": True}
