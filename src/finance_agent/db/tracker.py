@@ -243,8 +243,10 @@ def _lower_cols(df):
 def _fetch_paired_window(ticker: str, market: str, rec_date: str, fwd_td: int = 7):
     """
     个股腿：rec_date 起第 0 个交易日收盘 → 第 min(fwd_td, len-1) 个交易日收盘。
-    返回 (p0, p_exit, start_date, exit_date, n_td)；start_date/exit_date 是个股【真实】
+    返回 (p0, p_exit, start_date, exit_date, last_idx)；start_date/exit_date 是个股【真实】
     首末交易日（rec_date 当天停牌会漂移），供基准腿 asof 对齐到同一窗口。失败 None。
+    last_idx=已取得的最后一根 bar 序号——调用方据此判断 exit bar 之后是否还有完成 bar
+    （交易时段内跑时日线末根是当日盘中半根，last_idx==exit_idx 意味着 exit 价可能非终盘）。
     脏数据（0 或负复权价）当作取数失败丢弃，避免算出 -100% 级假跌幅。
     """
     import time
@@ -266,7 +268,7 @@ def _fetch_paired_window(ticker: str, market: str, rec_date: str, fwd_td: int = 
             return None
         return (p0, p_exit,
                 closes.index[0].strftime("%Y-%m-%d"),
-                closes.index[exit_idx].strftime("%Y-%m-%d"), exit_idx)
+                closes.index[exit_idx].strftime("%Y-%m-%d"), len(closes) - 1)
     except Exception:
         return None
 
@@ -454,11 +456,14 @@ async def fill_long_returns(db_path: str | Path | None = None) -> dict:
 
     for fwd_td, suffix, cutoff_days in _LONG_WINDOWS:
         cutoff = (datetime.today() - timedelta(days=cutoff_days)).strftime("%Y-%m-%d")
+        # 重试下界：超过固定下载窗口(fwd_td*2+14)+7 天宽限仍 NULL 的行 = 永久不可回填
+        # （退市/超长停牌），自然退出 pending，免得每天白耗网络请求
+        floor = (datetime.today() - timedelta(days=fwd_td * 2 + 14 + 7)).strftime("%Y-%m-%d")
         with _conn(p) as con:
             pending = con.execute(
                 f"SELECT id, ticker, date, COALESCE(market,'us') AS market "
-                f"FROM recommendations WHERE date <= ? AND return_{suffix} IS NULL",
-                (cutoff,),
+                f"FROM recommendations WHERE date <= ? AND date >= ? AND return_{suffix} IS NULL",
+                (cutoff, floor),
             ).fetchall()
         for row in pending:
             win = await loop.run_in_executor(
@@ -468,9 +473,11 @@ async def fill_long_returns(db_path: str | Path | None = None) -> dict:
             if win is None:
                 failed += 1
                 continue
-            p0, p_exit, start_date, exit_date, n_td = win
-            if n_td < fwd_td:
-                immature += 1            # 窗口未走满，保持 NULL，下轮重试
+            p0, p_exit, start_date, exit_date, last_idx = win
+            if last_idx <= fwd_td:
+                # 窗口未走满，或 exit bar 即最后一根（可能是当日盘中半根，非终盘价）
+                # → 多等一个交易日再回填，防把盘中价永久写死（30/90 无 realign 兜底）
+                immature += 1
                 continue
             bm = await loop.run_in_executor(
                 None, lambda m=row["market"], s=start_date, e=exit_date: _fetch_benchmark_window(m, s, e)
@@ -1346,6 +1353,9 @@ def save_dip_alert(ticker: str, market: str, drop_pct: float,
     """
     p = _resolve_db(db_path)
     init_db(p)
+    # 三态保留：LLM 缺键/显式 null → NULL（classify_dip 落"待观察"），
+    # 不许折叠成 0（会被记成"基本面破裂"强结论，污染预警记分）
+    intact = analysis.get("thesis_intact")
     with _conn(p) as con:
         cur = con.execute(
             """INSERT INTO dip_alerts
@@ -1355,7 +1365,7 @@ def save_dip_alert(ticker: str, market: str, drop_pct: float,
             (
                 ticker, market, round(drop_pct, 2), round(price_at_alert, 4),
                 analysis.get("opportunity", ""),
-                1 if analysis.get("thesis_intact") else 0,
+                None if intact is None else (1 if intact else 0),
                 analysis.get("drop_reason", ""),
                 # or ""：防 LLM 显式 null 经 json.loads 成 None 入库（NULL 语义保留给史前行）
                 analysis.get("action") or "",

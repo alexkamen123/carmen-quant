@@ -19,7 +19,22 @@ def test_classify_dip_matrix():
     assert classify_dip(1, "业绩暴雷，并非情绪问题") == DIP_BUCKET_WATCH
     assert classify_dip(1, "大盘恐慌板块联动") == DIP_BUCKET_OPPORTUNITY
     assert classify_dip(1, "") == DIP_BUCKET_OPPORTUNITY      # 空归因，intact 主轴默认机会
-    assert classify_dip(None, "大盘恐慌") == DIP_BUCKET_WATCH  # 史前行
+    assert classify_dip(None, "大盘恐慌") == DIP_BUCKET_WATCH  # 史前行/模型未判
+
+
+def test_classify_dip_negation_regressions():
+    """对抗审查回归：重叠关键词屏蔽 + 复合否定词。"""
+    # 长词'业绩暴雷'被'并非'否定后整段屏蔽，内含短词'暴雷'不得独立误命中
+    assert classify_dip(1, "大盘恐慌，并非业绩暴雷") == DIP_BUCKET_OPPORTUNITY
+    assert classify_dip(1, "不存在业绩暴雷") == DIP_BUCKET_OPPORTUNITY
+    assert classify_dip(1, "排除业绩爆雷可能") == DIP_BUCKET_OPPORTUNITY
+    # 复合否定（4 字 endswith）
+    assert classify_dip(1, "未见明显基本面恶化") == DIP_BUCKET_OPPORTUNITY
+    assert classify_dip(1, "没有明显业绩恶化") == DIP_BUCKET_OPPORTUNITY
+    assert classify_dip(1, "看不到指引下调") == DIP_BUCKET_OPPORTUNITY
+    # 关键词真实未被否定时仍须命中（屏蔽逻辑不许放跑真矛盾）
+    assert classify_dip(1, "业绩暴雷，并非情绪问题") == DIP_BUCKET_WATCH
+    assert classify_dip(1, "既有板块联动也有业绩恶化") == DIP_BUCKET_WATCH
 
 
 def test_dip_buckets_in_metrics(tmp_path):
