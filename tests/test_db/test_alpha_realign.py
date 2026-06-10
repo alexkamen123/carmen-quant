@@ -25,8 +25,9 @@ def _seed_row(db, ret=-2.0, bm=1.0):
 def test_paired_window(monkeypatch):
     df = _mk_df([100, 101, 102, 103, 104, 105, 106, 107, 108, 109])
     monkeypatch.setattr(tracker.yf, "download", lambda *a, **k: df)
-    p0, p_exit, start_date, exit_date, n = tracker._fetch_paired_window("NVDA", "us", "2026-05-11", fwd_td=7)
-    assert p0 == 100.0 and p_exit == 107.0 and n == 7      # 第0→第7交易日
+    p0, p_exit, start_date, exit_date, last_idx = tracker._fetch_paired_window("NVDA", "us", "2026-05-11", fwd_td=7)
+    assert p0 == 100.0 and p_exit == 107.0    # 第0→第7交易日
+    assert last_idx == 9                       # 最后一根 bar 序号（供盘中半根防护判断）
     assert start_date == "2026-05-11" and exit_date == "2026-05-18"
 
 
@@ -34,8 +35,8 @@ def test_paired_window_short_series(monkeypatch):
     # 不足 7 交易日（遇长假）→ 用实际最后一根，exit_idx=len-1
     df = _mk_df([100, 102, 104])
     monkeypatch.setattr(tracker.yf, "download", lambda *a, **k: df)
-    p0, p_exit, start_date, exit_date, n = tracker._fetch_paired_window("X", "us", "2026-05-11", fwd_td=7)
-    assert p0 == 100.0 and p_exit == 104.0 and n == 2
+    p0, p_exit, start_date, exit_date, last_idx = tracker._fetch_paired_window("X", "us", "2026-05-11", fwd_td=7)
+    assert p0 == 100.0 and p_exit == 104.0 and last_idx == 2
 
 
 def test_paired_window_dirty_price(monkeypatch):
