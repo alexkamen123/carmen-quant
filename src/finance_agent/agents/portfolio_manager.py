@@ -196,7 +196,9 @@ async def run_portfolio_manager_batch(
     # 优先 claude CLI（Pro 订阅路径，无 API 限速）
     if has_claude_cli():
         try:
-            raw = await claude_cli_chat(PM_BATCH_SYSTEM, user_msg, timeout=240)
+            # 480s：批量从 11 只扩到 17 只（含影子池）后，240s 连续两晚超时降级，
+            # 降级单股路径上下文/输出字段都更弱（06-11 复盘 D1）
+            raw = await claude_cli_chat(PM_BATCH_SYSTEM, user_msg, timeout=480)
             raw = strip_markdown(raw)
             start, end = raw.find("["), raw.rfind("]") + 1
             decisions = json.loads(raw[start:end])
@@ -214,6 +216,8 @@ async def run_portfolio_manager_batch(
             msg = PM_USER.format(
                 ticker=s.ticker,
                 market=MARKET_LABEL.get(s.market, s.market),
+                position_note=(f"{s.shares} 股" if s.shares
+                               else "未持有（观察标的，只考选股方向）"),
                 thesis=s.thesis or "暂未记录持仓逻辑",
                 signals_str=s.signals.to_prompt_str(),
                 strategy_evidence=(f"{s.strategy_evidence}\n" if s.strategy_evidence else ""),
@@ -272,6 +276,11 @@ async def run_portfolio_manager_batch(
     for s in needs_pm:
         d = decision_by_ticker.get(s.ticker, {})
         dec = _parse_decision(d)
+        # 观察池语义闸（代码层兜底，不信 prompt 自觉）：未持有标的不存在 持有/减仓/卖出，
+        # LLM 给了就归一为 观望——防止影子选股产出 0 条方向性样本（06-11 复盘 D2）
+        if not s.shares and dec["recommendation"] in ("持有", "减仓", "卖出"):
+            print(f"[PM] {s.ticker} 观察池语义闸：{dec['recommendation']} → 观望（未持有）")
+            dec = {**dec, "recommendation": "观望", "position_change": "维持"}
         if guard_ctx is not None:
             dec, hits = apply_anti_chase(s, dec, **guard_ctx)
             if hits:
