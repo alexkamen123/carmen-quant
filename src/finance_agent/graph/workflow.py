@@ -347,9 +347,13 @@ async def format_report_node(state: AgentState) -> AgentState:
         if s.bull_thesis and not is_etf:
             debate_lines = []
             # 基本面：只取第一句（截到第一个句号/换行）
+            def _clip(text: str, limit: int = 45) -> str:
+                """截到限长，硬切处补省略号（06-11 复盘 D3：断头句看着像 bug）"""
+                return text if len(text) <= limit else text[:limit] + "…"
+
             fv = s.earnings.fundamental_view
             if fv and "宽基" not in fv and "暂无" not in fv:
-                fv_short = fv.split("。")[0].split("\n")[0][:45]
+                fv_short = _clip(fv.split("。")[0].split("\n")[0])
                 debate_lines.append(f"📈 {fv_short}")
             # 多空：各取第一条论点，分两行展示
             def _first_point(text: str) -> str:
@@ -357,7 +361,7 @@ async def format_report_node(state: AgentState) -> AgentState:
                 import re
                 m = re.search(r"(?:^|\n)\s*[1１]\s*[\.．、:：]?\s*(.+)", text)
                 s_ = m.group(1).strip() if m else text.split("\n")[0]
-                return s_[:45]
+                return _clip(s_)
             bull_short = _first_point(s.bull_thesis)
             bear_short = _first_point(s.bear_thesis or "")
             if bull_short:
