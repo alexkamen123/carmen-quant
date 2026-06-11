@@ -243,6 +243,23 @@ async def strategy_node(state: AgentState) -> AgentState:
     return state.model_copy(update={"stocks": updated})
 
 
+async def opportunity_node(state: AgentState) -> AgentState:
+    """今日机会扫描：因子库宇宙里触发中的高信赖信号（排除已持仓，标注观察池）。
+    扫描失败绝不拖垮日报主流程。"""
+    from finance_agent.signals.opportunities import scan_opportunities
+    try:
+        held = {s.ticker for s in state.stocks if s.shares}
+        watch = {s.ticker for s in state.stocks if not s.shares}
+        opps = scan_opportunities(exclude_tickers=held, watch_tickers=watch)
+        if opps:
+            tks = "、".join(o["ticker"] for o in opps[:8])
+            print(f"[Opportunity] {len(opps)} 只非持仓票触发高信赖信号：{tks}")
+        return state.model_copy(update={"opportunities": opps})
+    except Exception as e:
+        print(f"[Opportunity] 机会扫描失败（跳过，不影响日报）: {e}")
+        return state
+
+
 async def decision_node(state: AgentState) -> AgentState:
     """Portfolio Manager 批量裁决：1 次 Claude 调用处理所有股票"""
     updated_stocks = await run_portfolio_manager_batch(
@@ -480,6 +497,18 @@ async def format_report_node(state: AgentState) -> AgentState:
         {"tag": "hr"},
     ]
 
+    # ── 今日机会区（非持仓票的触发中高信赖信号，紧跟速览）──
+    from finance_agent.signals.opportunities import format_opportunity_section
+    opp_text = format_opportunity_section(
+        state.opportunities,
+        semi_room_note="⚠️ 半导体类标的受 L1 集中度红线约束，加仓前看顶部红线余量",
+    )
+    if opp_text:
+        tldr_elements += [
+            {"tag": "div", "text": {"tag": "lark_md", "content": opp_text}},
+            {"tag": "hr"},
+        ]
+
     report_card = {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -532,6 +561,7 @@ def build_graph(checkpointer=None):
     builder.add_node("strategy",     strategy_node)
     builder.add_node("memory",       memory_node)
     builder.add_node("decision",     decision_node)
+    builder.add_node("opportunity",  opportunity_node)
     builder.add_node("format",       format_report_node)
     builder.add_node("track",        track_node)
 
@@ -542,7 +572,8 @@ def build_graph(checkpointer=None):
     builder.add_edge("debate",       "strategy")
     builder.add_edge("strategy",     "memory")
     builder.add_edge("memory",       "decision")
-    builder.add_edge("decision",     "format")
+    builder.add_edge("decision",     "opportunity")
+    builder.add_edge("opportunity",  "format")
     builder.add_edge("format",       "track")
     builder.add_edge("track",         END)
 
