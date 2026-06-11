@@ -1189,6 +1189,129 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
     return None
 
 
+def _check_price_surge(ticker: str, market: str, threshold_pct: float = 3.0) -> dict | None:
+    """
+    持仓大涨检测（D8，仅对已持仓票调用）：镜像 _check_price_drop 的两阶段结构，
+    方向取反。用途=止盈/拿住的决策提示点，不是催卖按钮。
+    阈值同走 ATR 自适应（高波动票日常上蹿不报），gap 抬升不适用（传 0）。
+    """
+    if not _is_market_open(market):
+        return None
+    try:
+        yf_ticker = f"{int(ticker):04d}.HK" if market == "hk" else ticker
+        df_5m = yf.download(yf_ticker, period="1d", interval="5m",
+                             progress=False, auto_adjust=True)
+        if df_5m.empty or len(df_5m) < 4:
+            return None
+        if isinstance(df_5m.columns, pd.MultiIndex):
+            df_5m.columns = [c[0].lower() for c in df_5m.columns]
+        else:
+            df_5m.columns = [c.lower() for c in df_5m.columns]
+        close = df_5m["close"].dropna()
+        if len(close) < 4:
+            return None
+        price_now = float(close.iloc[-1])
+        idx_1h = max(0, len(close) - 12)
+        price_1h_ago = float(close.iloc[idx_1h])
+        rise_1h = (price_now - price_1h_ago) / price_1h_ago * 100 if price_1h_ago > 0 else 0.0
+        open_price = float(close.iloc[0])
+        rise_from_open = (price_now - open_price) / open_price * 100 if open_price > 0 else 0.0
+
+        # Stage 1：宽松预筛（base 阈值），不过线不触日线网络
+        if rise_1h < threshold_pct and rise_from_open < threshold_pct * 1.5:
+            return None
+
+        # Stage 2：ATR 自适应精确判定（复用 drop 的 effective 公式，gap=0）
+        signals = None
+        try:
+            from finance_agent.signals.technical import calculate_signals
+            df_daily = yf.download(yf_ticker, period="3mo", interval="1d",
+                                   progress=False, auto_adjust=True)
+            if not df_daily.empty:
+                if isinstance(df_daily.columns, pd.MultiIndex):
+                    df_daily.columns = [c[0].lower() for c in df_daily.columns]
+                else:
+                    df_daily.columns = [c.lower() for c in df_daily.columns]
+                if len(df_daily) >= 20:
+                    signals = calculate_signals(df_daily, ticker=ticker)
+        except Exception as sig_err:
+            print(f"[Alert] 技术指标计算失败 {ticker}: {sig_err}")
+        atr_pct = signals.atr_pct if signals else 0.0
+        effective = _effective_drop_threshold(atr_pct, 0.0)
+        if rise_1h < effective and rise_from_open < effective * 1.5:
+            return None
+
+        return {
+            "ticker": ticker, "market": market,
+            "rise_1h": round(rise_1h, 2), "rise_from_open": round(rise_from_open, 2),
+            "price_now": round(price_now, 4), "effective_threshold": effective,
+            "signals": signals,
+        }
+    except Exception as e:
+        print(f"[Alert] 大涨检查失败 {ticker}: {e}")
+    return None
+
+
+async def _send_price_surge_alert(ticker: str, market: str, rise_1h: float,
+                                   rise_from_open: float, price_now: float,
+                                   cost_basis: float | None = None,
+                                   signals=None, **_extra) -> None:
+    """持仓大涨卡片（D8）：事实 + 卖飞签名上下文，止盈裁决留给 PM/用户。
+    安全不变量：绝不输出'卖出/止盈'指令——用户签名是系统性卖早(+19.4%)，
+    催卖卡片只会放大他最贵的毛病。"""
+    from finance_agent.weekly.daily_followup import TICKER_NAMES
+    market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
+    name = TICKER_NAMES.get(ticker, "")
+    display = f"**{ticker}** {name}" if name else f"**{ticker}**"
+
+    rise_label = (f"1小时 **+{rise_1h:.1f}%**" if rise_1h >= rise_from_open
+                  else f"较开盘 **+{rise_from_open:.1f}%**")
+    body = f"📈 {display}　{rise_label}　现价 {price_now}"
+    if cost_basis:
+        pnl = (price_now - cost_basis) / cost_basis * 100
+        body += f"\n持仓成本 {cost_basis}，浮盈 **{pnl:+.1f}%**"
+
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": body}}]
+
+    # 卖飞签名上下文：该票实盘卖出记录 + 全局行为统计（有则展示，无则静默）
+    ctx_lines = []
+    try:
+        from finance_agent.db.tracker import get_live_feedback
+        fb = get_live_feedback(ticker)
+        if fb and fb.get("sell") and fb["sell"]["avg_next"] > 0:
+            sf = fb["sell"]
+            ctx_lines.append(f"你过去对 {ticker} 卖出 {sf['n']} 次，"
+                             f"后续7日平均 **+{sf['avg_next']:.1f}%**（卖早）")
+    except Exception:
+        pass
+    try:
+        from finance_agent.db.tracker import get_behavior_hint_stats
+        bh = get_behavior_hint_stats()
+        if bh and bh.get("n_sell_regret", 0) >= 2:
+            ctx_lines.append(f"全部持仓口径：{bh['n_sell_regret']} 次卖出后涨了 "
+                             f"{bh.get('sell_regret_pct', 5.0):g}%+")
+    except Exception:
+        pass
+    if ctx_lines:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md",
+                         "content": "**⚠️ 止盈前先看你的卖飞签名**\n"
+                                    + "\n".join(f"· {x}" for x in ctx_lines)}})
+
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+        "content": "大涨提醒只报事实，不构成卖出指令；止盈/拿住建议看今晚日报 PM 裁决"}]})
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"tag": "plain_text",
+                              "content": f"📈 持仓大涨 · {ticker}（{market_label}）"},
+                   "template": "green"},
+        "elements": elements,
+    }
+    await send_feishu_card(card)
+    print(f"[Alert] 已推送持仓大涨：{ticker} +{max(rise_1h, rise_from_open):.1f}%")
+
+
 async def _send_price_drop_alert(ticker: str, market: str,
                                   drop_pct: float, price_now: float,
                                   price_1h_ago: float,
@@ -1624,7 +1747,24 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
             else:
                 print(f"[PriceScan] {ticker} 10分钟内已推送，跳过")
         else:
-            print(f"[PriceScan] {ticker} 无异动（预筛：1h跌幅 < {threshold_pct}% 且较开盘 < {threshold_pct*1.5:.1f}%；或未过 ATR 自适应阈值）")
+            # 跌方向无异动 → 持仓票再查大涨方向（D8；观察池票不查，大涨提醒只服务止盈决策）
+            surge_info = None
+            if item.get("shares"):
+                surge_info = await loop.run_in_executor(
+                    None, _check_price_surge, ticker, market, threshold_pct
+                )
+            if surge_info:
+                surge_key = f"price_surge_10m:{ticker}:{slot_5m}"
+                if surge_key not in alerted:
+                    await _send_price_surge_alert(
+                        **surge_info, cost_basis=item.get("cost_basis"))
+                    alerted.add(surge_key)
+                    _save_alerted(surge_key, today_str)
+                    pushed += 1
+                else:
+                    print(f"[PriceScan] {ticker} 大涨10分钟内已推送，跳过")
+            else:
+                print(f"[PriceScan] {ticker} 无异动（预筛：±{threshold_pct}%/1h 与开盘口径均未过；或未过 ATR 自适应阈值）")
 
     if pushed == 0:
         print(f"[PriceScan] 本次无价格异动")
