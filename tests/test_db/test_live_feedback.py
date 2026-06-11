@@ -114,6 +114,37 @@ def test_per_direction_small_sample_tag(tmp_path):
     assert "小样本参考，权重宜低" not in out          # n_total=10 总标注不触发，方向标注兜住
 
 
+def test_asof_excludes_immature_window(tmp_path):
+    """回测 as-of：rec 日距 asof < 14 自然日的行（窗口未走完）必须排除——未来函数生命线。"""
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    # 3 条老行（asof 时窗口已完成）+ 2 条新行（asof 时结果还看不到）
+    for d, r in (("2026-05-11", -3.0), ("2026-05-12", -4.0), ("2026-05-13", -5.0)):
+        _seed(db, "NVDA", rec="买入", ret=r, date=d)
+    for d, r in (("2026-05-25", 50.0), ("2026-05-28", 60.0)):
+        _seed(db, "NVDA", rec="买入", ret=r, date=d)
+
+    fb = tracker.get_live_feedback("NVDA", db_path=db, asof="2026-06-01")
+    assert fb["buy"]["n"] == 3                  # 只见老行
+    assert fb["buy"]["avg"] == -4.0             # +50/+60 的未来结果没混进来
+    # 边界：恰好 14 天 = 已成熟，可纳入
+    fb2 = tracker.get_live_feedback("NVDA", db_path=db, asof="2026-06-08")
+    assert fb2["buy"]["n"] == 4                 # 05-25 距 06-08 恰 14 天 → 纳入
+    # asof=None 仍是全量（生产路径不变）
+    fb3 = tracker.get_live_feedback("NVDA", db_path=db)
+    assert fb3["buy"]["n"] == 5
+
+
+def test_asof_gate_silences_early_history(tmp_path):
+    """asof 早于样本积累期 → 闸门静默（回测里 5 月应是对照时代）。"""
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    for d in ("2026-05-11", "2026-05-12", "2026-05-13"):
+        _seed(db, "MU", rec="买入", ret=1.0, date=d)
+    assert tracker.get_live_feedback("MU", db_path=db, asof="2026-05-15") is None
+    assert tracker.format_live_feedback("MU", db_path=db, asof="2026-05-15") == ""
+
+
 def test_large_sample_no_small_tag(tmp_path):
     db = tmp_path / "t.db"
     tracker.init_db(db)
