@@ -118,7 +118,9 @@ def _migrate_dip_alerts_table(con: sqlite3.Connection) -> None:
 def _conn(db_path: Path | None = None):
     p = db_path or DB_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(p)
+    # timeout=15s：多个 launchd 任务可能并发写同一库（06-11 21:30 news-scan 撞
+    # 日报进程 'database is locked' 实锤）。错峰是主防线，这里是兜底。
+    con = sqlite3.connect(p, timeout=15)
     con.row_factory = sqlite3.Row
     try:
         yield con
