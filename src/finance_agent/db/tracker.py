@@ -1347,26 +1347,38 @@ _SELL_DIR_SQL = ("((IFNULL(recommendation, '') IN ('减仓', '卖出') "
                  f"AND NOT {_BUY_DIR_SQL})")
 
 
-def get_live_feedback(ticker: str, db_path: str | Path | None = None) -> dict | None:
+# as-of 成熟下界（自然日）：7 交易日最坏跨两个周末+节假日 ≈ 12 天，取 14 保守。
+# 宁可漏掉刚成熟的边缘行（只会更保守），绝不允许把 asof 时点尚未走完窗口的结果
+# 算进反馈——那是未来函数，会让回测结论整体作废。
+_ASOF_MATURITY_DAYS = 14
+
+
+def get_live_feedback(ticker: str, db_path: str | Path | None = None,
+                      asof: str | None = None) -> dict | None:
     """
     某只股票历史实盘建议的 7 日结果（买入方向胜率/均值 + 卖出方向后续均值）。
     买卖方向合并样本 < 3 时返回 None（小样本诚实：不足不注入）。
     SELL 方向的 return_7d 是"卖出建议后该股 7 日涨跌"——为正 = 卖早/卖飞。
+    asof（YYYY-MM-DD，回测专用）：只统计 rec 日距 asof ≥ 14 自然日的行
+    （7 日窗口在该时点已确定走完），防偷看未来。None = 实时全量（生产路径不变）。
     """
     p = _resolve_db(db_path)
     init_db(p)
+    asof_sql = (f" AND julianday(?) - julianday(date) >= {_ASOF_MATURITY_DAYS}"
+                if asof else "")
+    params = (ticker.upper(), asof) if asof else (ticker.upper(),)
     with _conn(p) as con:
         buy_rows = con.execute(
             f"""SELECT return_7d, benchmark_return_7d FROM recommendations
-                WHERE ticker = ? AND return_7d IS NOT NULL AND {_BUY_DIR_SQL}
+                WHERE ticker = ? AND return_7d IS NOT NULL AND {_BUY_DIR_SQL}{asof_sql}
                 ORDER BY date DESC LIMIT 60""",
-            (ticker.upper(),),
+            params,
         ).fetchall()
         sell_rows = con.execute(
             f"""SELECT return_7d FROM recommendations
-                WHERE ticker = ? AND return_7d IS NOT NULL AND {_SELL_DIR_SQL}
+                WHERE ticker = ? AND return_7d IS NOT NULL AND {_SELL_DIR_SQL}{asof_sql}
                 ORDER BY date DESC LIMIT 60""",
-            (ticker.upper(),),
+            params,
         ).fetchall()
 
     n_buy, n_sell = len(buy_rows), len(sell_rows)
@@ -1386,14 +1398,16 @@ def get_live_feedback(ticker: str, db_path: str | Path | None = None) -> dict | 
     return out
 
 
-def format_live_feedback(ticker: str, db_path: str | Path | None = None) -> str:
+def format_live_feedback(ticker: str, db_path: str | Path | None = None,
+                         asof: str | None = None) -> str:
     """
     渲染实盘反馈区块（注入 PM prompt 的 strategy_evidence 槽）。
     settings live_feedback_injection.enabled=false 或样本不足时返回 ""（0 字符，不产生噪音）。
+    asof 透传 get_live_feedback（回测点时间重放用）。
     """
     if not _load_settings_block("live_feedback_injection", _LIVE_FEEDBACK_DEFAULTS)["enabled"]:
         return ""
-    fb = get_live_feedback(ticker, db_path)
+    fb = get_live_feedback(ticker, db_path, asof=asof)
     if fb is None:
         return ""
 
