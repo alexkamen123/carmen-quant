@@ -92,6 +92,8 @@ def _migrate_recommendations_table(con: sqlite3.Connection) -> None:
         ("market", "TEXT"), ("benchmark_return_7d", "REAL"),
         ("price_30d", "REAL"), ("return_30d", "REAL"), ("benchmark_return_30d", "REAL"),
         ("price_90d", "REAL"), ("return_90d", "REAL"), ("benchmark_return_90d", "REAL"),
+        # 影子选股标记：1=watchlist 推荐（无真实仓位，纯测量）；0=持仓建议；NULL=史前行
+        ("is_watch", "INTEGER"),
     ]:
         if col not in existing:
             try:
@@ -142,7 +144,8 @@ def init_db(db_path: str | Path | None = None) -> None:
 def save_recommendations(date: str, records: list[dict],
                          db_path: str | Path | None = None) -> None:
     """
-    records 每项：{ticker, recommendation, confidence, position_change, price_at_rec, market}
+    records 每项：{ticker, recommendation, confidence, position_change, price_at_rec,
+    market, is_watch}（is_watch=1 表示 watchlist 影子推荐，缺省 0=持仓建议）。
     若当天已有记录则跳过（幂等）。
     """
     p = _resolve_db(db_path)
@@ -153,14 +156,15 @@ def save_recommendations(date: str, records: list[dict],
         ).fetchall()}
         rows = [
             (date, r["ticker"], r.get("recommendation"), r.get("confidence"),
-             r.get("position_change"), r.get("price_at_rec"), r.get("market", "us"))
+             r.get("position_change"), r.get("price_at_rec"), r.get("market", "us"),
+             int(r.get("is_watch") or 0))
             for r in records
             if r["ticker"] not in existing
         ]
         if rows:
             con.executemany(
                 "INSERT INTO recommendations(date,ticker,recommendation,confidence,"
-                "position_change,price_at_rec,market) VALUES(?,?,?,?,?,?,?)",
+                "position_change,price_at_rec,market,is_watch) VALUES(?,?,?,?,?,?,?,?)",
                 rows,
             )
             print(f"[Tracker] 保存 {len(rows)} 条推荐记录（{date}）")

@@ -21,6 +21,7 @@ GATE_MIN_N = 30
 GATE_MIN_TICKERS = 8
 GATE_MIN_BM_COV = 0.70
 NEUTRAL_BAND = 1.0   # |7日收益| < 1% 记中性，不进命中率分子分母
+HOLD_BAD_ALPHA = -5.0  # 持有期 alpha ≤ 此值 = 持有错（该减没减）；写死可见防 p-hacking
 
 # ── 暴跌分级（order6）：纯规则零 LLM，词表写死可审计（沿用 GATE_* 防 p-hacking 风格）──
 DIP_BUCKET_OPPORTUNITY = "机会型回调"   # thesis 完好 + 情绪/板块/技术性驱动
@@ -108,13 +109,19 @@ def compute_value_metrics(db_path=None) -> dict:
         filled = con.execute(
             "SELECT COUNT(*) AS n FROM recommendations WHERE return_7d IS NOT NULL"
         ).fetchone()["n"]
+        # 操作建议命中率只统计真实持仓建议（影子选股 is_watch=1 单独分栏，绝不混算）
+        _DIR_FILTER = ("recommendation IN ('买入','减仓','卖出') "
+                       "OR position_change LIKE '大加%' OR position_change LIKE '小加%' "
+                       "OR position_change LIKE '减仓%'")
         dir_rows = [dict(r) for r in con.execute(
             "SELECT date, ticker, recommendation, position_change, return_7d, "
             "benchmark_return_7d, market FROM recommendations "
-            "WHERE return_7d IS NOT NULL AND ("
-            "recommendation IN ('买入','减仓','卖出') "
-            "OR position_change LIKE '大加%' OR position_change LIKE '小加%' "
-            "OR position_change LIKE '减仓%')"
+            f"WHERE return_7d IS NOT NULL AND IFNULL(is_watch, 0) = 0 AND ({_DIR_FILTER})"
+        ).fetchall()]
+        shadow_rows = [dict(r) for r in con.execute(
+            "SELECT date, ticker, recommendation, position_change, return_7d, "
+            "benchmark_return_7d FROM recommendations "
+            f"WHERE return_7d IS NOT NULL AND is_watch = 1 AND ({_DIR_FILTER})"
         ).fetchall()]
         data_through = con.execute(
             "SELECT MAX(date) AS m FROM recommendations"
@@ -207,6 +214,61 @@ def compute_value_metrics(db_path=None) -> dict:
     else:
         avg_alpha = None
         combined_alpha = {"n": 0, "avg": None, "reliable": False, "status": "no_sample"}
+
+    # ── 影子选股（watchlist 推荐，无真实仓位，纯测量选股能力）──
+    s_correct = s_wrong = 0
+    s_alphas = []
+    for r in shadow_rows:
+        ret = r["return_7d"]
+        if abs(ret) < NEUTRAL_BAND:
+            continue
+        bull = _is_bullish(r["recommendation"], r["position_change"])
+        bear = _is_bearish(r["recommendation"], r["position_change"])
+        hit = (ret > 0) if bull else ((ret < 0) if bear else None)
+        if hit is None:
+            continue
+        s_correct += 1 if hit else 0
+        s_wrong += 0 if hit else 1
+        if r["benchmark_return_7d"] is not None:
+            a = ret - r["benchmark_return_7d"]
+            s_alphas.append(-a if bear else a)
+    shadow_picks = {
+        "n": len(shadow_rows), "correct": s_correct, "wrong": s_wrong,
+        "n_tickers": len({r["ticker"] for r in shadow_rows}),
+        "avg_alpha": round(sum(s_alphas) / len(s_alphas), 2) + 0.0 if s_alphas else None,
+    }
+
+    # ── 持有判断质量（与方向命中率分栏，绝不混算）──
+    # 持有/观望也是立场（隐含"别卖也别加"），口径 = 持有期 vs 基准的 alpha：
+    # 跑赢基准 = 持有对（幸亏没卖）；跑输 ≤ HOLD_BAD_ALPHA = 持有错（该减没减）；
+    # 其间 = 中性。按计划定投是机械执行不是判断，排除。
+    with _conn(p) as con:
+        hold_rows = [dict(r) for r in con.execute(
+            "SELECT date, ticker, return_7d, benchmark_return_7d FROM recommendations "
+            "WHERE return_7d IS NOT NULL AND benchmark_return_7d IS NOT NULL "
+            "AND recommendation IN ('持有', '观望') AND IFNULL(is_watch, 0) = 0"
+        ).fetchall()]   # 影子票没有真实持仓，"持有判断"无意义，排除
+    h_right = h_wrong = h_neutral = 0
+    h_alphas = []
+    h_wrong_cases = []
+    for r in hold_rows:
+        a = r["return_7d"] - r["benchmark_return_7d"]
+        h_alphas.append(a)
+        if a > 0:
+            h_right += 1
+        elif a <= HOLD_BAD_ALPHA:
+            h_wrong += 1
+            h_wrong_cases.append({"date": r["date"], "ticker": r["ticker"],
+                                  "alpha": round(a, 2)})
+        else:
+            h_neutral += 1
+    h_wrong_cases.sort(key=lambda c: c["alpha"])
+    hold_quality = {
+        "n": len(hold_rows), "right": h_right, "wrong": h_wrong, "neutral": h_neutral,
+        "avg_alpha": round(sum(h_alphas) / len(h_alphas), 2) + 0.0 if h_alphas else None,
+        "bad_alpha_threshold": HOLD_BAD_ALPHA,
+        "wrong_cases": h_wrong_cases[:5],
+    }
 
     # ── 行为价值：逐笔（不聚合成胜率）──
     with _conn(p) as con:
@@ -307,6 +369,7 @@ def compute_value_metrics(db_path=None) -> dict:
     return {
         "gate": gate, "composition": composition, "hit_rate": hit_rate,
         "buy_alpha": buy_alpha, "combined_alpha": combined_alpha,
+        "hold_quality": hold_quality, "shadow_picks": shadow_picks,
         "behavior": behavior, "dip": dip, "verdict": verdict,
         "data_through": data_through,
     }

@@ -507,6 +507,8 @@ async def track_node(state: AgentState) -> AgentState:
             "confidence":      s.confidence,
             "position_change": s.position_change,
             "price_at_rec":    s.signals.close if s.signals else None,
+            # shares=0 = watchlist 影子推荐（纯测量、无真实仓位），记分牌分栏统计
+            "is_watch":        0 if s.shares else 1,
         }
         for s in state.stocks
         if s.recommendation  # 跳过没有裁决的股票
