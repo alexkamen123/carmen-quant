@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from finance_agent.alerts import news_monitor as nm
 
@@ -100,6 +101,67 @@ def test_disabled_open_trigger_matches_pre_change(monkeypatch):
     monkeypatch.setattr(nm.yf, "download", dl)
     info = nm._check_price_drop("OFFSW", "us", 3.0)
     assert info is not None and info["open_triggered"] is True
+
+
+def test_surge_two_stage(monkeypatch):
+    """D8：大涨检测镜像两阶段——低波动票 +4% 触发；高波动票（阈值7%）同涨幅拦下。"""
+    closes = [100.0] * 10 + [104.0, 104.0]   # 1h 内 +4%
+    _wire_check_drop(monkeypatch, closes, atr_pct=2.0)
+    info = nm._check_price_surge("LOVOL", "us", 3.0)
+    assert info is not None and info["rise_1h"] == 4.0
+    assert info["effective_threshold"] == 3.0
+
+    _wire_check_drop(monkeypatch, closes, atr_pct=8.75)   # eff=7.0
+    assert nm._check_price_surge("HIVOL", "us", 3.0) is None
+
+
+def test_surge_stage1_no_daily_fetch(monkeypatch):
+    """大涨预筛不过 → 不触日线网络（与 drop 同款省流结构）。"""
+    closes = [100.0] * 12
+    monkeypatch.setattr(nm, "_is_market_open", lambda m: True)
+    idx = pd.date_range("2026-06-12 09:30", periods=len(closes), freq="5min")
+    df_5m = pd.DataFrame({"close": closes}, index=idx)
+
+    def fake_dl(tkr, period=None, interval=None, **k):
+        if interval == "5m":
+            return df_5m
+        raise AssertionError("预筛未过不该触日线")
+
+    monkeypatch.setattr(nm.yf, "download", fake_dl)
+    assert nm._check_price_surge("FLAT", "us", 3.0) is None
+
+
+@pytest.mark.asyncio
+async def test_surge_card_no_sell_instruction(monkeypatch):
+    """D8 安全不变量：大涨卡片绝不出现卖出指令；卖飞签名上下文正确注入。"""
+    sent = []
+
+    async def fake_send(card):
+        sent.append(card)
+
+    monkeypatch.setattr(nm, "send_feishu_card", fake_send)
+    from finance_agent.db import tracker
+    monkeypatch.setattr(tracker, "get_live_feedback",
+                        lambda t, db_path=None, asof=None: {
+                            "ticker": t, "n_total": 6, "buy": None,
+                            "sell": {"n": 6, "avg_next": 23.5}})
+    monkeypatch.setattr(tracker, "get_behavior_hint_stats",
+                        lambda db_path=None: {"n_buy": 11, "avg_buy": -6.1,
+                                              "n_sell_regret": 3, "sell_regret_pct": 5.0,
+                                              "small_sample": True})
+    await nm._send_price_surge_alert("MU", "us", rise_1h=5.6, rise_from_open=4.0,
+                                     price_now=941.0, cost_basis=800.0)
+    texts = []
+    for el in sent[0]["elements"]:
+        if el.get("tag") == "div":
+            texts.append(el["text"]["content"])
+        if el.get("tag") == "note":
+            texts += [x.get("content", "") for x in el.get("elements", [])]
+    blob = "\n".join(texts)
+    assert "+5.6%" in blob and "浮盈 **+17.6%**" in blob
+    assert "卖早" in blob and "3 次卖出后涨了 5%+" in blob
+    assert "不构成卖出指令" in blob
+    assert "建议卖出" not in blob and "止盈离场" not in blob   # 绝不催卖
 
 
 def test_stage1_early_return_skips_daily_fetch(monkeypatch):
