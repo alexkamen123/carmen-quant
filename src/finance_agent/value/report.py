@@ -81,6 +81,43 @@ def _behavior_section(m: dict) -> str:
     return "\n".join(lines)
 
 
+def _shadow_section(m: dict) -> str:
+    """影子选股段：watchlist 为空/无记录时返回 ""（不占卡片空间）。"""
+    s = m.get("shadow_picks") or {}
+    if not s.get("n"):
+        return ""
+    n_judged = s["correct"] + s["wrong"]
+    rate = f"{s['correct']}/{n_judged}" if n_judged else "—"
+    alpha = f"{s['avg_alpha']:+.1f}%" if s.get("avg_alpha") is not None else "—"
+    return (f"**🔭 影子选股（watchlist，无真实仓位，纯测量）** · {s['n']} 条 / {s['n_tickers']} 票\n"
+            f"方向判对 {rate} · 平均超额 alpha {alpha}\n"
+            f"_与持仓操作命中率分栏统计；影子建议不投入真金，只考选股能力_")
+
+
+def _hold_quality_section(m: dict) -> str:
+    """持有判断质量——与方向命中率分栏呈现，绝不混算（防灌水）。"""
+    h = m.get("hold_quality") or {}
+    n = h.get("n", 0)
+    lines = [f"**🤝 持有判断质量（与命中率分栏，不混算）** · {n} 条持有/观望"]
+    if not n:
+        lines.append("暂无可评估的持有记录")
+        return "\n".join(lines)
+    thr = h.get("bad_alpha_threshold", -5.0)
+    avg = h.get("avg_alpha")
+    avg_str = f"{avg:+.1f}%" if avg is not None else "—"
+    lines.append(
+        f"跑赢基准(持有对) **{h['right']}** · 大幅跑输≤{thr:g}%(该减没减) **{h['wrong']}** · "
+        f"区间内中性 **{h['neutral']}**；持有期平均 alpha **{avg_str}**"
+    )
+    if h.get("wrong_cases"):
+        worst = "、".join(f"{c['ticker']}({c['date'][5:]} α{c['alpha']:+.1f}%)"
+                          for c in h["wrong_cases"][:3])
+        lines.append(f"最该减没减：{worst}")
+    lines.append("_口径：持有期个股 vs 基准的 7 日 alpha；跑赢=幸亏没卖，深度跑输=该减仓。"
+                 "与「操作建议命中率」分开统计，定投除外。_")
+    return "\n".join(lines)
+
+
 def _dip_section(m: dict) -> str:
     """风险预警段：规则分级（thesis 完好性 × 下跌归因），硬性预算 ≤4 行。
     注：opportunity 字段已死（DIP_SYSTEM 不再输出），呈现一律用 bucket 替代。"""
@@ -143,6 +180,10 @@ def build_value_card(m: dict) -> dict:
         {"tag": "div", "text": {"tag": "lark_md", "content": _adv_section(m)}},
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": _strategy_edge_text()}},
+        {"tag": "hr"},
+        *([{"tag": "div", "text": {"tag": "lark_md", "content": _shadow_section(m)}},
+           {"tag": "hr"}] if _shadow_section(m) else []),
+        {"tag": "div", "text": {"tag": "lark_md", "content": _hold_quality_section(m)}},
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": _behavior_section(m)}},
         {"tag": "hr"},
