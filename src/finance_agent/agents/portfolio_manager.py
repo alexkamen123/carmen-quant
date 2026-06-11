@@ -209,10 +209,14 @@ async def run_portfolio_manager_batch(
         print(f"[PM] 降级到 DeepSeek 并行处理 {len(needs_pm)} 只股票...")
 
         async def _deepseek_one(s: StockAnalysis) -> dict:
+            # 降级路径必须保留 thesis + strategy_evidence（实盘反馈/量化验证），
+            # 否则降级一次 = L1 红线之外的全部证据静默丢失（06-10 A/B 实验因此整体无效）
             msg = PM_USER.format(
                 ticker=s.ticker,
                 market=MARKET_LABEL.get(s.market, s.market),
+                thesis=s.thesis or "暂未记录持仓逻辑",
                 signals_str=s.signals.to_prompt_str(),
+                strategy_evidence=(f"{s.strategy_evidence}\n" if s.strategy_evidence else ""),
                 fundamental_view=s.earnings.fundamental_view or "暂无基本面数据",
                 bull_thesis=s.bull_thesis or "无",
                 bear_thesis=s.bear_thesis or "无",
