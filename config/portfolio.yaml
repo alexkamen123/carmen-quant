@@ -56,8 +56,8 @@ holdings:
 
   - ticker: SGOV
     market: us
-    shares: 4
-    cost_basis: 100.40
+    shares: 5
+    cost_basis: 100.42
     sector: 对冲/现金管理
     notes: "0-3月美债ETF（对冲桶/压舱石）；2026-06-08 建仓4股@约100.40（价格为估计，按实际成交校正）"
 
