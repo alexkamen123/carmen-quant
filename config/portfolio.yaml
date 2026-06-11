@@ -131,14 +131,18 @@ holdings:
     sector: 互联网/AI
     notes: "MiniMax-W（大模型/AI，2026港股新上市）；2026-06-01 买入5股@708.50"
 
+  - ticker: AVGO
+    market: us
+    shares: 1
+    cost_basis: 378.90
+    sector: 半导体/AI算力
+    notes: "首笔系统荐股实盘验证；2026-06-12 买入1股@378.90，依据RSI(7)<30超卖信号（回测117次/7日跑赢SPY 69%/超额+3.3%/t=5.7）；买入时半导体集中度31.9%→37.0%、对冲桶10.6%<12%为知情override；7日评~06-23、30日评~07-13"
+
 
 # ── 影子观察池（用户未持有，纯测系统选股能力；is_watch=1 单独计分，不混入持仓建议）──
 # 入选依据：2 年因子回测高信赖信号 Top（vs SPY），GS 为非科技对照组（2026-06-11 用户批准）
+# （AVGO 2026-06-12 转正实盘，已从观察池移入 holdings，防双重分析）
 watchlist:
-  - ticker: AVGO
-    market: us
-    sector: 半导体/AI算力
-    notes: "影子观察未持有；RSI(14)<35 回测 74 次超额+5.9% 跑赢81% t=8.4（全场最强）"
   - ticker: KLAC
     market: us
     sector: 半导体设备
