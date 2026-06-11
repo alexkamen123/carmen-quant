@@ -132,7 +132,29 @@ holdings:
     notes: "MiniMax-W（大模型/AI，2026港股新上市）；2026-06-01 买入5股@708.50"
 
 
-watchlist: []
+# ── 影子观察池（用户未持有，纯测系统选股能力；is_watch=1 单独计分，不混入持仓建议）──
+# 入选依据：2 年因子回测高信赖信号 Top（vs SPY），GS 为非科技对照组（2026-06-11 用户批准）
+watchlist:
+  - ticker: AVGO
+    market: us
+    sector: 半导体/AI算力
+    notes: "影子观察未持有；RSI(14)<35 回测 74 次超额+5.9% 跑赢81% t=8.4（全场最强）"
+  - ticker: KLAC
+    market: us
+    sector: 半导体设备
+    notes: "影子观察未持有；RSI(7)<30 回测 97 次超额+2.9% 跑赢77% t=6.8"
+  - ticker: PLTR
+    market: us
+    sector: 软件/AI
+    notes: "影子观察未持有；动量60d 回测 440 次超额+2.8% t=5.7（高波动，纯测验）"
+  - ticker: LRCX
+    market: us
+    sector: 半导体设备
+    notes: "影子观察未持有；动量60d 回测 367 次超额+1.8% t=5.2"
+  - ticker: GS
+    market: us
+    sector: 金融
+    notes: "影子观察未持有；均线多头排列 回测 255 次超额+1.0% t=5.4（非科技对照）"
 
 # ── 账户规模配置（供 Position Sizer 计算建议股数）──────────────────────────
 # 填写实际可交易资金规模；risk_per_trade_pct = 单笔操作可接受的最大亏损占比
