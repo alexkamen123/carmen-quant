@@ -391,6 +391,17 @@ def backfill_only():
     console.print("✅ 胜率回填完成")
 
 
+@app.command("health-check")
+def health_check(
+    skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
+):
+    """调度心跳自检：launchd 任务加载状态 + 日志新鲜度，异常才推飞书（健康静默）"""
+    from finance_agent.ops.health import run_health_check
+    problems = asyncio.run(run_health_check(skip_notify=skip_notify))
+    if problems:
+        raise typer.Exit(code=1)
+
+
 @app.command("earnings-check")
 def earnings_check(
     skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
