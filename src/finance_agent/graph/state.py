@@ -73,4 +73,5 @@ class AgentState(BaseModel):
     exposure_posture: str = "NEW_ENTRY_ALLOWED"   # NEW_ENTRY_ALLOWED / REDUCE_ONLY / CASH_PRIORITY
     report_text: str = ""
     report_card: dict = Field(default_factory=dict)   # 飞书卡片 JSON
+    opportunities: list[dict] = Field(default_factory=list)   # 今日机会扫描（非持仓票触发中信号）
     errors: list[str] = Field(default_factory=list)
