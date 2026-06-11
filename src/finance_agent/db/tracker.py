@@ -1055,7 +1055,10 @@ def accuracy_summary(days: int = 30, db_path: str | Path | None = None) -> str:
     correct = sum(1 for r in rows if r["outcome"] == "正确")
     wrong   = sum(1 for r in rows if r["outcome"] == "错误")
     pct = round(correct / (correct + wrong) * 100) if (correct + wrong) > 0 else 0
-    return f"近{days}天推荐准确率：{pct}%（{correct}✅ {wrong}❌ {total - correct - wrong}➖，共{total}条）"
+    # 分栏口径（06-11 复盘 D4）：持有/定投不计方向对错（持有质量另行计分，见周六价值体检），
+    # 不再把它们与方向判错混在同一分母里显示成"122➖"式的废数据观感
+    return (f"近{days}天方向性建议命中率：{pct}%（判对{correct} / 判错{wrong}；"
+            f"另有 {total - correct - wrong} 条持有/定投不计方向对错，持有质量另行计分）")
 
 
 # ── 周度准确率统计（方案 B）─────────────────────────────────────
