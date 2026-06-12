@@ -178,6 +178,39 @@ async def test_surge_card_no_sell_instruction(monkeypatch):
     assert "建议卖出" not in blob and "止盈离场" not in blob   # 绝不催卖
 
 
+def test_stale_bars_blocked(monkeypatch):
+    """06-12 21:04 事故回归：盘前扫描拿到昨日 session 数据（带时区、最后一根
+    距今数小时）→ 必须拒绝报警；实时数据（距今几分钟）→ 放行。"""
+    monkeypatch.setattr(nm, "_is_market_open", lambda m: True)
+    closes = [100.0] * 10 + [110.0, 110.0]   # +10% 大涨形态
+
+    def mk(last_age_minutes):
+        end = pd.Timestamp.now(tz="America/New_York") - pd.Timedelta(minutes=last_age_minutes)
+        idx = pd.date_range(end=end, periods=len(closes), freq="5min")
+        return pd.DataFrame({"close": closes}, index=idx)
+
+    stale, fresh = mk(60 * 17), mk(5)   # 17 小时前（昨日 session）vs 5 分钟前
+
+    def dl_stale(tkr, period=None, interval=None, **k):
+        if interval == "5m":
+            return stale
+        raise AssertionError("旧数据应在 5m 检查处被拦，不该触日线")
+
+    monkeypatch.setattr(nm.yf, "download", dl_stale)
+    assert nm._check_price_surge("MU", "us", 3.0) is None
+    assert nm._check_price_drop("MU", "us", 3.0) is None
+
+    df_daily = pd.DataFrame({"close": [100.0] * 30})
+    monkeypatch.setattr(nm.yf, "download",
+                        lambda tkr, period=None, interval=None, **k:
+                        fresh if interval == "5m" else df_daily)
+    import finance_agent.signals.technical as tech
+    monkeypatch.setattr(tech, "calculate_signals",
+                        lambda df, ticker=None: SimpleNamespace(atr_pct=2.0, atr=1.0,
+                                                                bb_lower=90, ma20=100, rsi=50))
+    assert nm._check_price_surge("MU", "us", 3.0) is not None   # 实时数据正常触发
+
+
 def test_stage1_early_return_skips_daily_fetch(monkeypatch):
     """两条件都不过 base 预筛 → 立即 None，绝不触日线/信号网络请求。"""
     closes = [100.0] * 12   # 无跌幅
