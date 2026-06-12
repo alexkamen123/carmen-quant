@@ -77,9 +77,13 @@ async def _run(skip_notify: bool, backfill: bool):
     console.print("🤖 开始今日分析...")
     state = await run_workflow(db_path=DB_PATH)
 
-    # Step 3: 保存到 SQLite
-    await save_daily_signals(state, DB_PATH)
-    console.print(f"💾 已保存 {len(state.stocks)} 只股票信号")
+    # Step 3: 保存到 SQLite（失败不阻断推送——分析已完成，卡片必须发出去；
+    # 06-12 自检 P1：并发锁库时这里抛异常会让整份日报白跑且静默无推送）
+    try:
+        await save_daily_signals(state, DB_PATH)
+        console.print(f"💾 已保存 {len(state.stocks)} 只股票信号")
+    except Exception as e:
+        console.print(f"⚠️ 信号入库失败（不阻断推送）: {e}")
 
     # Step 4: 打印报告
     console.print("\n" + state.report_text)

@@ -172,12 +172,15 @@ async def pm_verdict(day: str, stocks: list[dict], debates: dict,
     return {d.get("ticker", "").upper(): d for d in decisions}
 
 
-def forward_return(ticker: str, market: str, day: str) -> float | None:
+def forward_return(ticker: str, market: str, day: str) -> dict | None:
+    """返回 {ret, partial}：partial=True 表示 7td 窗口未走满（last_idx<=fwd_td，
+    取的是至今值且末根可能为盘中半根）——06-12 自检 P2：不许静默当完整 7d 写入。"""
     win = _fetch_paired_window(ticker, market, day, fwd_td=FWD_TD)
     if win is None:
         return None
-    p0, p_exit, *_ = win
-    return round((p_exit - p0) / p0 * 100, 2)
+    p0, p_exit, _, _, last_idx = win
+    return {"ret": round((p_exit - p0) / p0 * 100, 2),
+            "partial": last_idx <= FWD_TD}
 
 
 async def run_day(day: str) -> dict:
@@ -219,9 +222,11 @@ async def run_day(day: str) -> dict:
     for s in stocks:
         t = s["ticker"]
         va, vb, vb2 = arm_a.get(t, {}), arm_b.get(t, {}), arm_b2.get(t, {})
-        fwd = forward_return(t, s["market"], day)
+        fr = forward_return(t, s["market"], day)
         rows.append({
-            "ticker": t, "injected": bool(injected[t]), "fwd_7td": fwd,
+            "ticker": t, "injected": bool(injected[t]),
+            "fwd_7td": fr["ret"] if fr else None,
+            "fwd_partial": fr["partial"] if fr else None,
             "A": {k: va.get(k) for k in ("recommendation", "position_change")},
             "B": {k: vb.get(k) for k in ("recommendation", "position_change")},
             "B2": {k: vb2.get(k) for k in ("recommendation", "position_change")},
@@ -263,7 +268,8 @@ async def main():
                 hit = ""
                 if row["fwd_7td"] is not None:
                     good = (row["rank_A"] < row["rank_B"]) == (row["fwd_7td"] < 0)
-                    hit = f"，后续7td {row['fwd_7td']:+.1f}% → {'判断对' if good else '判断错'}"
+                    tag = "（窗口未走满，至今值）" if row.get("fwd_partial") else ""
+                    hit = f"，后续7td {row['fwd_7td']:+.1f}%{tag} → {'判断对' if good else '判断错'}"
                 money_lines.append(
                     f"  {r['day']} {row['ticker']}（注入={row['injected']}）："
                     f"A={row['A']} vs B={row['B']}（A 更{direction}{hit}）")

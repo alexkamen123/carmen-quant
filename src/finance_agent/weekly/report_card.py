@@ -170,7 +170,9 @@ def build_weekly_card(result: dict) -> dict:
                      "减仓": "🟠", "卖出": "🔴", "按计划定投": "⬜"}
         recap_lines = [
             f"**📊 近期复盘**（{ws['period']}）",
-            f"胜率 **{ws['win_rate']}%**　✅ {ws['correct']} 正确　❌ {ws['wrong']} 错误　共 {ws['total']} 条",
+            f"方向性建议胜率 **{ws['win_rate']}%**　✅ {ws['correct']} 正确　❌ {ws['wrong']} 错误　共 {ws['total']} 条"
+            + (f"　（另 {ws['hold_n']} 条持有/定投不计方向，其中 {ws['hold_ok']} 条 7 日未大跌）"
+               if ws.get("hold_n") else ""),
         ]
         if ws.get("best"):
             b = ws["best"]
