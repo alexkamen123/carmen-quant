@@ -18,7 +18,7 @@ async def backfill_yesterday(db_path: str) -> dict[str, float]:
     """
     yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=15) as db:
         db.row_factory = aiosqlite.Row
         # 找出昨天未回填的信号
         async with db.execute("""

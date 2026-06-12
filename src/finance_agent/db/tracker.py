@@ -174,6 +174,12 @@ def save_recommendations(date: str, records: list[dict],
 
 # ── 回填 7 日实际涨跌 ─────────────────────────────────────────
 
+def _is_directional(recommendation: str | None, position_change: str | None) -> bool:
+    """方向性建议判定（与 _determine_outcome 的 bullish/bearish 同口径）"""
+    rec, pc = recommendation or "", position_change or ""
+    return rec in ("买入", "减仓", "卖出") or pc.startswith(("大加", "小加", "减仓"))
+
+
 def _determine_outcome(recommendation: str, position_change: str, ret: float) -> str:
     """根据方向与实际涨跌判断推荐是否正确"""
     bullish = recommendation in ("买入",) or (position_change or "").startswith(("大加", "小加"))
@@ -862,7 +868,26 @@ def detect_portfolio_changes(
     if dry_run:
         return detected
 
+    # 写入侧去重（06-12 自检 P1）：用户手动 log-action 后又被 auto 检测到同一笔
+    # （或反序）会双记，污染行为统计（n_buy 翻倍、均值权重失真）。
+    # 同日+同票+同方向已有记录（任意 source）即跳过——宁可少记一笔拆单，不许双记。
+    today = datetime.today().strftime("%Y-%m-%d")
+    with _conn(p) as con:
+        _migrate_actions_table(con)
+        existing_today = {
+            (r["ticker"].upper(), r["action"])
+            for r in con.execute(
+                "SELECT ticker, action FROM user_actions WHERE date = ?", (today,)
+            ).fetchall()
+        }
+    deduped = []
     for a in detected:
+        if (a["ticker"].upper(), a["action"]) in existing_today:
+            print(f"[AutoDetect] {a['ticker']} {a['action']} 当日已有记录（手动或自动），跳过防双记")
+            continue
+        deduped.append(a)
+
+    for a in deduped:
         log_user_action(
             ticker=a["ticker"], action=a["action"], shares=a["shares"],
             price=a["price"], note=a["note"], source="auto", db_path=p,
@@ -870,11 +895,11 @@ def detect_portfolio_changes(
     with _conn(p) as con:
         _save_snapshot(con, holdings)
 
-    if detected:
-        print(f"[AutoDetect] 检测到 {len(detected)} 笔操作，已记入 user_actions（source=auto）")
+    if deduped:
+        print(f"[AutoDetect] 检测到 {len(deduped)} 笔操作，已记入 user_actions（source=auto）")
     else:
-        print("[AutoDetect] 持仓无变化，未生成操作")
-    return detected
+        print("[AutoDetect] 持仓无变化或当日已记录，未生成操作")
+    return deduped
 
 
 # ── 指导台账（guidance ledger）─────────────────────────────────
@@ -1044,23 +1069,28 @@ def accuracy_summary(days: int = 30, db_path: str | Path | None = None) -> str:
     init_db(p)
     since = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
     with _conn(p) as con:
+        # IFNULL(is_watch,0)=0：影子选股单独分栏（metrics.py 同口径），绝不混入
+        # 真实持仓命中率——06-12 自检 P1：影子票（自选高信赖信号）混入会让命中率虚高
         rows = con.execute(
-            "SELECT outcome FROM recommendations "
-            "WHERE date >= ? AND outcome IS NOT NULL",
+            "SELECT outcome, recommendation, position_change FROM recommendations "
+            "WHERE date >= ? AND outcome IS NOT NULL AND IFNULL(is_watch, 0) = 0",
             (since,),
         ).fetchall()
 
     if not rows:
         return ""
 
-    total = len(rows)
     correct = sum(1 for r in rows if r["outcome"] == "正确")
     wrong   = sum(1 for r in rows if r["outcome"] == "错误")
+    # 中性拆两类（06-12 自检 P1：标签与内容不符）——方向性建议落 ±1% 中性带 ≠ 持有/定投
+    neutral_dir = sum(
+        1 for r in rows if r["outcome"] == "中性"
+        and (_is_directional(r["recommendation"], r["position_change"]))
+    )
+    passive = len(rows) - correct - wrong - neutral_dir
     pct = round(correct / (correct + wrong) * 100) if (correct + wrong) > 0 else 0
-    # 分栏口径（06-11 复盘 D4）：持有/定投不计方向对错（持有质量另行计分，见周六价值体检），
-    # 不再把它们与方向判错混在同一分母里显示成"122➖"式的废数据观感
-    return (f"近{days}天方向性建议命中率：{pct}%（判对{correct} / 判错{wrong}；"
-            f"另有 {total - correct - wrong} 条持有/定投不计方向对错，持有质量另行计分）")
+    return (f"近{days}天方向性建议命中率：{pct}%（判对{correct} / 判错{wrong} / "
+            f"±1%中性带{neutral_dir}；另有 {passive} 条持有/定投不计方向对错，持有质量另行计分）")
 
 
 # ── 周度准确率统计（方案 B）─────────────────────────────────────
@@ -1086,10 +1116,11 @@ def weekly_accuracy_summary(db_path: str | Path | None = None) -> dict:
     since = (datetime.today() - timedelta(days=14)).strftime("%Y-%m-%d")
 
     with _conn(p) as con:
+        # 影子选股不混入（06-12 自检 P1，与 accuracy_summary/metrics 同口径）
         rows = con.execute(
             "SELECT ticker, recommendation, position_change, return_7d, date "
             "FROM recommendations "
-            "WHERE date >= ? AND return_7d IS NOT NULL "
+            "WHERE date >= ? AND return_7d IS NOT NULL AND IFNULL(is_watch, 0) = 0 "
             "ORDER BY date",
             (since,),
         ).fetchall()
@@ -1098,6 +1129,7 @@ def weekly_accuracy_summary(db_path: str | Path | None = None) -> dict:
         return {"available": False}
 
     results = []
+    hold_n = hold_ok = 0
     for r in rows:
         rec = r["recommendation"] or ""
         pc  = r["position_change"] or ""
@@ -1110,8 +1142,12 @@ def weekly_accuracy_summary(db_path: str | Path | None = None) -> dict:
             outcome = "正确" if ret > 0 else "错误"
         elif bearish:
             outcome = "正确" if ret < 0 else "错误"
-        else:  # 持有 / 观望 / ETF定投
-            outcome = "正确" if ret >= -2.0 else "错误"
+        else:
+            # 持有/观望/定投不进 win_rate 分母（06-12 自检 P1：90%+ 是持有行、
+            # "不大跌就算对"会系统性虚高胜率，违反三层分桶不混算）；单独计数供展示
+            hold_n += 1
+            hold_ok += 1 if ret >= -2.0 else 0
+            continue
 
         results.append({
             "ticker":  r["ticker"],
@@ -1143,6 +1179,8 @@ def weekly_accuracy_summary(db_path: str | Path | None = None) -> dict:
         "win_rate":  win_rate,
         "best":      best,
         "worst":     worst,
+        "hold_n":    hold_n,     # 持有/观望/定投行数（不在 win_rate 分母内）
+        "hold_ok":   hold_ok,    # 其中 7 日未大跌（>=-2%）的行数
     }
 
 
