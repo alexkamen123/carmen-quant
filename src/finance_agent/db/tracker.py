@@ -1321,6 +1321,41 @@ def _load_settings_block(key: str, defaults: dict) -> dict:
     return cfg
 
 
+# ── 一致性桥（06-13）：盘中卡与日报 PM 互相知晓，结论翻转必须可解释 ───────────
+
+def get_latest_recommendation(ticker: str, db_path: str | Path | None = None) -> dict | None:
+    """最近一条真实持仓建议（is_watch=0），供盘中暴跌卡显示「最近日报裁决」。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        row = con.execute(
+            "SELECT date, recommendation, position_change FROM recommendations "
+            "WHERE ticker = ? AND IFNULL(is_watch, 0) = 0 AND recommendation IS NOT NULL "
+            "ORDER BY date DESC, id DESC LIMIT 1",
+            (ticker.upper(),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_today_dip_conclusion(ticker: str, db_path: str | Path | None = None) -> str:
+    """今日盘中暴跌卡的结论一行（注入 PM 材料：裁决前须知晓盘中已对用户说过什么；
+    00100 事件：下午卡说持有、晚间日报说减仓，两链互不知晓=静默矛盾）。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        row = con.execute(
+            "SELECT drop_pct, action, invalidation FROM dip_alerts "
+            "WHERE ticker = ? AND date(alerted_at) = date('now') "
+            "ORDER BY id DESC LIMIT 1",
+            (ticker.upper(),),
+        ).fetchone()
+    if not row or not row["action"]:
+        return ""
+    inv = f"（认错线：{row['invalidation']}）" if row["invalidation"] else ""
+    return (f"【今日盘中暴跌卡】跌 {abs(row['drop_pct'] or 0):.1f}% 时已建议"
+            f"「{row['action']}」{inv}——若本次裁决方向不同，必须说明改判原因")
+
+
 # ── 用户行为时机提示（order9）────────────────────────────────────────────────
 
 _BEHAVIOR_HINT_DEFAULTS = {"enabled": True, "min_n_buy": 5, "sell_regret_pct": 5.0}
