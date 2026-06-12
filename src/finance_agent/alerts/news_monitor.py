@@ -903,6 +903,15 @@ async def _analyze_dip(ticker: str, market: str, drop_pct: float,
                         gap_up_pct: float = 0.0, **_extra) -> dict:
     """调用 DeepSeek 分析暴跌是否是机会，返回结构化建议（含链式影响和股数建议）。"""
     thesis = _load_thesis(ticker) or _thesis_from_portfolio(ticker) or "暂无持仓逻辑记录"
+    try:
+        from finance_agent.db.tracker import get_latest_recommendation
+        _lr = get_latest_recommendation(ticker)
+        if _lr:
+            thesis += (f"\n\n【最近日报裁决（{_lr['date']}）】{_lr['recommendation']}"
+                       f"/{_lr['position_change'] or '—'}——盘中判断应与之衔接；"
+                       f"若你的结论方向不同，必须在 action_reason 说明原因")
+    except Exception:
+        pass
     news_list = _get_fresh_news(ticker, market, hours=4)
     news_summary = "\n".join(f"- {n['title']}" for n in news_list[:5]) or "暂无近期新闻"
     market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
@@ -1046,6 +1055,33 @@ def _fmt_px(x) -> str:
 def _ccy(market: str) -> str:
     """卡片货币前缀（06-12 UX 扫描：港币美元混排无标注，header 折叠后只剩裸数字）。"""
     return {"us": "$", "hk": "HK$", "cn": "¥"}.get(market, "")
+
+def _earnings_recently_alerted(ticker: str) -> bool:
+    """跨模块去重（06-13 财报日四重轰炸第一刀）：earnings-check 已为该票临近财报
+    发过预警卡 → news-scan 的同主题 earnings 新闻降噪跳过（晨报/日报是核心产品不动）。"""
+    try:
+        from datetime import date as _date
+        from finance_agent.db.tracker import _conn, _resolve_db
+        with _conn(_resolve_db(None)) as con:
+            rows = con.execute(
+                "SELECT key FROM news_alerted WHERE key LIKE ?",
+                (f"earnings:{ticker.upper()}:%",),
+            ).fetchall()
+        today = _date.today()
+        for r in rows:
+            parts = r["key"].split(":")
+            if len(parts) < 3:
+                continue
+            try:
+                edate = _date.fromisoformat(parts[2])
+            except ValueError:
+                continue
+            if -2 <= (edate - today).days <= 8:
+                return True
+    except Exception:
+        pass
+    return False
+
 
 def _card_fallback_text(card: dict) -> str:
     """飞书卡片失败时的纯文本兜底（06-12 UX 扫描：多数推送点无 fallback，
@@ -1513,6 +1549,17 @@ async def _send_price_drop_alert(ticker: str, market: str,
     if not open_triggered and open_price and abs(drop_from_open) >= abs(drop_pct) * 0.8:
         drop_label += f"　较开盘 {drop_from_open:.2f}%"
 
+    # 一致性桥：显示最近一次日报裁决，让盘中卡与日报互相可见（00100 矛盾事件）
+    last_verdict_line = ""
+    try:
+        from finance_agent.db.tracker import get_latest_recommendation
+        lr = get_latest_recommendation(ticker)
+        if lr:
+            last_verdict_line = (f"\n📋 最近日报裁决（{lr['date'][5:]}）："
+                                 f"{lr['recommendation']}/{lr['position_change'] or '—'}")
+    except Exception:
+        pass
+
     elements = [
         {
             "tag": "div",
@@ -1522,6 +1569,7 @@ async def _send_price_drop_alert(ticker: str, market: str,
                     f"📉 {display}　{drop_label}\n"
                     f"{price_line}"
                     f"{tech_ref}"
+                    f"{last_verdict_line}"
                 ),
             },
         },
@@ -1644,6 +1692,57 @@ async def _send_price_drop_alert(ticker: str, market: str,
 # 主入口
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _push_macro_grouped(macro_news: list, alerted: set, today_str: str,
+                              threshold: int, classify, send,
+                              slot_prefix: str, label: str) -> int:
+    """宏观快讯分组推送（06-13 UX 遗留重构）：按 published 分钟分组，组内先全部
+    评分、取最高影响那条推送——原实现按到达顺序首条达标即占 slot，同分钟更高
+    影响的快讯（如 impact=10 在 impact=9 之后）被静默丢弃。"""
+    from collections import defaultdict
+    groups: dict = defaultdict(list)
+    for n in macro_news:
+        groups[n["published"]].append(n)
+
+    pushed = 0
+    for published in sorted(groups):
+        items = groups[published]
+        slot_key = f"{slot_prefix}:{published}"
+        fresh = [n for n in items if n["key"] not in alerted]
+        if not fresh:
+            continue
+        if slot_key in alerted:
+            for n in fresh:
+                alerted.add(n["key"])
+                _save_alerted(n["key"], today_str)
+            print(f"[Alert] {label} 同时刻已推送，跳过 {len(fresh)} 条")
+            continue
+        scored = []
+        for n in fresh:
+            try:
+                r = await classify(n)
+            except Exception as e:
+                print(f"[Alert] {label} 评分失败跳过：{e}")
+                r = {}
+            scored.append((r.get("impact", 0), n, r))
+            alerted.add(n["key"])
+            _save_alerted(n["key"], today_str)
+        impact, best, result = max(scored, key=lambda x: x[0])
+        if impact < threshold:
+            print(f"[Alert] {label} 该时刻最高影响度={impact}，跳过：{best['title'][:50]}")
+            continue
+        sentiment = result.get("sentiment", "中性")
+        gkey = _macro_global_key(published, sentiment)
+        if gkey in alerted:
+            print(f"[Alert] {label} 与近30min同情绪宏观重复，跳过：{best['title'][:50]}")
+            continue
+        await send(best, impact, result)
+        for k in (slot_key, gkey):
+            alerted.add(k)
+            _save_alerted(k, today_str)
+        pushed += 1
+    return pushed
+
+
 async def run_news_scan(impact_threshold: int = 7) -> int:
     """
     扫描所有持仓（及竞争对手）+ 全球宏观快讯，高影响推送飞书。
@@ -1692,6 +1791,14 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
             if key in alerted:
                 continue
 
+            # 跨模块去重：财报预警卡已发过的票，earnings 主题新闻不再单独推
+            if (_extract_dedup_seed(news["title"]).endswith(":earnings")
+                    and _earnings_recently_alerted(scan_ticker)):
+                print(f"[NewsScan] {scan_ticker} 财报已有预警卡，earnings 新闻降噪跳过")
+                alerted.add(key)
+                _save_alerted(key, today_str)
+                continue
+
             result = await _classify_stock_news(
                 scan_ticker, news["title"], news["published"],
                 news.get("summary", "")
@@ -1735,83 +1842,44 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
     if has_hk_cn:
         macro_news = _get_macro_news(hours=2)
         print(f"[Alert] 全球快讯（港股视角）：{len(macro_news)} 条（2小时内）")
-        for news in macro_news:
-            key = news["key"]
-            # 同一分钟内同类型快讯只推最高分那一条（中文标题无法用语义去重，改用时间槽）
-            slot_key = f"macro_slot:{news['published']}"
-            if key in alerted or slot_key in alerted:
-                if key not in alerted:
-                    _save_alerted(key, today_str)  # 标记处理过，下次不重新评分
-                print(f"[Alert] 港股宏观 同时刻已推送，跳过：{news['title'][:50]}")
-                continue
-            result = await _classify_macro_news(
-                news["title"], news["published"], news.get("summary", "")
+        async def _hk_classify(n):
+            return await _classify_macro_news(n["title"], n["published"], n.get("summary", ""))
+
+        async def _hk_send(n, impact, result):
+            await _send_macro_alert(
+                title=n["title"], published=n["published"], impact=impact,
+                sentiment=result.get("sentiment", "中性"),
+                affected_sectors=result.get("affected_sectors", []),
+                reason=result.get("reason", ""),
+                priced_in=result.get("priced_in", ""),
+                suggested_action=result.get("suggested_action", ""),
             )
-            impact = result.get("impact", 0)
-            if impact >= impact_threshold:
-                sentiment = result.get("sentiment", "中性")
-                gkey = _macro_global_key(news["published"], sentiment)
-                if gkey in alerted:
-                    print(f"[Alert] 港股宏观 与近30min同情绪宏观重复，跳过：{news['title'][:50]}")
-                    _save_alerted(key, today_str)
-                    continue
-                await _send_macro_alert(
-                    title=news["title"], published=news["published"], impact=impact,
-                    sentiment=sentiment,
-                    affected_sectors=result.get("affected_sectors", []),
-                    reason=result.get("reason", ""),
-                    priced_in=result.get("priced_in", ""),
-                    suggested_action=result.get("suggested_action", ""),
-                )
-                alerted.add(key)
-                alerted.add(slot_key)
-                alerted.add(gkey)
-                _save_alerted(key, today_str)
-                _save_alerted(slot_key, today_str)
-                _save_alerted(gkey, today_str)
-                pushed += 1
-            else:
-                print(f"[Alert] 港股宏观 影响度={impact}，跳过：{news['title'][:50]}")
+
+        pushed += await _push_macro_grouped(
+            macro_news, alerted, today_str, impact_threshold,
+            _hk_classify, _hk_send, "macro_slot", "港股宏观")
 
     # ── 3. 美股宏观快讯（CNBC RSS，分钟级实时，阈值6）────────────────────────
     has_us = any(h["market"] == "us" for h in holdings)
     if has_us:
         us_macro_news = _get_us_macro_news(hours=2)
         print(f"[Alert] 美股快讯（CNBC RSS）：{len(us_macro_news)} 条（2小时内）")
-        for news in us_macro_news:
-            key = news["key"]
-            slot_key = f"us_macro_slot:{news['published']}"
-            if key in alerted or slot_key in alerted:
-                if key not in alerted:
-                    _save_alerted(key, today_str)
-                print(f"[Alert] 美股宏观 同时刻已推送，跳过：{news['title'][:50]}")
-                continue
-            result = await _classify_us_macro_news(news["title"], news["published"])
-            impact = result.get("impact", 0)
-            if impact >= 6:
-                sentiment = result.get("sentiment", "中性")
-                gkey = _macro_global_key(news["published"], sentiment)
-                if gkey in alerted:
-                    print(f"[Alert] 美股宏观 与近30min同情绪宏观重复，跳过：{news['title'][:50]}")
-                    _save_alerted(key, today_str)
-                    continue
-                await _send_us_macro_alert(
-                    title=news["title"], published=news["published"], impact=impact,
-                    sentiment=sentiment,
-                    affected_sectors=result.get("affected_sectors", []),
-                    reason=result.get("reason", ""),
-                    priced_in=result.get("priced_in", ""),
-                    suggested_action=result.get("suggested_action", ""),
-                )
-                alerted.add(key)
-                alerted.add(slot_key)
-                alerted.add(gkey)
-                _save_alerted(key, today_str)
-                _save_alerted(slot_key, today_str)
-                _save_alerted(gkey, today_str)
-                pushed += 1
-            else:
-                print(f"[Alert] 美股宏观 影响度={impact}，跳过：{news['title'][:50]}")
+        async def _us_classify(n):
+            return await _classify_us_macro_news(n["title"], n["published"])
+
+        async def _us_send(n, impact, result):
+            await _send_us_macro_alert(
+                title=n["title"], published=n["published"], impact=impact,
+                sentiment=result.get("sentiment", "中性"),
+                affected_sectors=result.get("affected_sectors", []),
+                reason=result.get("reason", ""),
+                priced_in=result.get("priced_in", ""),
+                suggested_action=result.get("suggested_action", ""),
+            )
+
+        pushed += await _push_macro_grouped(
+            us_macro_news, alerted, today_str, 6,
+            _us_classify, _us_send, "us_macro_slot", "美股宏观")
 
     # 价格异动预警已由独立 price_alert workflow（run_price_scan，每10分钟）专责，
     # 此处不再重复扫描——两者去重 key 不互通（price_drop vs price_drop_10m），

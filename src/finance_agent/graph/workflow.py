@@ -217,7 +217,7 @@ async def memory_node(state: AgentState) -> AgentState:
 async def strategy_node(state: AgentState) -> AgentState:
     """注入量化策略信号（仅美股）+ L2b 实盘反馈（全市场，settings 一键关）"""
     from finance_agent.backtest.signal_lookup import format_strategy_evidence
-    from finance_agent.db.tracker import format_live_feedback
+    from finance_agent.db.tracker import format_live_feedback, get_today_dip_conclusion
     updated = []
     for s in state.stocks:
         if s.is_etf:
@@ -238,7 +238,14 @@ async def strategy_node(state: AgentState) -> AgentState:
             print(f"[Strategy] {s.ticker} 量化信号触发 ↓\n{evidence}")
         if live:
             print(f"[Strategy] {s.ticker} 实盘反馈注入 ↓\n{live}")
-        combined = "\n".join(x for x in (evidence, live) if x)
+        dip_note = ""
+        try:
+            dip_note = get_today_dip_conclusion(s.ticker)
+        except Exception:
+            pass
+        if dip_note:
+            print(f"[Strategy] {s.ticker} 一致性桥：注入今日盘中卡结论")
+        combined = "\n".join(x for x in (evidence, live, dip_note) if x)
         updated.append(s.model_copy(update={"strategy_evidence": combined}))
     return state.model_copy(update={"stocks": updated})
 
