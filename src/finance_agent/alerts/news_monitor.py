@@ -1020,17 +1020,38 @@ def _recheck_price(ticker: str, market: str) -> float | None:
 
 def _is_market_open(market: str) -> bool:
     """
-    粗略判断对应市场是否处于交易时段（UTC 时间）。
-    只用整点小时判断，误差在 30 分钟以内，足以防止收盘后扫描过期数据。
-      美股：UTC 13:00-21:00（含盘前/盘后，收盘 20:00）
-      港股：UTC 01:00-09:00（开盘 01:30，收盘 08:00）
+    分钟级判断对应市场是否处于交易时段（UTC）。
+    06-12 事故：原整点判断让北京 21:00-21:30 成为"假开盘"窗口，盘前扫描拿到
+    昨日 session 数据被当成实时大涨推送。夏令时口径（冬令时 +1h 漂移由
+    _bars_fresh 新鲜度守卫兜底，此处不做日历级精确）。
+      美股：UTC 13:30-20:00；港股：UTC 01:30-08:00
     """
-    utc_hour = datetime.now(timezone.utc).hour
+    now = datetime.now(timezone.utc)
+    m = now.hour * 60 + now.minute
     if market == "us":
-        return 13 <= utc_hour <= 20
+        return 13 * 60 + 30 <= m <= 20 * 60
     elif market == "hk":
-        return 1 <= utc_hour <= 8
+        return 1 * 60 + 30 <= m <= 8 * 60
     return True  # 其他市场不做限制
+
+
+_MAX_BAR_AGE_MIN = 30
+
+
+def _bars_fresh(close) -> bool:
+    """
+    数据新鲜度守卫（06-12 事故根治层）：最后一根 5m K 线距现在超过 30 分钟
+    = 拿到的是上一个 session 的旧数据（盘前/节假日/半日市/时钟边界漂移），
+    绝不允许当成实时异动报警。索引无时区（仅测试 mock 场景）放行。
+    """
+    try:
+        last_ts = close.index[-1]
+        if getattr(last_ts, "tzinfo", None) is None:
+            return True
+        age = pd.Timestamp.now(tz=last_ts.tz) - last_ts
+        return age <= pd.Timedelta(minutes=_MAX_BAR_AGE_MIN)
+    except Exception:
+        return True
 
 
 def _load_dip_atr_cfg() -> dict:
@@ -1120,6 +1141,8 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
         close = df_5m["close"].dropna()
         if len(close) < 4:
             return None
+        if not _bars_fresh(close):
+            return None   # 旧 session 数据（盘前/节假日），不许当实时异动
         price_now = float(close.iloc[-1])
 
         # 条件1：过去 1 小时跌幅（12 根 5min K）
@@ -1240,6 +1263,8 @@ def _check_price_surge(ticker: str, market: str, threshold_pct: float = 3.0) -> 
         close = df_5m["close"].dropna()
         if len(close) < 4:
             return None
+        if not _bars_fresh(close):
+            return None   # 旧 session 数据（盘前/节假日），不许当实时异动
         price_now = float(close.iloc[-1])
         idx_1h = max(0, len(close) - 12)
         price_1h_ago = float(close.iloc[idx_1h])
