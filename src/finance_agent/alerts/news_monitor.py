@@ -1055,18 +1055,44 @@ def _effective_drop_threshold(atr_pct: float, gap_up_pct: float,
     ATR 自适应触发阈值（order8）：effective = max(base, min(k*atr_pct, cap))。
     只抬升不下调（>= base），高波动票的日常震荡不再误报为暴跌。
     gap_up > 10% 的抬升叠加在 ATR 结果上（原实现叠加在写死 3.0% 上，已修正）。
-    atr_pct 取不到（signals 失败/为 0）或开关关闭时静默回落 base。
+    atr_pct 取不到（新股<20日历史/信号失败）→ 取 cap 保守降噪（06-12：00100
+    新股按 base 3% 被报 7 连击，它 ±8% 是日常波动）；开关关闭回落 base。
     """
     cfg = cfg or _load_dip_atr_cfg()
     base = float(cfg.get("base_pct", 3.0))
-    if cfg.get("enabled", True) and atr_pct and atr_pct > 0:
+    if not cfg.get("enabled", True):
+        eff = base
+    elif atr_pct and atr_pct > 0:
         eff = max(base, min(float(cfg.get("k", 0.8)) * atr_pct,
                             float(cfg.get("cap_pct", 7.0))))
     else:
-        eff = base
+        # ATR 未知=波动未知 → 按最坏假设取 cap（漏报最坏=错过抄底提示，不会乱买）
+        eff = float(cfg.get("cap_pct", 7.0))
     if gap_up_pct > 10:
         eff = eff * (1 + gap_up_pct / 20)
     return round(eff, 2)
+
+
+def _alert_step(atr_pct: float) -> float:
+    """台阶宽度：跌/涨幅每加深一个 step 才算有信息增量（06-12 七连击复盘）。"""
+    return max(2.0, 0.5 * (atr_pct or 0.0))
+
+
+def _escalation_decision(prev_levels: list[int], level: int,
+                         daily_cap: int = 3) -> str:
+    """
+    同票同日异动推送的增量决策（纯函数，台阶去重核心）：
+      skip  — 未创当日新台阶（重复信息）或已到每日硬上限
+      full  — 当日首报，或台阶 ≥ 首报台阶×2（剧烈恶化，值得重跑 LLM 分析）
+      light — 加深一档：推免 LLM 的一行增量卡
+    """
+    if prev_levels and level <= max(prev_levels):
+        return "skip"
+    if len(prev_levels) >= daily_cap:
+        return "skip"
+    if not prev_levels:
+        return "full"
+    return "full" if level >= 2 * max(min(prev_levels), 1) else "light"
 
 
 def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> dict | None:
@@ -1254,6 +1280,47 @@ def _check_price_surge(ticker: str, market: str, threshold_pct: float = 3.0) -> 
     except Exception as e:
         print(f"[Alert] 大涨检查失败 {ticker}: {e}")
     return None
+
+
+async def _send_drop_deepening_alert(ticker: str, market: str, drop_pct: float,
+                                      price_now: float, prev_pct: float) -> None:
+    """加深增量卡（零 LLM）：只报"比上次更深了多少 + 上张卡的建议/认错线还作数"。
+    完整分析卡当日已发过，这里不重复叙事（06-12 七连击复盘 layer2）。"""
+    from finance_agent.weekly.daily_followup import TICKER_NAMES
+    market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
+    name = TICKER_NAMES.get(ticker, "")
+    display = f"**{ticker}** {name}" if name else f"**{ticker}**"
+
+    body = (f"📉 {display}　跌幅加深至 **{abs(drop_pct):.1f}%**"
+            f"（今日上一档约 -{prev_pct:.1f}%）　现价 {price_now}")
+    # 带回当日完整卡给过的建议与认错线（查今天最近一条 dip 记录，查不到静默）
+    try:
+        from finance_agent.db.tracker import _conn, _resolve_db
+        with _conn(_resolve_db(None)) as con:
+            row = con.execute(
+                "SELECT action, invalidation FROM dip_alerts WHERE ticker = ? "
+                "AND date(alerted_at) = date('now') ORDER BY id DESC LIMIT 1",
+                (ticker,),
+            ).fetchone()
+        if row and (row["action"] or row["invalidation"]):
+            body += (f"\n上一张完整卡：建议 **{row['action'] or '—'}**"
+                     f"　认错线：{row['invalidation'] or '—'}（仍作数，触线再说）")
+    except Exception:
+        pass
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"tag": "plain_text",
+                              "content": f"📉 跌幅加深 · {ticker}（{market_label}）"},
+                   "template": "orange"},
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": body}},
+            {"tag": "note", "elements": [{"tag": "plain_text",
+                "content": "增量提醒：完整分析见今日早前卡片；建议未变化不重复推送"}]},
+        ],
+    }
+    await send_feishu_card(card)
+    print(f"[Alert] 已推送跌幅加深增量卡：{ticker} {drop_pct:.1f}%")
 
 
 async def _send_price_surge_alert(ticker: str, market: str, rise_1h: float,
@@ -1728,34 +1795,50 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
             print(f"[PriceScan] {ticker} 观察池票跌幅触发（{drop_info['drop_pct']:+.1f}%），"
                   f"未持有不发持仓卡")
         elif drop_info:
+            # 台阶去重（06-12 七连击复盘）：同日同票按跌幅台阶判信息增量，
+            # 不创新台阶不推；加深一档推免 LLM 增量卡；剧烈恶化才重跑完整分析
             _eff = drop_info.get("effective_threshold", threshold_pct)
-            print(f"[PriceScan] {ticker} 触发（有效阈值 {_eff:.1f}%，ATR 自适应）")
-            dedup_key = f"price_drop_10m:{ticker}:{slot_5m}"
-            if dedup_key not in alerted:
-                mkt_drop = hk_mkt_drop if market == "hk" else us_mkt_drop
-                analysis = await _analyze_dip(**drop_info, mkt_drop=mkt_drop)
-                # 发送前重取最新价，LLM 分析期间价格可能已变化
-                fresh_price = await loop.run_in_executor(None, _recheck_price, ticker, market)
-                price_at_detection = drop_info["price_now"]
-                if fresh_price is not None:
-                    drop_info = {**drop_info, "price_now": fresh_price}
-                await _send_price_drop_alert(**drop_info, analysis=analysis,
-                                             price_at_detection=price_at_detection)
-                if analysis:
-                    try:
-                        save_dip_alert(
-                            ticker=ticker, market=market,
-                            drop_pct=drop_info["drop_pct"],
-                            price_at_alert=drop_info["price_now"],
-                            analysis=analysis,
-                        )
-                    except Exception as e:
-                        print(f"[PriceScan] 保存暴跌记录失败 {ticker}: {e}")
-                alerted.add(dedup_key)
-                _save_alerted(dedup_key, today_str)
-                pushed += 1
+            _sig = drop_info.get("signals")
+            step = _alert_step(_sig.atr_pct if _sig else 0.0)
+            level = max(1, int(abs(drop_info["drop_pct"]) // step))
+            lvl_prefix = f"price_drop_lvl:{ticker}:{today_str}:"
+            prev_levels = [int(k.rsplit(":", 1)[1]) for k in alerted
+                           if k.startswith(lvl_prefix)]
+            decision = _escalation_decision(prev_levels, level)
+            print(f"[PriceScan] {ticker} 触发（阈值 {_eff:.1f}%，台阶 {level}"
+                  f"/步长 {step:.1f}%，决策 {decision}）")
+            if decision == "skip":
+                pass
             else:
-                print(f"[PriceScan] {ticker} 10分钟内已推送，跳过")
+                if decision == "full":
+                    mkt_drop = hk_mkt_drop if market == "hk" else us_mkt_drop
+                    analysis = await _analyze_dip(**drop_info, mkt_drop=mkt_drop)
+                    # 发送前重取最新价，LLM 分析期间价格可能已变化
+                    fresh_price = await loop.run_in_executor(None, _recheck_price, ticker, market)
+                    price_at_detection = drop_info["price_now"]
+                    if fresh_price is not None:
+                        drop_info = {**drop_info, "price_now": fresh_price}
+                    await _send_price_drop_alert(**drop_info, analysis=analysis,
+                                                 price_at_detection=price_at_detection)
+                    if analysis:
+                        try:
+                            save_dip_alert(
+                                ticker=ticker, market=market,
+                                drop_pct=drop_info["drop_pct"],
+                                price_at_alert=drop_info["price_now"],
+                                analysis=analysis,
+                            )
+                        except Exception as e:
+                            print(f"[PriceScan] 保存暴跌记录失败 {ticker}: {e}")
+                else:  # light：一行增量卡，零 LLM
+                    await _send_drop_deepening_alert(
+                        ticker, market, drop_info["drop_pct"],
+                        drop_info["price_now"],
+                        prev_pct=max(prev_levels) * step)
+                key = f"{lvl_prefix}{level}"
+                alerted.add(key)
+                _save_alerted(key, today_str)
+                pushed += 1
         else:
             # 跌方向无异动 → 持仓票再查大涨方向（D8；观察池票不查，大涨提醒只服务止盈决策）
             surge_info = None
@@ -1764,15 +1847,23 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
                     None, _check_price_surge, ticker, market, threshold_pct
                 )
             if surge_info:
-                surge_key = f"price_surge_10m:{ticker}:{slot_5m}"
-                if surge_key not in alerted:
+                # 涨方向同款台阶去重（surge 卡本就免 LLM，light/full 同卡）
+                _ssig = surge_info.get("signals")
+                s_step = _alert_step(_ssig.atr_pct if _ssig else 0.0)
+                s_rise = max(surge_info["rise_1h"], surge_info["rise_from_open"])
+                s_level = max(1, int(s_rise // s_step))
+                s_prefix = f"price_surge_lvl:{ticker}:{today_str}:"
+                s_prev = [int(k.rsplit(":", 1)[1]) for k in alerted
+                          if k.startswith(s_prefix)]
+                if _escalation_decision(s_prev, s_level) == "skip":
+                    print(f"[PriceScan] {ticker} 大涨未创当日新台阶（{s_level}），跳过")
+                else:
                     await _send_price_surge_alert(
                         **surge_info, cost_basis=item.get("cost_basis"))
-                    alerted.add(surge_key)
-                    _save_alerted(surge_key, today_str)
+                    s_key = f"{s_prefix}{s_level}"
+                    alerted.add(s_key)
+                    _save_alerted(s_key, today_str)
                     pushed += 1
-                else:
-                    print(f"[PriceScan] {ticker} 大涨10分钟内已推送，跳过")
             else:
                 print(f"[PriceScan] {ticker} 无异动（预筛：±{threshold_pct}%/1h 与开盘口径均未过；或未过 ATR 自适应阈值）")
 
