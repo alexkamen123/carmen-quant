@@ -29,6 +29,9 @@ _NEWS_STOPWORDS = frozenset({
     "stock", "stocks", "share", "shares", "market", "markets",
 })
 
+# 单次 news-scan 推送硬上限（06-12 UX 扫描：32 个扫描项极端日可推 32 条）
+MAX_PUSH_PER_SCAN = 6
+
 import akshare as ak
 import feedparser
 import httpx
@@ -107,7 +110,10 @@ def _extract_dedup_seed(title: str) -> str:
     # 扩展金融事件分类（有序，优先更具体的事件）
     events = {
         'ipo':         r'\b(ipo|goes\s+public|debuts?|listing|went\s+public)\b',
-        'earnings':    r'\b(earnings?|earnings?\s+(?:miss|beat|report)|quarterly\s+results?|guidance|eps)\b',
+        # guidance 独立成类（06-12 UX 扫描 P0）：原与 earnings 同 key，同日"财报超预期"
+        # 与"下调指引"（常为反向利空）生成相同 dedup seed，第二条被静默丢弃
+        'guidance':    r'\b(guidance|outlook|forecasts?)\b',
+        'earnings':    r'\b(earnings?|earnings?\s+(?:miss|beat|report)|quarterly\s+results?|eps)\b',
         'acquisition': r'\b(acqui(?:res?|sition|ring)|buys?\s+\w|buyout|takeover)\b',
         'merger':      r'\b(mergers?|merges?|merged)\b',
         'bankruptcy':  r'\b(bankruptcy|bankrupt|chapter\s+11|insolvenc)\b',
@@ -540,7 +546,7 @@ async def _send_stock_alert(ticker: str, market: str, title: str, published: str
         },
         "elements": elements,
     }
-    await send_feishu_card(card)
+    await send_feishu_card(card, fallback_text=_card_fallback_text(card))
     conflict_tag = " [冲突!]" if has_conflict else ""
     print(f"[Alert] 已推送 {ticker} 快讯{conflict_tag}：{title[:40]}... (影响度={impact}, {sentiment})")
 
@@ -643,7 +649,7 @@ async def _send_macro_alert(title: str, published: str, impact: int, sentiment: 
                                           "content": "宏观快讯 · AI 快速判断，仅供参考"}]},
         ],
     }
-    await send_feishu_card(card)
+    await send_feishu_card(card, fallback_text=_card_fallback_text(card))
     print(f"[Alert] 已推送宏观快讯：{title[:40]}... (影响度={impact}, {sentiment})")
 
 
@@ -735,7 +741,7 @@ async def _send_us_macro_alert(title: str, published: str, impact: int, sentimen
                                           "content": "美股宏观快讯 · AI 快速判断，仅供参考"}]},
         ],
     }
-    await send_feishu_card(card)
+    await send_feishu_card(card, fallback_text=_card_fallback_text(card))
     print(f"[Alert] 已推送美股宏观快讯：{title[:40]}... (影响度={impact}, {sentiment})")
 
 
@@ -795,15 +801,25 @@ DIP_USER = """股票：{ticker}（{market}市场）——⚠️ 这是用户的�
 
 
 def _load_thesis(ticker: str) -> str:
-    """从 SQLite 读取该股持仓逻辑，没有则返回空字符串。"""
+    """从 SQLite 读取该股持仓逻辑，没有则返回空字符串。
+    >30 天的旧逻辑加显式标注（06-12 UX 扫描：dip 分析可能引用 60+ 天前的过期叙事
+    判断"thesis 完好"，用户无从知晓证据已过期）。"""
     try:
         db_path = _resolve_db(None)
         with _conn(db_path) as con:
             row = con.execute(
-                "SELECT thesis_text FROM theses WHERE ticker = ? ORDER BY updated_at DESC LIMIT 1",
+                "SELECT thesis_text, updated_at, "
+                "CAST(julianday('now') - julianday(updated_at) AS INTEGER) AS age_d "
+                "FROM theses WHERE ticker = ? ORDER BY updated_at DESC LIMIT 1",
                 (ticker,)
             ).fetchone()
-        return row["thesis_text"] if row else ""
+        if not row:
+            return ""
+        text = row["thesis_text"] or ""
+        age = row["age_d"]
+        if text and age is not None and age > 30:
+            text = f"（注意：该持仓逻辑记录于 {age} 天前，可能已过期，判断时降权）\n{text}"
+        return text
     except Exception:
         return ""
 
@@ -1027,6 +1043,24 @@ def _fmt_px(x) -> str:
     return f"{x:,.2f}" if abs(x) >= 10 else f"{x:,.3f}"
 
 
+def _ccy(market: str) -> str:
+    """卡片货币前缀（06-12 UX 扫描：港币美元混排无标注，header 折叠后只剩裸数字）。"""
+    return {"us": "$", "hk": "HK$", "cn": "¥"}.get(market, "")
+
+def _card_fallback_text(card: dict) -> str:
+    """飞书卡片失败时的纯文本兜底（06-12 UX 扫描：多数推送点无 fallback，
+    飞书故障=用户静默错过预警）。提取 header 标题 + 各段前 60 字。"""
+    try:
+        parts = [card.get("header", {}).get("title", {}).get("content", "")]
+        for el in card.get("elements", []):
+            if el.get("tag") == "div":
+                parts.append(el.get("text", {}).get("content", "")[:60])
+        return " | ".join(x for x in parts if x)[:400] or "卡门智投提醒（卡片渲染失败）"
+    except Exception:
+        return "卡门智投提醒（卡片渲染失败）"
+
+
+
 def _is_market_open(market: str) -> bool:
     """
     分钟级判断对应市场是否处于交易时段（UTC）。
@@ -1040,7 +1074,8 @@ def _is_market_open(market: str) -> bool:
     if market == "us":
         return 13 * 60 + 30 <= m <= 20 * 60
     elif market == "hk":
-        return 1 * 60 + 30 <= m <= 8 * 60
+        # 午休 04:00-05:00 UTC（12:00-13:00 HKT）休市
+        return (1 * 60 + 30 <= m <= 8 * 60) and not (4 * 60 <= m < 5 * 60)
     return True  # 其他市场不做限制
 
 
@@ -1122,7 +1157,8 @@ def _escalation_decision(prev_levels: list[int], level: int,
         return "skip"
     if not prev_levels:
         return "full"
-    return "full" if level >= 2 * max(min(prev_levels), 1) else "light"
+    # 跳两档才重跑完整 LLM 分析（06-12 UX 扫描：原 2*首报 在首报=1 时 light 几乎不可达）
+    return "full" if level >= min(prev_levels) + 2 else "light"
 
 
 def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> dict | None:
@@ -1326,7 +1362,7 @@ async def _send_drop_deepening_alert(ticker: str, market: str, drop_pct: float,
     display = f"**{ticker}** {name}" if name else f"**{ticker}**"
 
     body = (f"📉 {display}　跌幅加深至 **{abs(drop_pct):.1f}%**"
-            f"（今日上一档约 -{prev_pct:.1f}%）　现价 {_fmt_px(price_now)}")
+            f"（今日上一档约 -{prev_pct:.1f}%）　现价 {_ccy(market)}{_fmt_px(price_now)}")
     # 带回当日完整卡给过的建议与认错线（查今天最近一条 dip 记录，查不到静默）
     try:
         from finance_agent.db.tracker import _conn, _resolve_db
@@ -1353,7 +1389,7 @@ async def _send_drop_deepening_alert(ticker: str, market: str, drop_pct: float,
                 "content": "增量提醒：完整分析见今日早前卡片；建议未变化不重复推送"}]},
         ],
     }
-    await send_feishu_card(card)
+    await send_feishu_card(card, fallback_text=_card_fallback_text(card))
     print(f"[Alert] 已推送跌幅加深增量卡：{ticker} {drop_pct:.1f}%")
 
 
@@ -1371,10 +1407,10 @@ async def _send_price_surge_alert(ticker: str, market: str, rise_1h: float,
 
     rise_label = (f"1小时 **+{rise_1h:.1f}%**" if rise_1h >= rise_from_open
                   else f"较开盘 **+{rise_from_open:.1f}%**")
-    body = f"📈 {display}　{rise_label}　现价 {_fmt_px(price_now)}"
+    body = f"📈 {display}　{rise_label}　现价 {_ccy(market)}{_fmt_px(price_now)}"
     if cost_basis:
         pnl = (price_now - cost_basis) / cost_basis * 100
-        body += f"\n持仓成本 {_fmt_px(cost_basis)}，浮盈 **{pnl:+.1f}%**"
+        body += f"\n持仓成本 {_ccy(market)}{_fmt_px(cost_basis)}，浮盈 **{pnl:+.1f}%**"
 
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": body}}]
 
@@ -1413,7 +1449,7 @@ async def _send_price_surge_alert(ticker: str, market: str, rise_1h: float,
                    "template": "green"},
         "elements": elements,
     }
-    await send_feishu_card(card)
+    await send_feishu_card(card, fallback_text=_card_fallback_text(card))
     print(f"[Alert] 已推送持仓大涨：{ticker} +{max(rise_1h, rise_from_open):.1f}%")
 
 
@@ -1461,7 +1497,7 @@ async def _send_price_drop_alert(ticker: str, market: str,
         if recheck_chg > 1.5:
             price_line = f"⚠️ 价格已回升，请以发送时价为准\n{price_line}"
     else:
-        price_line = f"当前价：**{_fmt_px(price_now)}**　1小时前：{_fmt_px(price_1h_ago)}"
+        price_line = f"当前价：**{_ccy(market)}{_fmt_px(price_now)}**　1小时前：{_ccy(market)}{_fmt_px(price_1h_ago)}"
         # 检测时已从低点回升
         if recovering and recovery_pct >= 1.0:
             price_line += f"\n⚠️ 低点 {_fmt_px(low_price)}，已回升 **{recovery_pct:.1f}%**"
@@ -1575,6 +1611,13 @@ async def _send_price_drop_alert(ticker: str, market: str,
                 "text": {"tag": "lark_md", "content": f"**一句话建议：** {one_line}"},
             })
 
+    if not analysis:
+        # 分析失败时不发"残卡"装完整（06-12 UX 扫描）：明示降级，把建议指回日报
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md",
+                     "content": "⚠️ AI 分析暂不可用，本卡仅报价格事实；操作建议以今晚日报为准"},
+        })
     elements.append({
         "tag": "note",
         "elements": [{"tag": "plain_text", "content": "价格异动 · AI 辅助判断，不构成投资建议，请结合自身情况决策"}],
@@ -1592,7 +1635,7 @@ async def _send_price_drop_alert(ticker: str, market: str,
         },
         "elements": elements,
     }
-    await send_feishu_card(card)
+    await send_feishu_card(card, fallback_text=_card_fallback_text(card))
     act_tag = f" 动作={_act}" if analysis else ""
     print(f"[Alert] 已推送持仓异动：{ticker} 1h跌幅={abs(drop_pct):.2f}%{act_tag}")
 
@@ -1656,6 +1699,9 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
             impact = result.get("impact", 0)
             sentiment = result.get("sentiment", "中性")
 
+            if pushed >= MAX_PUSH_PER_SCAN:
+                print(f"[NewsScan] 单次推送达上限 {MAX_PUSH_PER_SCAN}，剩余高分新闻留待下轮")
+                break
             if impact >= effective_threshold:
                 title_display = news["title"]
                 if is_peer:
@@ -1838,20 +1884,30 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
             lvl_prefix = f"price_drop_lvl:{ticker}:{today_str}:"
             prev_levels = [int(k.rsplit(":", 1)[1]) for k in alerted
                            if k.startswith(lvl_prefix)]
-            decision = _escalation_decision(prev_levels, level)
+            # 跌+涨合并的每票每日总上限 4（06-12 UX 扫描：两方向 cap 独立时单票可推 6 张）
+            n_other = sum(1 for k in alerted
+                          if k.startswith(f"price_surge_lvl:{ticker}:{today_str}:"))
+            decision = ("skip" if len(prev_levels) + n_other >= 4
+                        else _escalation_decision(prev_levels, level))
             print(f"[PriceScan] {ticker} 触发（阈值 {_eff:.1f}%，台阶 {level}"
                   f"/步长 {step:.1f}%，决策 {decision}）")
             if decision == "skip":
                 pass
             else:
                 if decision == "full":
-                    mkt_drop = hk_mkt_drop if market == "hk" else us_mkt_drop
+                    # 现取基准 1h 涨跌（06-12 UX 扫描：扫描开头取的值到此可能已陈旧数分钟）
+                    _bm = "^HSI" if market == "hk" else "SPY"
+                    mkt_drop = await loop.run_in_executor(None, _get_market_1h_drop, _bm)
                     analysis = await _analyze_dip(**drop_info, mkt_drop=mkt_drop)
                     # 发送前重取最新价，LLM 分析期间价格可能已变化
                     fresh_price = await loop.run_in_executor(None, _recheck_price, ticker, market)
                     price_at_detection = drop_info["price_now"]
                     if fresh_price is not None:
                         drop_info = {**drop_info, "price_now": fresh_price}
+                        if analysis:
+                            # 自洽闸门用发送价重跑（06-12 UX 扫描 P0）：LLM 分析期间
+                            # 价格回升后，按检测价通过的 add_trigger 可能已高于现价
+                            analysis, _w = _validate_dip_plan(analysis, fresh_price)
                     await _send_price_drop_alert(**drop_info, analysis=analysis,
                                                  price_at_detection=price_at_detection)
                     if analysis:
@@ -1889,7 +1945,10 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
                 s_prefix = f"price_surge_lvl:{ticker}:{today_str}:"
                 s_prev = [int(k.rsplit(":", 1)[1]) for k in alerted
                           if k.startswith(s_prefix)]
-                if _escalation_decision(s_prev, s_level) == "skip":
+                n_other_d = sum(1 for k in alerted
+                                if k.startswith(f"price_drop_lvl:{ticker}:{today_str}:"))
+                if (len(s_prev) + n_other_d >= 4
+                        or _escalation_decision(s_prev, s_level) == "skip"):
                     print(f"[PriceScan] {ticker} 大涨未创当日新台阶（{s_level}），跳过")
                 else:
                     await _send_price_surge_alert(

@@ -90,7 +90,7 @@ async def test_dip_card_integration(monkeypatch):
 
     sent = []
     monkeypatch.setattr(nm, "send_feishu_card",
-                        lambda card: _async_noop(sent, card))
+                        lambda card, **kw: _async_noop(sent, card))
     monkeypatch.setattr(
         tracker, "get_behavior_hint_stats",
         lambda db_path=None: {"n_buy": 11, "avg_buy": -6.1, "n_sell_regret": 3,

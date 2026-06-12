@@ -100,9 +100,39 @@ async def check_and_alert_earnings(push: bool = True) -> list[dict]:
     upcoming.sort(key=lambda x: x["days_until"])
 
     if push:
-        await _push_earnings_alert(upcoming)
+        # 去重（06-12 UX 扫描 P0）：每个 (ticker, 财报日) 只在首次发现 + 财报前 1 天
+        # 各提醒一次——原零去重逻辑会让同一财报连推 7 天（每天只差一个倒计时数字）
+        from finance_agent.alerts.news_monitor import _load_alerted, _save_alerted
+        today_str = today.isoformat()
+        alerted = _load_alerted(today_str)   # 表是全量 key 查询的（key 含财报日，跨天有效）
+        fresh = []
+        for u in upcoming:
+            key = f"earnings:{u['ticker']}:{u['earnings_date']}"
+            key_eve = f"{key}:eve"
+            if key not in alerted and not _key_exists(key):
+                fresh.append(u)
+                _save_alerted(key, today_str)
+            elif u["days_until"] <= 1 and not _key_exists(key_eve):
+                fresh.append(u)          # 财报前夜再提醒一次（有信息增量）
+                _save_alerted(key_eve, today_str)
+        if fresh:
+            await _push_earnings_alert(fresh)
+        else:
+            print(f"[EarningsTrigger] {len(upcoming)} 只均已提醒过（首次+前夜各一次），不重复推送")
 
     return upcoming
+
+
+def _key_exists(key: str) -> bool:
+    """news_alerted 全表查 key（财报 key 跨天有效，不能只查当天分区）。"""
+    from finance_agent.db.tracker import _conn, _resolve_db
+    try:
+        with _conn(_resolve_db(None)) as con:
+            return con.execute(
+                "SELECT 1 FROM news_alerted WHERE key = ? LIMIT 1", (key,)
+            ).fetchone() is not None
+    except Exception:
+        return False   # 查不到去重表宁可多推不可漏推（财报是高价值提醒）
 
 
 async def _push_earnings_alert(upcoming: list[dict]) -> None:
@@ -151,5 +181,7 @@ async def _push_earnings_alert(upcoming: list[dict]) -> None:
         "elements": elements,
     }
 
-    ok = await send_feishu_card(card)
+    fallback = "财报预警：" + "；".join(
+        f"{u['ticker']} {u['earnings_date']}（{u['days_until']}天后）" for u in upcoming)
+    ok = await send_feishu_card(card, fallback_text=fallback)
     print(f"[EarningsTrigger] 飞书推送{'✅' if ok else '❌'}")
