@@ -316,7 +316,7 @@ async def _monthly_review(skip_notify: bool):
         console.print(f"   {d['name']}: {d['score']}/10 — {d.get('reason', '')}")
     ingest_monthly_review(summary, stats)
     if not skip_notify:
-        ok = await send_feishu_card(card)
+        ok = await send_feishu_card(card, fallback_text=f"月度回顾（卡片渲染失败，详见本地日志）：{summary[:300]}")
         console.print("✅ 月度回顾推送成功" if ok else "❌ 月度回顾推送失败")
 
 

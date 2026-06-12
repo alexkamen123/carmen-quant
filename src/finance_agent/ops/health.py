@@ -96,5 +96,6 @@ async def run_health_check(skip_notify: bool = False) -> list[dict]:
         print(f"[Health] ⚠️ {p['job']} {p['kind']}: {p['detail']}")
     if not skip_notify:
         from finance_agent.notifications.feishu import send_feishu_card
-        await send_feishu_card(build_health_card(problems))
+        fb = "调度心跳异常：" + "；".join(f"{x['job']}({x['kind']})" for x in problems)
+        await send_feishu_card(build_health_card(problems), fallback_text=fb)
     return problems

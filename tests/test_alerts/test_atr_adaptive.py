@@ -26,9 +26,10 @@ def test_escalation_decision_matrix():
     assert f([], 1) == "full"            # 当日首报
     assert f([1], 1) == "skip"           # 同档重复=零增量
     assert f([2], 1) == "skip"           # 回升后再跌回浅档=已报过更深，不重复
-    assert f([1], 2) == "full"           # 2 >= 2*1：剧烈恶化重新分析
+    assert f([1], 2) == "light"          # 加深一档：增量卡（06-12 修正：原 2*首报 让 light 不可达）
+    assert f([1], 3) == "full"           # 跳两档：剧烈恶化重新分析
     assert f([2], 3) == "light"          # 加深一档：增量卡
-    assert f([2], 4) == "full"           # 4 >= 2*2：翻倍重分析
+    assert f([2], 4) == "full"           # 跳两档重分析
     assert f([1, 2, 3], 4) == "skip"     # 每日硬上限 3 张
     assert nm._alert_step(0.0) == 2.0 and nm._alert_step(8.0) == 4.0
 
@@ -150,7 +151,7 @@ async def test_surge_card_no_sell_instruction(monkeypatch):
     """D8 安全不变量：大涨卡片绝不出现卖出指令；卖飞签名上下文正确注入。"""
     sent = []
 
-    async def fake_send(card):
+    async def fake_send(card, **kw):
         sent.append(card)
 
     monkeypatch.setattr(nm, "send_feishu_card", fake_send)
