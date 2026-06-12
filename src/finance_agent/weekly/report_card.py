@@ -222,7 +222,8 @@ def build_weekly_card(result: dict) -> dict:
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": "📊 卡门智投 · 周度配置建议"},
+            "title": {"tag": "plain_text",
+                      "content": f"📊 卡门智投 · 周度配置建议 · {__import__('datetime').date.today():%m-%d}"},
             "template": "indigo",
         },
         "elements": elements,

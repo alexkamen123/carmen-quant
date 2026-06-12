@@ -284,7 +284,24 @@ async def run_morning_note(
     )
 
     raw = await claude_websearch_chat(MORNING_SYSTEM, user_msg, timeout=timeout)
-    note = _parse_note_json(raw)
+    try:
+        note = _parse_note_json(raw)
+    except ValueError:
+        # 降级而非崩溃（06-12 UX 扫描 P1）：原 raise 会让 launchd 任务静默挂掉，
+        # 用户整天没晨报也不知道为什么。退化为"原文卡"——有总比没有强。
+        print("[MorningNote] ⚠️ JSON 解析失败，降级推送模型原文")
+        degraded = {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text",
+                                  "content": f"🌅 晨报（降级版·结构化失败）· {date_str}"},
+                       "template": "grey"},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": raw[:2800]}},
+                {"tag": "note", "elements": [{"tag": "plain_text",
+                    "content": "模型输出未能结构化，以上为原文；功能异常已记录"}]},
+            ],
+        }
+        return degraded, raw[:2000], {}
 
     card = _build_morning_card(note, date_str)
     text = _build_plain_text(note, date_str)

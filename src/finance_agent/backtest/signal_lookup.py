@@ -134,8 +134,8 @@ def format_strategy_evidence(ticker: str) -> str:
 
     示例输出：
       【量化策略信号（历史验证）】
-      RSI超卖（rsi_14_30）→ 历史39次，超额+6.84%，胜率85%
-      布林下轨（boll_20_2）→ 历史24次，超额+5.25%，胜率92%
+      RSI超卖（rsi_14_30）→ 历史39次，超额+6.84%，跑赢SPY85%
+      布林下轨（boll_20_2）→ 历史24次，超额+5.25%，跑赢SPY92%
     """
     active = get_active_signals(ticker)
     if not active:
@@ -149,6 +149,8 @@ def format_strategy_evidence(ticker: str) -> str:
             f"  {sig['label']}（{sig['strategy']}）→ "
             f"历史{sig['n_signals']}次，"
             f"超额{sig['avg_alpha']:+.2f}%，"
-            f"胜率{sig['beat_rate']:.0%}{tag}"
+            # "跑赢SPY"而非"胜率"（06-12 UX 扫描 P0）：beat_rate 是跑赢基准比例，
+            # 不是该股上涨概率——熊市里跌 1% vs SPY 跌 3% 也算"赢"
+            f"跑赢SPY{sig['beat_rate']:.0%}{tag}"
         )
     return "\n".join(lines)
