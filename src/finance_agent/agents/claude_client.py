@@ -23,12 +23,16 @@ async def _claude_sdk_chat(system: str, user: str, timeout: int = 120) -> str:
     message = await asyncio.wait_for(
         client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=1500,
+            # 4096：PM 批量 17 只 ×10 字段 ≥2000 tokens，原 1500 会截断 → JSON 解析
+            # 失败 → 静默整批降级 DeepSeek（06-12 自检 P1）
+            max_tokens=4096,
             system=system,
             messages=[{"role": "user", "content": user}],
         ),
         timeout=float(timeout),
     )
+    if getattr(message, "stop_reason", None) == "max_tokens":
+        print("[Claude] ⚠️ 输出被 max_tokens 截断，JSON 可能不完整（将触发降级）")
     return message.content[0].text
 
 

@@ -1155,14 +1155,18 @@ def _check_price_drop(ticker: str, market: str, threshold_pct: float = 3.0) -> d
         # Stage 2：ATR 自适应精确判定（两个条件统一用 effective 阈值）
         atr_pct = signals.atr_pct if signals else 0.0
         cfg = _load_dip_atr_cfg()
-        effective_threshold = _effective_drop_threshold(atr_pct, gap_up_pct, cfg)
-        triggered_by_1h = drop_1h <= -effective_threshold
         if cfg.get("enabled", True):
-            open_triggered = drop_from_open <= -(effective_threshold * 1.5)
+            effective_threshold = _effective_drop_threshold(atr_pct, gap_up_pct, cfg)
+            open_thr = effective_threshold * 1.5
         else:
-            # 一键关回退改动前行为：open 触发用裸 base*1.5，不受 gap/ATR 影响
-            # （改动前 gap 抬升只作用于 1h 条件，open 条件始终是 threshold_pct*1.5）
-            open_triggered = drop_from_open <= -(threshold_pct * 1.5)
+            # 一键关=完全忽略 dip_atr_adaptive 块（含 base_pct），两条件统一回退函数
+            # 入参 threshold_pct，与改动前逐字一致（06-12 自检 P1：原修法 1h 走
+            # cfg.base_pct、open 走 threshold_pct，两条件不同源，base_pct≠3 时口径分裂）
+            effective_threshold = (threshold_pct * (1 + gap_up_pct / 20)
+                                   if gap_up_pct > 10 else threshold_pct)
+            open_thr = threshold_pct * 1.5
+        triggered_by_1h = drop_1h <= -effective_threshold
+        open_triggered = drop_from_open <= -open_thr
         if not triggered_by_1h and not open_triggered:
             print(f"[Alert] {ticker} 过预筛但未过 ATR 自适应阈值 "
                   f"{effective_threshold:.1f}%（ATR占价 {atr_pct:.1f}%），按正常波动忽略")
@@ -1717,7 +1721,13 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
         drop_info = await loop.run_in_executor(
             None, _check_price_drop, ticker, market, threshold_pct
         )
-        if drop_info:
+        if drop_info and not item.get("shares"):
+            # 观察池票（未持有）不发"持仓异动"卡：_analyze_dip 的 prompt 假设已持仓、
+            # 会产出加仓建议+股数——对未持有票是误导性激进建议（06-12 自检 P1）。
+            # 选股维度由日报机会区/影子池覆盖，与大涨方向只查持仓的语义对称。
+            print(f"[PriceScan] {ticker} 观察池票跌幅触发（{drop_info['drop_pct']:+.1f}%），"
+                  f"未持有不发持仓卡")
+        elif drop_info:
             _eff = drop_info.get("effective_threshold", threshold_pct)
             print(f"[PriceScan] {ticker} 触发（有效阈值 {_eff:.1f}%，ATR 自适应）")
             dedup_key = f"price_drop_10m:{ticker}:{slot_5m}"
