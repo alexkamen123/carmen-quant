@@ -11,12 +11,26 @@ _CFG = {"enabled": True, "base_pct": 3.0, "k": 0.8, "cap_pct": 7.0}
 
 
 def test_effective_threshold_formula():
-    """公式：max(base, min(k*atr, cap))，只抬升不下调；atr 缺失静默回落 base。"""
+    """公式：max(base, min(k*atr, cap))，只抬升不下调；
+    atr 不可得（新股/信号失败）→ 取 cap 保守降噪（06-12 00100 七连击复盘）。"""
     assert nm._effective_drop_threshold(0.02, 0.0, _CFG) == 3.0    # 极低波动 → base
     assert nm._effective_drop_threshold(4.14, 0.0, _CFG) == 3.31   # 0.8*4.14
     assert nm._effective_drop_threshold(11.22, 0.0, _CFG) == 7.0   # cap 封顶
-    assert nm._effective_drop_threshold(0.0, 0.0, _CFG) == 3.0     # signals 失败降级
-    assert nm._effective_drop_threshold(None, 0.0, _CFG) == 3.0
+    assert nm._effective_drop_threshold(0.0, 0.0, _CFG) == 7.0     # ATR 未知 → cap
+    assert nm._effective_drop_threshold(None, 0.0, _CFG) == 7.0
+
+
+def test_escalation_decision_matrix():
+    """台阶去重判定表：首报 full / 同档 skip / 加深 light / 剧烈恶化 full / 日上限 skip。"""
+    f = nm._escalation_decision
+    assert f([], 1) == "full"            # 当日首报
+    assert f([1], 1) == "skip"           # 同档重复=零增量
+    assert f([2], 1) == "skip"           # 回升后再跌回浅档=已报过更深，不重复
+    assert f([1], 2) == "full"           # 2 >= 2*1：剧烈恶化重新分析
+    assert f([2], 3) == "light"          # 加深一档：增量卡
+    assert f([2], 4) == "full"           # 4 >= 2*2：翻倍重分析
+    assert f([1, 2, 3], 4) == "skip"     # 每日硬上限 3 张
+    assert nm._alert_step(0.0) == 2.0 and nm._alert_step(8.0) == 4.0
 
 
 def test_gap_up_compounds_on_atr_result():
