@@ -1494,7 +1494,7 @@ def ticker_signal_stats(ticker: str, db_path: str | Path | None = None) -> str:
         rows = con.execute(
             """SELECT recommendation, position_change, return_7d, benchmark_return_7d
                FROM recommendations
-               WHERE ticker = ? AND return_7d IS NOT NULL
+               WHERE ticker = ? AND return_7d IS NOT NULL AND IFNULL(is_watch, 0) = 0
                  AND (recommendation IN ('买入') OR position_change LIKE '大加%' OR position_change LIKE '小加%')
                ORDER BY date DESC LIMIT 60""",
             (ticker.upper(),),

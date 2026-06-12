@@ -110,9 +110,10 @@ def build_followup_card(
         lines = ["**🔭 推荐品种动态**（周一→今日）"]
         for c in sorted(price_changes, key=lambda x: x["pct_change"]):
             sign = "+" if c["pct_change"] >= 0 else ""
+            ccy = "HK$" if str(c["ticker"]).isdigit() else "$"
             lines.append(
                 f"{_pct_emoji(c['pct_change'])} {_ticker_label(c['ticker'])}"
-                f"　{c['price_start']} → {c['price_now']}　{sign}{c['pct_change']}%"
+                f"　{ccy}{c['price_start']} → {ccy}{c['price_now']}　{sign}{c['pct_change']}%"
             )
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
         elements.append({"tag": "hr"})
