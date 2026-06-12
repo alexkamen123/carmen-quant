@@ -1013,9 +1013,18 @@ def _recheck_price(ticker: str, market: str) -> float | None:
         else:
             df.columns = [c.lower() for c in df.columns]
         close = df["close"].dropna()
-        return float(close.iloc[-1]) if len(close) > 0 else None
+        # round 4：裸 float 会原样进卡片（用户截到过 404.20001220703125）
+        return round(float(close.iloc[-1]), 4) if len(close) > 0 else None
     except Exception:
         return None
+
+
+def _fmt_px(x) -> str:
+    """卡片价格统一格式：≥10 两位小数、<10 三位；任何来源的裸浮点到此为止。"""
+    if x is None:
+        return "—"
+    x = float(x)
+    return f"{x:,.2f}" if abs(x) >= 10 else f"{x:,.3f}"
 
 
 def _is_market_open(market: str) -> bool:
@@ -1317,7 +1326,7 @@ async def _send_drop_deepening_alert(ticker: str, market: str, drop_pct: float,
     display = f"**{ticker}** {name}" if name else f"**{ticker}**"
 
     body = (f"📉 {display}　跌幅加深至 **{abs(drop_pct):.1f}%**"
-            f"（今日上一档约 -{prev_pct:.1f}%）　现价 {price_now}")
+            f"（今日上一档约 -{prev_pct:.1f}%）　现价 {_fmt_px(price_now)}")
     # 带回当日完整卡给过的建议与认错线（查今天最近一条 dip 记录，查不到静默）
     try:
         from finance_agent.db.tracker import _conn, _resolve_db
@@ -1362,10 +1371,10 @@ async def _send_price_surge_alert(ticker: str, market: str, rise_1h: float,
 
     rise_label = (f"1小时 **+{rise_1h:.1f}%**" if rise_1h >= rise_from_open
                   else f"较开盘 **+{rise_from_open:.1f}%**")
-    body = f"📈 {display}　{rise_label}　现价 {price_now}"
+    body = f"📈 {display}　{rise_label}　现价 {_fmt_px(price_now)}"
     if cost_basis:
         pnl = (price_now - cost_basis) / cost_basis * 100
-        body += f"\n持仓成本 {cost_basis}，浮盈 **{pnl:+.1f}%**"
+        body += f"\n持仓成本 {_fmt_px(cost_basis)}，浮盈 **{pnl:+.1f}%**"
 
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": body}}]
 
@@ -1447,21 +1456,21 @@ async def _send_price_drop_alert(ticker: str, market: str,
         recheck_chg = (price_now - price_at_detection) / price_at_detection * 100
         chg_str = f"{'↗' if recheck_chg > 0 else '↘'} {recheck_chg:+.1f}%"
         price_line = (
-            f"检测价：{price_at_detection}　发送时：**{price_now}**（{chg_str}）　1小时前：{price_1h_ago}"
+            f"检测价：{_fmt_px(price_at_detection)}　发送时：**{_fmt_px(price_now)}**（{chg_str}）　1小时前：{_fmt_px(price_1h_ago)}"
         )
         if recheck_chg > 1.5:
             price_line = f"⚠️ 价格已回升，请以发送时价为准\n{price_line}"
     else:
-        price_line = f"当前价：**{price_now}**　1小时前：{price_1h_ago}"
+        price_line = f"当前价：**{_fmt_px(price_now)}**　1小时前：{_fmt_px(price_1h_ago)}"
         # 检测时已从低点回升
         if recovering and recovery_pct >= 1.0:
-            price_line += f"\n⚠️ 低点 {low_price}，已回升 **{recovery_pct:.1f}%**"
+            price_line += f"\n⚠️ 低点 {_fmt_px(low_price)}，已回升 **{recovery_pct:.1f}%**"
         elif recovery_pct >= 0.5:
-            price_line += f"\n↗ 低点 {low_price}，已回升 {recovery_pct:.1f}%"
+            price_line += f"\n↗ 低点 {_fmt_px(low_price)}，已回升 {recovery_pct:.1f}%"
 
     # 跌幅标签：开盘触发时显示"较开盘"，否则显示"1小时内"
     if open_triggered and open_price:
-        drop_label = f"较开盘跌 **{abs(drop_from_open):.2f}%**（开盘价 {open_price}）"
+        drop_label = f"较开盘跌 **{abs(drop_from_open):.2f}%**（开盘价 {_fmt_px(open_price)}）"
     else:
         drop_label = f"跌幅 **{abs(drop_pct):.2f}%**（1小时内）"
     # 如果同时触发两个条件，也附上开盘跌幅
