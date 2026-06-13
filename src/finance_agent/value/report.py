@@ -17,35 +17,47 @@ _TEMPLATE = {"grey": "grey", "orange": "orange", "green": "green"}
 
 
 def _adv_section(m: dict) -> str:
-    g, hr, ba, ca = m["gate"], m["hit_rate"], m["buy_alpha"], m["combined_alpha"]
-    lines = ["**🎯 建议价值（我们的建议对不对）**", "　_减仓择时 ≠ 选股能力，分开看_"]
+    """建议价值段——全大白话，不用 alpha/命中率/CI 等黑话（用户反馈看不懂）。
+    口径不变，只换说法：alpha→比大盘多赚/少赚；命中率→说对几次。"""
+    hr, ba, ca = m["hit_rate"], m["buy_alpha"], m["combined_alpha"]
+    lines = ["**🎯 我们的建议准不准**"]
+
+    # 1. 买卖建议说对几次（原"方向命中率"）
     if hr["n_judged"]:
-        warn = "　⚠️样本偏少仅参考" if hr["n_judged"] < 30 else ""
+        warn = (f"　⚠️ 但只有 {hr['n_tickers']} 只票、样本太少，这个数字还会大幅波动，先别当真"
+                if hr["n_judged"] < 30 else "")
         lines.append(
-            f"• 方向命中率：**{hr['win_rate']}%**"
-            f"（95%CI {hr['ci_low']}%~{hr['ci_high']}%，n={hr['n_judged']}，{hr['n_tickers']}票）{warn}"
+            f"• **买卖建议**：{hr['n_judged']} 次明确的买/卖建议里，"
+            f"事后看**说对 {hr['correct']} 次、说错 {hr['wrong']} 次**（约 {hr['win_rate']:.0f}%）{warn}"
         )
-        tail = "　·　当前全为减仓信号" if hr.get("buckets_note") else ""
-        lines.append(f"　{hr['correct']}对 / {hr['wrong']}错（中性{hr['neutral']}条不计入）{tail}")
     else:
-        lines.append("• 方向命中率：—（暂无可裁决方向性信号）")
+        lines.append("• **买卖建议**：暂时没有可以判对错的买/卖建议")
 
+    # 2. 选股能力（原"选股 alpha"，只看买入类）
     if ba["status"] == "no_sample":
-        lines.append(f"• 选股(买入/加仓) alpha：**尚无可评估样本**（N=0，{ba.get('note', '回测窗口未到')}）")
+        lines.append("• **选股眼光**：还没有能打分的买入建议（买入后要满 7 天才知道结果）")
     else:
-        sign = "+" if ba["avg"] >= 0 else ""
-        lines.append(f"• 选股 alpha：{sign}{ba['avg']}%（n={ba['n']}）")
-
-    if ca["status"] == "ok":
-        sign = "+" if ca["avg"] >= 0 else ""
-        lines.append(f"• 组合超额收益 alpha：{sign}{ca['avg']}%（n={ca['n']}）")
-    elif ca["status"] == "low_coverage":
+        verb = "多赚" if ba["avg"] >= 0 else "还少赚了"
+        few = "（只有 {} 次，参考意义有限）".format(ba["n"]) if ba["n"] < 5 else f"（{ba['n']} 次）"
         lines.append(
-            f"• 组合 alpha：⬜ 暂不结论（benchmark 覆盖率仅 {int(g['bm_cov_dir'] * 100)}%，"
-            f"有效独立样本远小于名义条数）"
+            f"• **选股眼光**：我们让你「买」的票，7 天后平均比大盘**{verb} {abs(ba['avg']):.1f}%**{few}"
         )
+
+    # 3. 整体 vs 躺平买大盘（原"组合超额收益 alpha"——这是北极星指标的人话版）
+    if ca["status"] == "ok":
+        if ca["avg"] >= 0:
+            lines.append(f"• **跟我们做 vs 躺平买大盘指数**：目前**领先大盘 +{ca['avg']:.1f}%** ✅")
+        else:
+            lines.append(
+                f"• **跟我们做 vs 躺平买大盘指数**：目前**落后大盘 {abs(ca['avg']):.1f}%** ❌"
+                f"（样本少、且受早期追高拖累，不代表长期；这正是我们要改进的）"
+            )
+    elif ca["status"] == "low_coverage":
+        lines.append("• **跟我们做 vs 躺平买大盘指数**：能跟大盘对比的样本还不够，暂不下结论")
     else:
-        lines.append("• 组合 alpha：—（无 benchmark 样本）")
+        lines.append("• **跟我们做 vs 躺平买大盘指数**：暂无可对比的样本")
+
+    lines.append("_“比大盘多赚/少赚”=同期你的票涨跌 减去 大盘指数(美股SPY/港股恒指)涨跌_")
     return "\n".join(lines)
 
 
@@ -82,39 +94,46 @@ def _behavior_section(m: dict) -> str:
 
 
 def _shadow_section(m: dict) -> str:
-    """影子选股段：watchlist 为空/无记录时返回 ""（不占卡片空间）。"""
+    """影子选股段（试用名单，不花真钱只考眼光）：空则不占卡片。"""
     s = m.get("shadow_picks") or {}
     if not s.get("n"):
         return ""
     n_judged = s["correct"] + s["wrong"]
-    rate = f"{s['correct']}/{n_judged}" if n_judged else "—"
-    alpha = f"{s['avg_alpha']:+.1f}%" if s.get("avg_alpha") is not None else "—"
-    return (f"**🔭 影子选股（watchlist，无真实仓位，纯测量）** · {s['n']} 条 / {s['n_tickers']} 票\n"
-            f"方向判对 {rate} · 平均超额 alpha {alpha}\n"
-            f"_与持仓操作命中率分栏统计；影子建议不投入真金，只考选股能力_")
+    rate = f"说对 {s['correct']}/{n_judged} 次" if n_judged else "暂无结果"
+    if s.get("avg_alpha") is not None:
+        verb = "多赚" if s["avg_alpha"] >= 0 else "少赚"
+        extra = f"，平均比大盘{verb} {abs(s['avg_alpha']):.1f}%"
+    else:
+        extra = ""
+    return (f"**🔭 试用选股名单**（你没买，只用来考我们的选股眼光）· {s['n']} 条 / {s['n_tickers']} 票\n"
+            f"{rate}{extra}\n"
+            f"_这些票不花你的钱，纯粹用来攒「我们挑的票准不准」的实战记录_")
 
 
 def _hold_quality_section(m: dict) -> str:
-    """持有判断质量——与方向命中率分栏呈现，绝不混算（防灌水）。"""
+    """持有判断质量——人话版：劝你拿住的票，是幸亏没卖还是该卖没卖。"""
     h = m.get("hold_quality") or {}
     n = h.get("n", 0)
-    lines = [f"**🤝 持有判断质量（与命中率分栏，不混算）** · {n} 条持有/观望"]
+    lines = [f"**🤝 “拿住别动”的建议准不准** · 共 {n} 次"]
     if not n:
         lines.append("暂无可评估的持有记录")
         return "\n".join(lines)
-    thr = h.get("bad_alpha_threshold", -5.0)
     avg = h.get("avg_alpha")
-    avg_str = f"{avg:+.1f}%" if avg is not None else "—"
+    if avg is not None:
+        verb = "跑赢大盘" if avg >= 0 else "跑输大盘"
+        avg_str = f"，整体{verb} {abs(avg):.1f}%"
+    else:
+        avg_str = ""
     lines.append(
-        f"跑赢基准(持有对) **{h['right']}** · 大幅跑输≤{thr:g}%(该减没减) **{h['wrong']}** · "
-        f"区间内中性 **{h['neutral']}**；持有期平均 alpha **{avg_str}**"
+        f"幸亏拿住(跑赢大盘) **{h['right']}** 次 · 该卖没卖(明显跑输) **{h['wrong']}** 次 · "
+        f"不好不坏 **{h['neutral']}** 次{avg_str}"
     )
     if h.get("wrong_cases"):
-        worst = "、".join(f"{c['ticker']}({c['date'][5:]} α{c['alpha']:+.1f}%)"
+        worst = "、".join(f"{c['ticker']}({c['date'][5:]} 比大盘差{abs(c['alpha']):.0f}%)"
                           for c in h["wrong_cases"][:3])
         lines.append(f"最该减没减：{worst}")
-    lines.append("_口径：持有期个股 vs 基准的 7 日 alpha；跑赢=幸亏没卖，深度跑输=该减仓。"
-                 "与「操作建议命中率」分开统计，定投除外。_")
+    lines.append("_“拿住”也是一种判断：拿住后跑赢大盘=对，明显跑输=本该减仓。"
+                 "和买卖建议分开算，定投不计。_")
     return "\n".join(lines)
 
 
