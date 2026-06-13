@@ -29,7 +29,7 @@ def test_hold_quality_buckets(tmp_path):
                  "bad_alpha_threshold": HOLD_BAD_ALPHA,
                  "wrong_cases": [{"date": "2026-06-01", "ticker": "B", "alpha": -7.0}]}
     out = _hold_quality_section(m)
-    assert "跑赢基准(持有对) **1**" in out and "B(06-01 α-7.0%)" in out
+    assert "幸亏拿住(跑赢大盘) **1**" in out and "B(06-01 比大盘差7%)" in out
 
 
 def test_hold_quality_not_mixed_into_hit_rate(tmp_path):
@@ -58,7 +58,7 @@ def test_shadow_rows_isolated(tmp_path):
     s = m["shadow_picks"]
     assert s["n"] == 2 and s["correct"] == 1 and s["wrong"] == 1
     assert s["avg_alpha"] == 0.0   # (+5 + -5)/2
-    assert "影子选股" in _shadow_section(m)
+    assert "试用选股名单" in _shadow_section(m)
 
 
 def test_shadow_section_hidden_when_empty(tmp_path):
