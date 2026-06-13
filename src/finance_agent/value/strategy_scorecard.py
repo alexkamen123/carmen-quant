@@ -122,20 +122,30 @@ def format_strategy_edge_section(edge: dict) -> str:
     if not edge.get("total"):
         return "**🧪 策略 edge（回测）**：暂无回测数据"
     lines = [
-        f"**🧪 策略 edge（302 回测·2年真实历史）** · 高信赖 {edge['reliable_total']}/{edge['total']}",
-        "_口径：回测自有窗口 alpha，独立于实盘7日，勿与上方混算_",
-        "按策略族（n 加权超额收益）：",
+        f"**🧪 选股套路体检**（拿 2 年真实历史回测，{edge['total']} 套组合里 "
+        f"{edge['reliable_total']} 套证据够硬）",
+        "_这些是“什么信号出现时买，历史上能跑赢大盘”的套路库，用来给买入建议背书_",
+        "按套路看（平均比大盘多赚）：",
     ]
     for f in edge["families"]:
+        sign = "多赚" if f["w_avg_alpha"] >= 0 else "少赚"
         lines.append(
-            f"• {f['label']}：均α {f['w_avg_alpha']:+.2f}%"
-            f"（{f['n_combos']}组合/{f['reliable_combos']}高信赖，共{f['total_signals']}次）"
+            f"• {f['label']}：平均{sign} {abs(f['w_avg_alpha']):.1f}%"
+            f"（历史触发 {f['total_signals']} 次，其中 {f['reliable_combos']} 套证据够硬）"
         )
     if edge["top_reliable"]:
-        lines.append("Top 高信赖（t≥2 且胜率下界≥50%）：")
+        lines.append("最靠谱的几套（样本多、统计上站得住）：")
         for t in edge["top_reliable"][:5]:
             lines.append(
-                f"• {t['ticker']} {t['strategy']}：α {t['avg_alpha']:+.1f}%、"
-                f"跑赢{t['beat_rate']}%、{t['n_signals']}次、t={t['t_stat']}"
+                f"• {t['ticker']} {_humanize_strategy(t['strategy'])}：历史 {t['n_signals']} 次、"
+                f"{t['beat_rate']}% 跑赢大盘、平均多赚 {abs(t['avg_alpha']):.1f}%"
             )
     return "\n".join(lines)
+
+
+def _humanize_strategy(code: str) -> str:
+    """把 rsi_14_35 / mom_60_10 这类代码翻成人话（用户反馈看不懂代码）。
+    顺序敏感：ma_align 必须排在 ma 前。"""
+    _NAME = [("rsi", "超跌反弹"), ("mom", "强势突破"), ("ma_align", "均线多头排列"),
+             ("ma", "均线金叉"), ("boll", "触及低位"), ("vol", "放量上涨")]
+    return next((v for k, v in _NAME if code.startswith(k)), code)
