@@ -55,19 +55,24 @@
 - **飞书**：`FEISHU_WEBHOOK_URL` + `FEISHU_WEBHOOK_SECRET`（HMAC签名），失败自动邮件兜底
 - **DeepSeek V3**：`DEEPSEEK_API_KEY`，用于 Bull/Bear 辩论 + 新闻评分
 - **Claude**：`ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`，用于基本面分析 + 组合决策 + 周报；Claude 子进程失败自动降级 DeepSeek
-- **GitHub Actions**：7 个 workflow，SQLite 通过 artifact 跨 run 持久化（保留60天）
+- **调度**：**本地 launchd**（`~/Library/LaunchAgents/com.zhouyihao.carmen-*.plist`，备份在 `~/config-backups/launchd-*/`）。⚠️ GitHub Actions 定时任务已于 2026-06-09 全部禁用（仅留"Actions 失败飞书通知"事件触发），**不要再用 GitHub cron**——历史上本地+GitHub 双跑导致日报一天推 3 遍。
 
-## GitHub Actions 时刻表（北京时间）
+## 调度时刻表（北京时间 · 本地 launchd 实况，2026-06-13 校准）
 
-| Workflow | 触发时间 | 命令 |
-|---|---|---|
-| `daily_analysis` | 工作日 09:00 | `run` |
-| `daily_followup` | 周二–五 09:30 | `daily-followup` |
-| `weekly_report` | 周一 09:30 | `weekly-report` |
-| `price_alert` | 工作日 09:00–16:00 & 21:00–05:00 每5分钟 | `price-scan` |
-| `news_alert` | 工作日每小时 | `news-scan` |
-| `earnings_check` | 工作日 08:30 | `earnings-check` |
-| `monthly_review` | 每月1日 10:00 | `monthly-review` |
+| launchd 任务 | 命令 | 触发时间 | 频率 |
+|---|---|---|---|
+| `carmen-morning` | `morning-note` | 08:55 | 周一–五 |
+| `carmen-earnings` | `earnings-check` | 08:30 | 周一–五 |
+| `carmen-health` | `health-check` | 08:45 | 每天（异常才推） |
+| `carmen-followup` | `daily-followup` | 09:30 | 周二–五 |
+| `carmen-news` | `news-scan` | 09:30 / 13:30 / 22:00 | 周一–五，每天 3 次 |
+| `carmen-pricescan` | `price-scan` | 每 15 分钟（StartInterval 900s） | 全天，休市自动跳过 |
+| `carmen-evening` | `run`（晚间日报） | 21:30 | 周一–五 |
+| `carmen-weekly` | `weekly-report` | 09:30 | 每周一 |
+| `carmen-value` | `value-report`（价值体检卡） | 10:00 | 每周六 |
+| `carmen-monthly` | `monthly-review` | 10:00 | 每月 1 日 |
+
+> launchd `Weekday`：1=周一…5=周五，6=周六，0/7=周日。改调度务必先 `cp` 备份 plist → `plutil -lint` 校验 → `launchctl unload && load`。心跳自检（carmen-health）每天检查各任务日志新鲜度，静默死亡会自动告警。
 
 ## 约定与关键逻辑
 
@@ -100,6 +105,6 @@ finance-agent feedback-stats
 
 - **AkShare 东方财富**：TLS 指纹拦截，`retries=1` 快速失败后自动降级 yfinance，非代理问题；`eastmoney.com` 需加入 `NO_PROXY`（代码自动注入）
 - **ETF 基本面**：`sector` 含 `ETF` 或 `is_dca=True` 的标的跳过 `fetch_earnings`（Yahoo 无此字段）
-- **`send_hour` 无效**：`settings.yaml` 里该字段不控制推送时间，调度由 GitHub Actions cron 决定
+- **`send_hour` 无效**：`settings.yaml` 里该字段不控制推送时间，调度由本地 launchd plist 决定（见上方时刻表）
 - **DB 路径**：默认 `data/agent.db`，可用 `AGENT_DB_PATH` 环境变量覆盖；CI 通过 artifact 跨 run 恢复
 - **DeepSeek 串行**：Bull/Bear 辩手串行调用（非并发），避免 DeepSeek API 限速
