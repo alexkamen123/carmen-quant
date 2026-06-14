@@ -137,49 +137,62 @@ def _hold_quality_section(m: dict) -> str:
     return "\n".join(lines)
 
 
+# 暴跌分桶的人话注解（bucket 常量名是 metrics 的 key，此处只管显示）
+_DIP_GLOSS = {
+    DIP_BUCKET_OPPORTUNITY: "跌了但逻辑没破，可能是机会",
+    DIP_BUCKET_BROKEN: "公司基本面真出问题了",
+    DIP_BUCKET_WATCH: "看不清/数据不全，先观望",
+}
+
+
 def _dip_section(m: dict) -> str:
-    """风险预警段：规则分级（thesis 完好性 × 下跌归因），硬性预算 ≤4 行。
-    注：opportunity 字段已死（DIP_SYSTEM 不再输出），呈现一律用 bucket 替代。"""
+    """风险预警段（暴跌时我们的判断准不准）——人话版。"""
     dip = m["dip"]
     if dip["n"] == 0:
-        return "**🛡️ 风险预警**：暂无已回填的暴跌预警记录"
+        return "**🛡️ 暴跌预警准不准**：暂无已满 7 天的暴跌预警记录"
     if dip["n"] < 5:
         cases = []
         for c in dip["cases"][:5]:
             r7 = c.get("return_7d")
-            r7s = (("+" if r7 >= 0 else "") + str(r7) + "%") if r7 is not None else "待回填"
-            cases.append(f"{c['ticker']}（{c.get('bucket', '—')}，7日 {r7s}）")
-        return (f"**🛡️ 风险预警** · 仅 {dip['n']} 条（样本不足，作个案不作命中率）\n"
+            r7s = (("+" if r7 >= 0 else "") + str(r7) + "%") if r7 is not None else "还没满7天"
+            cases.append(f"{c['ticker']}（{c.get('bucket', '—')}，7日后 {r7s}）")
+        return (f"**🛡️ 暴跌预警准不准** · 才 {dip['n']} 条（太少，只当个案看）\n"
                 + "；".join(cases))
-    lines = [f"**🛡️ 风险预警** · {dip['n']} 条（规则分级：thesis 完好性 × 下跌归因）"]
-    notes = {DIP_BUCKET_BROKEN: "（续跌=预警对）", DIP_BUCKET_WATCH: "（矛盾/史前记录，不计结论）"}
+    lines = [f"**🛡️ 暴跌预警准不准** · 共 {dip['n']} 次（按“跌的原因”分三类）"]
+    notes = {DIP_BUCKET_BROKEN: "（继续跌=我们预警对了）",
+             DIP_BUCKET_WATCH: "（证据矛盾/早期记录，不算分）"}
     for bucket in (DIP_BUCKET_OPPORTUNITY, DIP_BUCKET_BROKEN, DIP_BUCKET_WATCH):
         st = dip["buckets"].get(bucket)
         if not st:
             continue   # 空桶不显示
+        gloss = f"（{_DIP_GLOSS.get(bucket, '')}）"
         note = notes.get(bucket, "")
         if st["filled"]:
             sign = "+" if st["avg_ret7"] >= 0 else ""
-            lines.append(f"　{bucket} {st['n']} 条：事后7日已回填 {st['filled']}，"
-                         f"{st['up']} 涨 / 平均 {sign}{st['avg_ret7']}%{note}")
+            lines.append(f"　{bucket}{gloss} {st['n']} 次：已满7天 {st['filled']} 次，"
+                         f"{st['up']} 次后续上涨 / 平均 {sign}{st['avg_ret7']}%{note}")
         else:
-            lines.append(f"　{bucket} {st['n']} 条：事后7日均待回填{note}")
+            lines.append(f"　{bucket}{gloss} {st['n']} 次：暂都没满 7 天{note}")
     return "\n".join(lines)
 
 
 def _meta_section(m: dict) -> str:
+    """诚实附录——人话版：把"结论可不可信、数据怎么来的、有什么没做到"说清楚。"""
     g, comp = m["gate"], m["composition"]
     th = g["thresholds"]
+    if g["gate_passed"]:
+        cred = "样本已够，结论可信度较高"
+    else:
+        cred = (f"⚠️ 样本还不够，现在的数字只能参考、不能下定论"
+                f"（要攒够 {th['min_n']} 条明确买卖建议、覆盖 {th['min_tickers']} 只票才算数）")
     return "\n".join([
-        "**📎 元信息 / 已知局限（诚实附录）**",
-        f"• 证据等级：{'未过闸门 → 数据不足' if not g['gate_passed'] else '已过闸门'}"
-        f"（下结论需 n≥{th['min_n']} 且 ≥{th['min_tickers']}票 且 benchmark≥{int(th['min_bm_cov'] * 100)}%，阈值写死防粉饰）",
-        f"• 建议构成：已回填 {comp['filled']} 条中仅 {comp['directional']} 条可裁决"
-        f"（占 {int(comp['actionable_ratio'] * 100)}%），其余 {comp['neutral_or_passive']} 条为持有/定投，**不计入命中率**",
-        "• 方法学口径：alpha 两腿已配对窗口对齐（个股与基准同起点同终点，历史已全量重算，"
-        "2026-06-10 迁移）；仍知缺陷：① 同票多日推荐样本重叠、自相关 "
-        "② 30/90 日窗口（=21/63 个交易日）回填中、样本未成熟，verdict 仍以 7 日为准",
-        f"• 数据截至 {m['data_through'] or '—'}；纯数据计算，无 AI 叙事。",
+        "**📎 把话说在前头（诚实附录）**",
+        f"• 结论可信度：{cred}",
+        f"• 数据构成：{comp['filled']} 条已满 7 天的记录里，只有 {comp['directional']} 条是明确买/卖"
+        f"（能打分），其余 {comp['neutral_or_passive']} 条是“持有/定投”——不算进命中率",
+        "• 怎么算的：跟大盘比时，你的票和大盘用**同一个起止日期**算涨跌，避免时间错位造假数。"
+        "已知还没做到：① 同一只票连续几天都推会重复计入 ② 30/90 天的长期结果还没到、目前只看 7 天",
+        f"• 数据截至 {m['data_through'] or '—'}；以上全是真实记录算出来的，没有 AI 编故事。",
     ])
 
 

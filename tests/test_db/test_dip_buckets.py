@@ -67,7 +67,7 @@ def test_dip_section_render():
         {"ticker": "BBB", "bucket": DIP_BUCKET_BROKEN, "return_7d": None},
     ]}}
     out = _dip_section(m_small)
-    assert DIP_BUCKET_OPPORTUNITY in out and "待回填" in out
+    assert DIP_BUCKET_OPPORTUNITY in out and "还没满7天" in out
     assert "—机会" not in out and "机会，" not in out
 
     # n≥5：每桶一行、空桶不显示、旧聚合措辞消失
@@ -76,13 +76,13 @@ def test_dip_section_render():
         DIP_BUCKET_BROKEN: {"n": 2, "filled": 2, "up": 0, "avg_ret7": -8.0},
     }}}
     out = _dip_section(m_big)
-    assert f"{DIP_BUCKET_OPPORTUNITY} 4 条" in out
-    assert f"{DIP_BUCKET_BROKEN} 2 条" in out and "续跌=预警对" in out
+    assert f"{DIP_BUCKET_OPPORTUNITY}（跌了但逻辑没破，可能是机会） 4 次" in out
+    assert f"{DIP_BUCKET_BROKEN}（公司基本面真出问题了） 2 次" in out and "继续跌=我们预警对了" in out
     assert DIP_BUCKET_WATCH not in out                  # 空桶无行
     assert "抄底机会事后上涨" not in out                 # 旧措辞替换非叠加
 
-    # 桶 filled==0 → "均待回填"
+    # 桶 filled==0 → "暂都没满 7 天"
     m_unfilled = {"dip": {"n": 5, "cases": [], "buckets": {
         DIP_BUCKET_OPPORTUNITY: {"n": 5, "filled": 0, "up": 0, "avg_ret7": None},
     }}}
-    assert "均待回填" in _dip_section(m_unfilled)
+    assert "暂都没满 7 天" in _dip_section(m_unfilled)
