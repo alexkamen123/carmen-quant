@@ -108,3 +108,8 @@ finance-agent feedback-stats
 - **`send_hour` 无效**：`settings.yaml` 里该字段不控制推送时间，调度由本地 launchd plist 决定（见上方时刻表）
 - **DB 路径**：默认 `data/agent.db`，可用 `AGENT_DB_PATH` 环境变量覆盖；CI 通过 artifact 跨 run 恢复
 - **DeepSeek 串行**：Bull/Bear 辩手串行调用（非并发），避免 DeepSeek API 限速
+
+## 主线与出片（起手即收口）
+- 本项目主线只认 `进展.md`（4段：现在/接下来/为什么/素材台账），新会话开局先读它，禁止再建散文件。
+- 出片档 = ②只发能力·数据打码：系统/方法/打码截图可发 GitHub，**真实持仓 / 金额 / agent.db / portfolio.yaml 绝不外泄**。
+- 凡产出可对外产物（量化卡 / 架构图 / 打码报告），cp 一份进 `ship/github/` 并在 进展.md 素材台账记一行。
