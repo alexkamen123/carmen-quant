@@ -244,33 +244,48 @@ def _glossary_section() -> str:
     ])
 
 
+def _panel(title: str, content: str, expanded: bool = False) -> dict:
+    """schema 2.0 折叠面板：主屏只显标题，点开看 content（C 端瘦身，用户选型）。"""
+    return {
+        "tag": "collapsible_panel",
+        "expanded": expanded,
+        "header": {
+            "title": {"tag": "markdown", "content": title},
+            "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined",
+                     "size": "16px 16px"},
+            "icon_position": "right",
+            "icon_expanded_angle": 180,
+        },
+        "elements": [{"tag": "markdown", "content": content}],
+    }
+
+
 def build_value_card(m: dict) -> dict:
+    """schema 2.0：主屏只留「结论 + 能力总评」，详情全部折叠（C 端阅读体验）。"""
     v = m["verdict"]
-    elements = [
-        {"tag": "div", "text": {"tag": "lark_md", "content": f"{v['text']}\n\n`{v['badge']}`"}},
+    # 选股套路体检 + 名词小课堂合并进一个折叠面板
+    strat_block = _strategy_edge_text() + "\n\n" + _glossary_section()
+    body_elements = [
+        {"tag": "markdown", "content": f"{v['text']}\n\n`{v['badge']}`"},
         {"tag": "hr"},
-        {"tag": "div", "text": {"tag": "lark_md", "content": _adv_section(m)}},
+        {"tag": "markdown", "content": _adv_section(m)},   # 能力总评——主屏常驻
         {"tag": "hr"},
-        {"tag": "div", "text": {"tag": "lark_md", "content": _strategy_edge_text()}},
-        {"tag": "div", "text": {"tag": "lark_md", "content": _glossary_section()}},
-        {"tag": "hr"},
-        *([{"tag": "div", "text": {"tag": "lark_md", "content": _shadow_section(m)}},
-           {"tag": "hr"}] if _shadow_section(m) else []),
-        {"tag": "div", "text": {"tag": "lark_md", "content": _behavior_section(m)}},
-        {"tag": "hr"},
-        {"tag": "div", "text": {"tag": "lark_md", "content": _dip_section(m)}},
-        {"tag": "hr"},
-        {"tag": "div", "text": {"tag": "lark_md", "content": _meta_section(m)}},
-        {"tag": "note", "elements": [{"tag": "plain_text",
-            "content": "仅统计已过7日窗口、已回填的记录；过往表现不代表未来收益；样本越小结论越不可靠；不构成投资建议"}]},
+        _panel("🧪 选股套路体检 + 名词小课堂（点开）", strat_block),
+        *([_panel("🔭 试用选股名单（点开）", _shadow_section(m))] if _shadow_section(m) else []),
+        _panel("💰 你的逐笔操作（点开）", _behavior_section(m)),
+        _panel("🛡️ 暴跌预警准不准（点开）", _dip_section(m)),
+        _panel("📎 把话说在前头 · 诚实附录（点开）", _meta_section(m)),
+        {"tag": "markdown", "content":
+            "_仅统计已过 7 日、已回填的记录；过往表现不代表未来收益；样本越小越不可靠；不构成投资建议_"},
     ]
     return {
+        "schema": "2.0",
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": f"🏆 卡门智投 · 价值体检 {m['data_through'] or ''}"},
             "template": _TEMPLATE.get(v["color"], "grey"),
         },
-        "elements": elements,
+        "body": {"elements": body_elements},
     }
 
 
