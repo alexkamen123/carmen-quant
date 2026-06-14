@@ -17,45 +17,65 @@ _TEMPLATE = {"grey": "grey", "orange": "orange", "green": "green"}
 
 
 def _adv_section(m: dict) -> str:
-    """建议价值段——全大白话，不用 alpha/命中率/CI 等黑话（用户反馈看不懂）。
-    口径不变，只换说法：alpha→比大盘多赚/少赚；命中率→说对几次。"""
-    hr, ba, ca = m["hit_rate"], m["buy_alpha"], m["combined_alpha"]
-    lines = ["**🎯 我们的建议准不准**"]
+    """能力总评——三问：让你买的赚多少 / 让你拿住的赚还是亏 / 让你卖的没做会怎样。
+    个股是真本事，定投单列只放收益供横向比较（用户设计：评整体能力 + 调风投/定投比例）。
+    全大白话，不用 alpha/命中率/CI 黑话；口径不变只换说法。"""
+    hr, ba, hq = m["hit_rate"], m["buy_alpha"], m.get("hold_quality") or {}
+    avp = m.get("active_vs_passive") or {}
+    lines = ["**📊 卡门智投能力总评**　_这些是「我们的建议」战绩，不是你的操作次数_",
+             "**【个股·风险类】这才是真本事**"]
 
-    # 1. 买卖建议说对几次（原"方向命中率"）
-    if hr["n_judged"]:
-        warn = (f"　⚠️ 但只有 {hr['n_tickers']} 只票、样本太少，这个数字还会大幅波动，先别当真"
-                if hr["n_judged"] < 30 else "")
-        lines.append(
-            f"• **买卖建议**：{hr['n_judged']} 次明确的买/卖建议里，"
-            f"事后看**说对 {hr['correct']} 次、说错 {hr['wrong']} 次**（约 {hr['win_rate']:.0f}%）{warn}"
-        )
-    else:
-        lines.append("• **买卖建议**：暂时没有可以判对错的买/卖建议")
-
-    # 2. 选股能力（原"选股 alpha"，只看买入类）
+    # 1️⃣ 让你买的——选股眼光
     if ba["status"] == "no_sample":
-        lines.append("• **选股眼光**：还没有能打分的买入建议（买入后要满 7 天才知道结果）")
+        lines.append("1️⃣ **让你买的**：还没有满 7 天的买入建议可打分")
     else:
-        verb = "多赚" if ba["avg"] >= 0 else "还少赚了"
-        few = "（只有 {} 次，参考意义有限）".format(ba["n"]) if ba["n"] < 5 else f"（{ba['n']} 次）"
-        lines.append(
-            f"• **选股眼光**：我们让你「买」的票，7 天后平均比大盘**{verb} {abs(ba['avg']):.1f}%**{few}"
-        )
+        verb = "多赚" if ba["avg"] >= 0 else "少赚"
+        few = f"（仅 {ba['n']} 次，太少先参考）" if ba["n"] < 5 else f"（{ba['n']} 次）"
+        lines.append(f"1️⃣ **让你买的**：买入后 7 天平均比大盘**{verb} {abs(ba['avg']):.1f}%**{few}")
 
-    # 3. 整体 vs 躺平买大盘（原"组合超额收益 alpha"——这是北极星指标的人话版）
+    # 2️⃣ 让你拿住的——持有判断（原单列的 hold_quality 并进来）
+    if hq.get("n"):
+        avg = hq.get("avg_alpha")
+        tail = (f"，整体{'跑赢' if avg >= 0 else '跑输'}大盘 {abs(avg):.1f}%") if avg is not None else ""
+        lines.append(
+            f"2️⃣ **让你拿住的**：{hq['n']} 次「持有别动」里，"
+            f"幸亏拿住(跑赢) **{hq['right']}** 次、该卖没卖(明显跑输) **{hq['wrong']}** 次{tail}"
+        )
+    else:
+        lines.append("2️⃣ **让你拿住的**：暂无可评估的持有建议")
+
+    # 3️⃣ 让你卖的——反事实：没听我们卖，7 天后会怎样（仅卖/减，不含买入）
+    sr, sw = hr.get("sell_right", 0), hr.get("sell_wrong", 0)
+    if sr + sw:
+        warn = "　⚠️ 样本还少，先别当真" if (sr + sw) < 30 else ""
+        lines.append(
+            f"3️⃣ **让你卖/减的**：{sr + sw} 次减仓建议里，"
+            f"**卖对(后续真跌) {sr} 次、卖飞(没卖能多赚) {sw} 次**{warn}\n"
+            f"　_口径=若当时不卖、7 天后涨=卖飞、跌=卖对；早期系统性卖飞、近期转好_"
+        )
+    else:
+        lines.append("3️⃣ **让你卖/减的**：暂无可判对错的卖出建议")
+
+    # 综合：个股整体 vs 躺平
+    ca = m["combined_alpha"]
     if ca["status"] == "ok":
         if ca["avg"] >= 0:
-            lines.append(f"• **跟我们做 vs 躺平买大盘指数**：目前**领先大盘 +{ca['avg']:.1f}%** ✅")
+            lines.append(f"　**▶ 个股操作整体 vs 躺平买大盘：领先 +{ca['avg']:.1f}%** ✅")
         else:
-            lines.append(
-                f"• **跟我们做 vs 躺平买大盘指数**：目前**落后大盘 {abs(ca['avg']):.1f}%** ❌"
-                f"（样本少、且受早期追高拖累，不代表长期；这正是我们要改进的）"
-            )
-    elif ca["status"] == "low_coverage":
-        lines.append("• **跟我们做 vs 躺平买大盘指数**：能跟大盘对比的样本还不够，暂不下结论")
-    else:
-        lines.append("• **跟我们做 vs 躺平买大盘指数**：暂无可对比的样本")
+            lines.append(f"　**▶ 个股操作整体 vs 躺平买大盘：落后 {abs(ca['avg']):.1f}%** ❌"
+                         f"（样本少、受早期追高拖累，不代表长期）")
+
+    # 【ETF·定投类】不评判断，只放收益供横向比较（调风投/定投比例用）
+    if avp.get("dca_avg") is not None or avp.get("active_avg") is not None:
+        lines.append("**【ETF·定投类】不评对错，只看收益（定投本就不择时）**")
+        dca_s = f"{avp['dca_avg']:+.1f}%（{avp['dca_n']} 次）" if avp.get("dca_avg") is not None else "—"
+        act_s = (f"{avp['active_avg']:+.1f}%（{avp['active_n']} 次）"
+                 if avp.get("active_avg") is not None else "—")
+        lines.append(f"• 定投标的 7 日平均收益：**{dca_s}**")
+        lines.append(f"• 你主动买入 7 日平均收益：**{act_s}**")
+        if avp.get("dca_avg") is not None and avp.get("active_avg") is not None:
+            winner = "你的主动选股更赚" if avp["active_avg"] > avp["dca_avg"] else "定投/躺平更稳赚"
+            lines.append(f"　_横向比：目前 **{winner}** → 可据此调整风投/定投的钱分多少_")
 
     lines.append("_“比大盘多赚/少赚”=同期你的票涨跌 减去 大盘指数(美股SPY/港股恒指)涨跌_")
     return "\n".join(lines)
@@ -89,6 +109,11 @@ def _behavior_section(m: dict) -> str:
         else:
             icon = "➖"
         lines.append(f"{icon} {t['date'][5:]} **{t['ticker']}** {t['action']} → 7日 {sign}{t['ret']}% · {t['verdict']}")
+    # 观察期提示：未满 7 天的操作还没结果（含首笔系统荐股 AVGO），给个交代
+    pend = beh.get("pending") or []
+    if pend:
+        names = "、".join(f"{p['ticker']}({p['date'][5:]})" for p in pend[:4])
+        lines.append(f"⏳ 还在 7 天观察期、结果待揭晓：{names}")
     lines.append(f"_{beh['symbol_note']}_")
     return "\n".join(lines)
 
@@ -231,8 +256,6 @@ def build_value_card(m: dict) -> dict:
         {"tag": "hr"},
         *([{"tag": "div", "text": {"tag": "lark_md", "content": _shadow_section(m)}},
            {"tag": "hr"}] if _shadow_section(m) else []),
-        {"tag": "div", "text": {"tag": "lark_md", "content": _hold_quality_section(m)}},
-        {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": _behavior_section(m)}},
         {"tag": "hr"},
         {"tag": "div", "text": {"tag": "lark_md", "content": _dip_section(m)}},

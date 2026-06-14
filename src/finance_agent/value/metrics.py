@@ -153,8 +153,9 @@ def compute_value_metrics(db_path=None) -> dict:
         "actionable_ratio": round(n_dir / filled, 3) if filled else 0.0,
     }
 
-    # ── 方向命中率（窄口径 + Wilson CI）──
+    # ── 方向命中率（窄口径 + Wilson CI）；买/卖分开计数供"能力总评"三问 ──
     correct = wrong = neutral = 0
+    sell_right = sell_wrong = 0   # 卖/减：续跌=对(躲跌)、续涨=错(卖飞)
     judged_tickers: set = set()
     for r in dir_rows:
         ret = r["return_7d"]
@@ -171,6 +172,9 @@ def compute_value_metrics(db_path=None) -> dict:
             correct += 1
         else:
             wrong += 1
+        if bear:
+            sell_right += 1 if ret < 0 else 0
+            sell_wrong += 1 if ret >= 0 else 0
     n_judged = correct + wrong
     win_rate = (correct / n_judged) if n_judged else None
     ci = wilson_ci(correct, n_judged) if n_judged else None
@@ -181,6 +185,7 @@ def compute_value_metrics(db_path=None) -> dict:
         "ci_low": round(ci[0] * 100, 1) if ci else None,
         "ci_high": round(ci[1] * 100, 1) if ci else None,
         "buckets_note": "仅减仓择时" if n_buy == 0 and n_dir > 0 else None,
+        "sell_right": sell_right, "sell_wrong": sell_wrong,  # 卖/减专项（能力总评第3问）
     }
 
     # ── BUY类（选股/加仓）alpha —— 当前多为 N=0，显式占位 ──
@@ -287,11 +292,36 @@ def compute_value_metrics(db_path=None) -> dict:
             verdict_t = "—"
         behavior_trades.append({"date": r["date"], "ticker": r["ticker"],
                                 "action": act, "ret": ret, "verdict": verdict_t})
+    # 还在 7 天观察期的操作（含首笔系统荐股 AVGO）——给用户交代"为什么没显示"
+    with _conn(p) as con:
+        pending = [dict(r) for r in con.execute(
+            "SELECT date, ticker, action FROM user_actions "
+            "WHERE action IN ('BUY','SELL','TRIM') AND actual_return IS NULL "
+            "ORDER BY date DESC"
+        ).fetchall()]
     behavior = {
         "n": len(behavior_trades),
         "trades": behavior_trades,
+        "pending": pending,   # 未满 7 天、结果待揭晓
         "feedback": get_feedback_accuracy(db_path=p),  # bought/sold/skipped 聚合（仅作参考）
         "symbol_note": "卖出：续跌=对(躲跌)、续涨=踏空(卖飞，绝对收益虽正但属卖错时点)",
+    }
+
+    # ── 主动 vs 被动（用户调风投/定投比例的依据，不评判断只比收益）──
+    # 定投：机械纪律不算"判断"，只取平均 7 日收益作横向标尺
+    with _conn(p) as con:
+        dca = [r["return_7d"] for r in con.execute(
+            "SELECT return_7d FROM recommendations "
+            "WHERE recommendation = '按计划定投' AND return_7d IS NOT NULL"
+        ).fetchall()]
+    # 主动：你真实买入操作（user_actions BUY）的 7 日实际涨跌，与定投同口径（都是"投进去后涨多少"）
+    active_buys = [r["actual_return"] for r in act_rows
+                   if r["action"] == "BUY" and r["actual_return"] is not None]
+    active_vs_passive = {
+        "dca_n": len(dca),
+        "dca_avg": round(sum(dca) / len(dca), 2) + 0.0 if dca else None,
+        "active_n": len(active_buys),
+        "active_avg": round(sum(active_buys) / len(active_buys), 2) + 0.0 if active_buys else None,
     }
 
     # ── 风险预警：规则分桶 + 每桶事后 7 日表现（个案保留向后兼容）──
@@ -323,11 +353,12 @@ def compute_value_metrics(db_path=None) -> dict:
         dir_kind = "减仓" if n_buy == 0 and n_dir > 0 else "买卖混合"
         verdict = {
             "state": 0, "color": "grey",
-            "text": (f"⏳ 卡门智投仍在积累战绩：当前仅 {n_dir} 条可裁决的操作类建议、"
-                     f"覆盖 {n_tk} 只票、约 {span} 天，其中选股买入类已回填 {n_buy} 条"
+            "text": (f"⏳ 卡门智投仍在积累战绩：到目前**我们发出的明确买/卖建议**共 {n_dir} 条"
+                     f"（不是你的操作次数，是系统每天给每只票打分里方向明确的那些）、"
+                     f"覆盖 {n_tk} 只票、约 {span} 天，其中买入类已满 7 天的 {n_buy} 条"
                      f"（方向以{dir_kind}为主），**样本不足以证明能否帮你跑赢躺平**。"
-                     f"下方是已有真实记录的诚实记分牌；结论待样本累计到 "
-                     f"N≥{GATE_MIN_N} 且覆盖≥{GATE_MIN_TICKERS} 票、benchmark≥{int(GATE_MIN_BM_COV*100)}% 再下。"),
+                     f"下方是已有真实记录的诚实记分牌；要等累计到 "
+                     f"{GATE_MIN_N} 条买卖建议、覆盖 {GATE_MIN_TICKERS} 只票再下定论。"),
             "badge": badge,
         }
     elif avg_alpha is None:
@@ -370,6 +401,7 @@ def compute_value_metrics(db_path=None) -> dict:
         "gate": gate, "composition": composition, "hit_rate": hit_rate,
         "buy_alpha": buy_alpha, "combined_alpha": combined_alpha,
         "hold_quality": hold_quality, "shadow_picks": shadow_picks,
+        "active_vs_passive": active_vs_passive,
         "behavior": behavior, "dip": dip, "verdict": verdict,
         "data_through": data_through,
     }
