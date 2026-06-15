@@ -1356,6 +1356,24 @@ def get_today_dip_conclusion(ticker: str, db_path: str | Path | None = None) -> 
             f"「{row['action']}」{inv}——若本次裁决方向不同，必须说明改判原因")
 
 
+def get_recent_dip_plan(ticker: str, within_days: int = 14,
+                        db_path: str | Path | None = None) -> dict | None:
+    """取该票最近 within_days 天内、带加仓计划或认错线的 dip 记录（B1 行动点触达卡用）。
+    过期计划不再触发——14 天前的"回踩100加仓"今天价格到了也未必还作数。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        row = con.execute(
+            "SELECT date(alerted_at) AS d, action, add_trigger, invalidation "
+            "FROM dip_alerts WHERE ticker = ? "
+            "AND julianday('now') - julianday(alerted_at) <= ? "
+            "AND (IFNULL(add_trigger,'') != '' OR IFNULL(invalidation,'') != '') "
+            "ORDER BY id DESC LIMIT 1",
+            (ticker.upper(), within_days),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 # ── 用户行为时机提示（order9）────────────────────────────────────────────────
 
 _BEHAVIOR_HINT_DEFAULTS = {"enabled": True, "min_n_buy": 5, "sell_regret_pct": 5.0}
