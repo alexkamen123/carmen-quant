@@ -1429,6 +1429,79 @@ async def _send_drop_deepening_alert(ticker: str, market: str, drop_pct: float,
     print(f"[Alert] 已推送跌幅加深增量卡：{ticker} {drop_pct:.1f}%")
 
 
+def _check_action_trigger(ticker: str, market: str, today_str: str,
+                          alerted: set) -> dict | None:
+    """B1：检查现价是否触达近期 dip 计划里的加仓点 / 认错线。
+    只对能解析出价格的计划生效（认错线常是定性描述，无价就跳过）。
+    同票同类型同日只推一次（dedup_key）。返回触达信息或 None。"""
+    from finance_agent.db.tracker import get_recent_dip_plan
+    plan = get_recent_dip_plan(ticker)
+    if not plan:
+        return None
+    add_p = _extract_price(plan.get("add_trigger", ""))
+    inv_p = _extract_price(plan.get("invalidation", ""))
+    if add_p is None and inv_p is None:
+        return None   # 计划无可比价格（纯定性），不触发
+
+    price_now = _recheck_price(ticker, market)
+    if price_now is None:
+        return None
+
+    # 认错线优先（风险更高）：跌破认错价 → 提示离场决策点到了
+    if inv_p is not None and price_now <= inv_p:
+        key = f"action_trig:{ticker}:inv:{today_str}"
+        if key not in alerted:
+            return {"ticker": ticker, "market": market, "kind": "认错线",
+                    "price_now": price_now, "level": inv_p,
+                    "plan_text": plan.get("invalidation", ""),
+                    "plan_date": plan.get("d", ""), "dedup_key": key}
+    # 加仓点：跌到计划的加仓价 → 提示你定的买点到了
+    if add_p is not None and price_now <= add_p:
+        key = f"action_trig:{ticker}:add:{today_str}"
+        if key not in alerted:
+            return {"ticker": ticker, "market": market, "kind": "加仓点",
+                    "price_now": price_now, "level": add_p,
+                    "plan_text": plan.get("add_trigger", ""),
+                    "plan_date": plan.get("d", ""), "dedup_key": key}
+    return None
+
+
+async def _send_action_trigger_alert(ticker: str, market: str, kind: str,
+                                     price_now: float, level: float,
+                                     plan_text: str, plan_date: str,
+                                     dedup_key: str = "", **_extra) -> None:
+    """行动点触达卡：你之前定的条件到了。只报"条件到了"，不替你下单。"""
+    from finance_agent.weekly.daily_followup import TICKER_NAMES
+    market_label = {"us": "美股", "hk": "港股", "cn": "A股"}.get(market, market)
+    name = TICKER_NAMES.get(ticker, "")
+    display = f"**{ticker}** {name}" if name else f"**{ticker}**"
+    ccy = _ccy(market)
+
+    if kind == "认错线":
+        head, tmpl, hint = ("🚨 认错线触发", "red",
+                            "已跌破你之前定的认错离场线——该重新评估是否还拿得住")
+    else:
+        head, tmpl, hint = ("🎯 加仓点到了", "green",
+                            "已跌到你之前定的加仓点——可按计划分批，注意红线与仓位上限")
+
+    body = (f"{display}　现价 **{ccy}{_fmt_px(price_now)}**　"
+            f"已触达{kind} {ccy}{_fmt_px(level)}\n"
+            f"📋 {plan_date} 的计划：{plan_text}")
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"tag": "plain_text", "content": f"{head} · {ticker}（{market_label}）"},
+                   "template": tmpl},
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": body}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"💡 {hint}"}},
+            {"tag": "note", "elements": [{"tag": "plain_text",
+                "content": "你设定的条件已触达 · 提醒非指令，是否操作自行决定"}]},
+        ],
+    }
+    await send_feishu_card(card, fallback_text=f"{ticker} 触达{kind} {level}，现价 {price_now}")
+    print(f"[Alert] 已推送行动点触达：{ticker} {kind}@{level} 现价{price_now}")
+
+
 async def _send_price_surge_alert(ticker: str, market: str, rise_1h: float,
                                    rise_from_open: float, price_now: float,
                                    cost_basis: float | None = None,
@@ -1933,6 +2006,19 @@ async def run_price_scan(threshold_pct: float = 3.0) -> int:
         if not _is_market_open(market):
             print(f"[PriceScan] {ticker} 跳过（{market} 市场已收盘）")
             continue
+
+        # B1 行动点触达卡：持仓票若有近 14 天 dip 计划（加仓点/认错线），现价触达即单独推
+        # （把"给建议"变成"你定的条件到了"；仅持仓票，gated 在有计划时才取价，省网络）
+        if item.get("shares"):
+            trig = await loop.run_in_executor(
+                None, _check_action_trigger, ticker, market, today_str, alerted)
+            if trig:
+                await _send_action_trigger_alert(**trig)
+                alerted.add(trig["dedup_key"])
+                _save_alerted(trig["dedup_key"], today_str)
+                pushed += 1
+                continue   # 触达卡已发，本轮不再叠加暴跌/大涨卡
+
         drop_info = await loop.run_in_executor(
             None, _check_price_drop, ticker, market, threshold_pct
         )
