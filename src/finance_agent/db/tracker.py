@@ -1566,10 +1566,14 @@ def ticker_signal_stats(ticker: str, db_path: str | Path | None = None) -> str:
     avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
     rr = round(avg_win / avg_loss, 1) if avg_loss > 0 else 0.0
 
-    # Wilson 置信区间（95%）
+    # 正版 Wilson 95% 置信区间（修 P2：原 z·√(p(1-p)/n) 是 normal-approx/Wald，
+    # 小样本会越界且对称失真；Wilson 不越界、非对称，小样本更稳健）
     z = 1.96
-    ci = z * math.sqrt(win_rate * (1 - win_rate) / n)
-    ci_pct = round(ci * 100)
+    _denom = 1 + z * z / n
+    _centre = (win_rate + z * z / (2 * n)) / _denom
+    _half = (z * math.sqrt(win_rate * (1 - win_rate) / n + z * z / (4 * n * n))) / _denom
+    ci_lo = round(max(0.0, _centre - _half) * 100)
+    ci_hi = round(min(1.0, _centre + _half) * 100)
     win_pct = round(win_rate * 100)
 
     # 超额收益：仅对有基准数据的行计算
@@ -1586,7 +1590,7 @@ def ticker_signal_stats(ticker: str, db_path: str | Path | None = None) -> str:
     suffix = "（样本偏少，仅参考）" if n < 20 else ""
     return (
         f"📊 {ticker}历史买入信号{suffix}｜"
-        f"胜率{win_pct}%（±{ci_pct}%CI）"
+        f"胜率{win_pct}%（95%区间 {ci_lo}~{ci_hi}%）"
         f"{alpha_str}"
         f" · 均盈+{avg_win:.1f}% · 均亏-{avg_loss:.1f}% · 盈亏比{rr}（{n}次）"
     )

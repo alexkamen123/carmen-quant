@@ -170,6 +170,18 @@ FOLLOWUP_USER = """周一（{report_date}）的配置建议摘要：
 请给出 2-4 句跟进意见，重点说持仓里变化最大的标的和机会是否还在。"""
 
 
+def _week_to_date(close):
+    """把价格序列切到本周一及以后（修 P2：'周一→今日'标签需真锚定本周一，
+    而非 period 窗口的第一根）。本周不足则返回原序列尾部由调用方判长度。"""
+    from datetime import timedelta
+    monday = date.today() - timedelta(days=date.today().weekday())
+    try:
+        wk = close[close.index.date >= monday]
+        return wk if len(wk) >= 2 else close.iloc[:0]   # 不足2根→空，调用方跳过
+    except Exception:
+        return close
+
+
 def _fetch_holdings_performance() -> list[dict]:
     """拉取实际持仓本周一到今日的价格变化，附带未实现盈亏。"""
     config_path = Path(__file__).parents[3] / "config" / "portfolio.yaml"
@@ -184,14 +196,18 @@ def _fetch_holdings_performance() -> list[dict]:
         cost = item.get("cost_basis", 0)
         try:
             yf_ticker = f"{int(ticker):04d}.HK" if market == "hk" else ticker
-            df = yf.download(yf_ticker, period="7d", progress=False, auto_adjust=True)
+            # 10d 多取几天，再切到本周一锚定（修 P2：period=7d 的 iloc[0] 是上周三、
+            # 与"周一→今日"标签不符，周一运行时还会单根导致 pct 恒 0）
+            df = yf.download(yf_ticker, period="10d", progress=False, auto_adjust=True)
             if df.empty or len(df) < 2:
                 continue
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = [c[0].lower() for c in df.columns]
             else:
                 df.columns = [c.lower() for c in df.columns]
-            close = df["close"].dropna()
+            close = _week_to_date(df["close"].dropna())
+            if len(close) < 2:
+                continue   # 本周交易日不足 2 根，无法算"本周"涨跌
             price_start = float(close.iloc[0])
             price_now = float(close.iloc[-1])
             pct = (price_now / price_start - 1) * 100
@@ -214,14 +230,16 @@ def _fetch_price_changes(tickers: list[str]) -> list[dict]:
     for ticker in tickers:
         try:
             yf_ticker = f"{int(ticker):04d}.HK" if ticker.isdigit() else ticker
-            df = yf.download(yf_ticker, period="7d", progress=False, auto_adjust=True)
+            df = yf.download(yf_ticker, period="10d", progress=False, auto_adjust=True)
             if df.empty or len(df) < 2:
                 continue
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = [c[0].lower() for c in df.columns]
             else:
                 df.columns = [c.lower() for c in df.columns]
-            close = df["close"].dropna()
+            close = _week_to_date(df["close"].dropna())   # 本周一锚定（修 P2）
+            if len(close) < 2:
+                continue
             price_start = float(close.iloc[0])
             price_now = float(close.iloc[-1])
             pct = (price_now / price_start - 1) * 100
