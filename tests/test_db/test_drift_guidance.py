@@ -45,6 +45,15 @@ def test_compute_drift_within_band_is_ok():
     assert all(r["status"] == "✅" for r in rows)
 
 
+def test_compute_drift_yellow_tier():
+    """P2 修复：5%~10% 漂移 = 🟡 过渡档（原只有 ✅/🔴，缺中间档）。"""
+    # passive 目标50 → 给57（漂移+7，在 5~10 带）→ 🟡；ammo 目标25→18（漂移-7）→ 🟡
+    rows = compute_drift({"passive": 57, "hedge": 25, "ammo": 18}, 100.0, _STRATEGY)
+    by = {r["bucket"]: r for r in rows}
+    assert by["passive"]["status"] == "🟡" and by["ammo"]["status"] == "🟡"
+    assert by["hedge"]["status"] == "✅"   # 25 vs 25 带内
+
+
 # ── 规则化指导生成 ────────────────────────────────────────────
 
 def test_derive_guidance_triggers_all_three():

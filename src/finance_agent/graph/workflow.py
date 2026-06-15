@@ -346,8 +346,12 @@ async def format_report_node(state: AgentState) -> AgentState:
         # 主推荐块
         main_md_lines = [
             f"**{emoji} {s.ticker}**　{s.recommendation}　{conf}　{pos_icon} {s.position_change or '维持'}",
-            f"{s.one_line}",
         ]
+        if s.one_line:
+            main_md_lines.append(f"{s.one_line}")
+        # PM 降级兜底：核心字段全空（DeepSeek 降级且单票也失败）时给个交代，不留白卡
+        elif not (s.entry_hint or s.key_risk or s.key_assumption):
+            main_md_lines.append("_（本股本次为降级分析，详情不全，建议以持仓逻辑为准）_")
         # 短期执行建议（只在与长期不一致时显示）
         if s.short_term_action and s.short_term_action != "立即执行":
             main_md_lines.append(f"⏱️ **本周操作：{s.short_term_action}**（长期建议仍为{s.recommendation}）")

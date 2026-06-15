@@ -60,7 +60,10 @@ def compute_drift(bucket_value: dict, total_value: float, strategy: dict) -> lis
             "target_pct": round(tgt, 1),
             "current_pct": round(cur_pct, 1),
             "drift": round(drift, 1),
-            "status": "✅" if abs(drift) <= DRIFT_BAND else "🔴",
+            # 三档（修 P2：原只有 ✅/🔴，+5.1% 与 +20% 同显红灯，缺过渡）：
+            # 带内 ✅ / 带外~2倍带 🟡 提示注意 / 超 2 倍带 🔴 需纠偏
+            "status": ("✅" if abs(drift) <= DRIFT_BAND
+                       else "🟡" if abs(drift) <= 2 * DRIFT_BAND else "🔴"),
         })
     return rows
 
