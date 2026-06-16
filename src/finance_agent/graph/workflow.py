@@ -277,6 +277,20 @@ async def decision_node(state: AgentState) -> AgentState:
     return state.model_copy(update={"stocks": updated_stocks})
 
 
+def _clip_md(text: str, limit: int = 45) -> str:
+    """截到限长，硬切处补省略号，并修复被砍断的 Markdown 加粗。
+
+    06-11 复盘 D3：断头句看着像 bug；
+    06-15：砍在 ** 中间会漏出裸星号，需补回闭合符。
+    """
+    if len(text) <= limit:
+        return text
+    clipped = text[:limit].rstrip("*")
+    if clipped.count("**") % 2:  # 砍断了一对加粗，补回闭合 **
+        clipped += "**"
+    return clipped + "…"
+
+
 async def format_report_node(state: AgentState) -> AgentState:
     """生成飞书卡片（含辩论过程）和控制台文本"""
     EMOJI      = {"买入": "🟢", "持有": "🟡", "观望": "🟡",
@@ -374,14 +388,10 @@ async def format_report_node(state: AgentState) -> AgentState:
         # 辩论 + 基本面块（非 ETF，精简为 1-2 行）
         if s.bull_thesis and not is_etf:
             debate_lines = []
-            # 基本面：只取第一句（截到第一个句号/换行）
-            def _clip(text: str, limit: int = 45) -> str:
-                """截到限长，硬切处补省略号（06-11 复盘 D3：断头句看着像 bug）"""
-                return text if len(text) <= limit else text[:limit] + "…"
-
             fv = s.earnings.fundamental_view
             if fv and "宽基" not in fv and "暂无" not in fv:
-                fv_short = _clip(fv.split("。")[0].split("\n")[0])
+                # 📈 基本面摘要句较长，放宽到 80 字避免拦腰断句
+                fv_short = _clip_md(fv.split("。")[0].split("\n")[0], limit=80)
                 debate_lines.append(f"📈 {fv_short}")
             # 多空：各取第一条论点，分两行展示
             def _first_point(text: str) -> str:
@@ -389,7 +399,7 @@ async def format_report_node(state: AgentState) -> AgentState:
                 import re
                 m = re.search(r"(?:^|\n)\s*[1１]\s*[\.．、:：]?\s*(.+)", text)
                 s_ = m.group(1).strip() if m else text.split("\n")[0]
-                return _clip(s_)
+                return _clip_md(s_)
             bull_short = _first_point(s.bull_thesis)
             bear_short = _first_point(s.bear_thesis or "")
             if bull_short:
