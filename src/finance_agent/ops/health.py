@@ -9,12 +9,17 @@
 两层检查：
   1. launchctl 已加载（任务根本没挂上 = 红）
   2. 日志新鲜度（mtime 超过该任务的预期最大间隔 = 红；日志不存在 = 红，
-     可能重启后 /tmp 被清且任务未跑）
+     任务可能从未跑过；日志已落持久目录 ~/Library/Logs/carmen/，不再受 /tmp 清理影响）
 健康 = 完全静默（不轰炸）；任何异常 → 一张飞书卡列全部问题。
 """
 import subprocess
 from datetime import datetime
 from pathlib import Path
+
+# 日志落在持久目录 ~/Library/Logs/carmen/，不再用 /tmp。
+# 原因（2026-06-17 修）：/tmp 重启即清、且 macOS 会自动清理 >3 天未访问的文件，
+# 导致 weekly/value/monthly 等低频任务的日志"凭空消失"，触发心跳误报。
+LOG_DIR = str(Path.home() / "Library/Logs/carmen")
 
 # {launchd label 短名: (日志路径, 最大允许静默小时数)}
 # 间隔按"调度周期 + 周末/节假日空窗 + 余量"取保守上界：
@@ -22,15 +27,15 @@ from pathlib import Path
 #   工作日任务最长空窗=周五→周一 ≈ 72h → 76h
 #   followup 周二-五：周五→周二 ≈ 96h → 100h；weekly/value 周一次 → 8天；monthly → 32天
 HEALTH_RULES: dict[str, tuple[str, float]] = {
-    "carmen-pricescan": ("/tmp/carmen-pricescan.log", 1),
-    "carmen-morning":   ("/tmp/carmen-morning.log", 76),
-    "carmen-evening":   ("/tmp/carmen-evening.log", 76),
-    "carmen-news":      ("/tmp/carmen-news.log", 76),
-    "carmen-earnings":  ("/tmp/carmen-earnings.log", 76),
-    "carmen-followup":  ("/tmp/carmen-followup.log", 100),
-    "carmen-weekly":    ("/tmp/carmen-weekly.log", 8 * 24),
-    "carmen-value":     ("/tmp/carmen-value.log", 8 * 24),
-    "carmen-monthly":   ("/tmp/carmen-monthly.log", 32 * 24),
+    "carmen-pricescan": (f"{LOG_DIR}/carmen-pricescan.log", 1),
+    "carmen-morning":   (f"{LOG_DIR}/carmen-morning.log", 76),
+    "carmen-evening":   (f"{LOG_DIR}/carmen-evening.log", 76),
+    "carmen-news":      (f"{LOG_DIR}/carmen-news.log", 76),
+    "carmen-earnings":  (f"{LOG_DIR}/carmen-earnings.log", 76),
+    "carmen-followup":  (f"{LOG_DIR}/carmen-followup.log", 100),
+    "carmen-weekly":    (f"{LOG_DIR}/carmen-weekly.log", 8 * 24),
+    "carmen-value":     (f"{LOG_DIR}/carmen-value.log", 8 * 24),
+    "carmen-monthly":   (f"{LOG_DIR}/carmen-monthly.log", 32 * 24),
 }
 
 
@@ -80,7 +85,7 @@ def build_health_card(problems: list[dict]) -> dict:
         "elements": [
             {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}},
             {"tag": "note", "elements": [{"tag": "plain_text",
-                "content": "排查：launchctl list | grep carmen；日志在 /tmp/carmen-*.log；"
+                "content": "排查：launchctl list | grep carmen；日志在 ~/Library/Logs/carmen/；"
                            "修复后无需操作，健康时本卡不出现"}]},
         ],
     }
