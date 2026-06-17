@@ -436,16 +436,6 @@ async def format_report_node(state: AgentState) -> AgentState:
             "elements": [{"tag": "plain_text",
                           "content": f"⚙️ 数据获取失败：{', '.join(state.errors)}"}],
         })
-    # 名词解释：把整张卡片的文字拼在一起，检测出现了哪些术语
-    full_text = " ".join(
-        s.one_line + " " + (s.bull_thesis or "") + " " + (s.bear_thesis or "") +
-        " " + (s.entry_hint or "") + " " + (s.key_risk or "")
-        for s in state.stocks
-    ) + " " + (state.macro_summary or "")
-    glossary_el = build_glossary_element(full_text, max_terms=5)
-    if glossary_el:
-        elements.append({"tag": "hr"})
-        elements.append(glossary_el)
     elements.append({"tag": "hr"})
     elements.append({
         "tag": "note",
@@ -530,13 +520,21 @@ async def format_report_node(state: AgentState) -> AgentState:
             {"tag": "hr"},
         ]
 
+    # 名词解释（P4：就近放在宏观块之后，不再沉到卡片最底部要用户滚到底）。
+    # 只检测"宏观行 + 机会区"——这两处黑话最密（VIX/出货日/动量突破/超额…）；逐股已有
+    # 大白话 one_line + 多空翻译，不缺解释。若把逐股长文也并进来，RSI/MACD/布林等基础词
+    # 会按字典序挤占名额，反而把用户点名的"动量突破/超额"截断掉。
+    glossary_src = (state.macro_summary or "") + " " + opp_text
+    glossary_el = build_glossary_element(glossary_src, max_terms=10)
+    glossary_block = [glossary_el, {"tag": "hr"}] if glossary_el else []
+
     report_card = {
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": f"📊 卡门智投日报 · {state.date}"},
             "template": TEMPLATE.get(dominant, "blue"),
         },
-        "elements": tldr_elements + macro_elements + elements,
+        "elements": tldr_elements + macro_elements + glossary_block + elements,
     }
 
     return state.model_copy(update={"report_text": report_text, "report_card": report_card})

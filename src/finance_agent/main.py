@@ -18,6 +18,7 @@ from finance_agent.db.tracker import (
     get_dip_stats, backfill_dip_outcomes, detect_portfolio_changes, realign_alpha,
 )
 from finance_agent.alerts.earnings_trigger import check_and_alert_earnings
+from finance_agent.alerts.cooldown_monitor import run_cooldown_check
 from finance_agent.weekly.allocation_advisor import run_allocation_advisor
 from finance_agent.weekly.report_card import build_weekly_card
 from finance_agent.weekly.daily_followup import run_daily_followup
@@ -467,6 +468,16 @@ async def _earnings_check(skip_notify: bool):
                 f"  🔔 [bold]{item['ticker']}[/bold] 财报：{item['earnings_date']} "
                 f"（{item['days_until']} 天后）"
             )
+
+
+@app.command("cooldown-check")
+def cooldown_check(
+    force: bool = typer.Option(False, "--force", help="跳过冷却判定强制推（仅测试跑通流程用）"),
+    skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印卡"),
+):
+    """检查"长期想减但当下过热"的持仓是否已冷却，到点推减仓提醒卡"""
+    pushed = asyncio.run(run_cooldown_check(force=force, skip_notify=skip_notify))
+    console.print(f"{'✅' if pushed else '⚪'} 冷却检查完成，推送 {pushed} 条减仓提醒")
 
 
 @app.command("feedback-stats")
