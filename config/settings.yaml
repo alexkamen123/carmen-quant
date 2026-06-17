@@ -73,3 +73,19 @@ behavior_hint:
   enabled: true
   min_n_buy: 5
   sell_regret_pct: 5.0
+
+# ── L2c 策略族自适应权重（评估→反哺参数的最后一根线）─────────────────────────
+# 每轮 backfill 后按各策略族真实 beat_rate 朴素升降权，下一轮 get_active_signals
+# 读这张表（data/strategy_weights.json）给信号排序加权。权重只调"先给 PM 看哪条
+# 证据"的次序，绝不放大金额/仓位，误差最坏=排序略偏，不会乱买。
+# 默认 ON 但步幅极小（damping/sensitivity 小、max_step 硬阻尼）→ 单轮几乎不改变行为。
+# 一键关：设 false 后 get_strategy_weight 恒返 1.0，排序与改动前完全一致。
+# 可回溯：每次真实调整 append 一条到 data/strategy_weights_log.jsonl。
+strategy_weight_adaptation:
+  enabled: true
+  sensitivity: 0.3   # beat_rate 每偏离 0.5 个 0.1 → 目标权重偏 0.03
+  damping: 0.1       # 每轮只向目标走 10%
+  min_weight: 0.7    # 权重下限（绝不归零）
+  max_weight: 1.3    # 权重上限（绝不翻倍）
+  min_combos: 3      # 族内有效组合 < 此值则保持 1.0
+  max_step: 0.05     # 单轮单族最大变动幅度（硬阻尼兜底）

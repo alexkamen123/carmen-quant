@@ -41,6 +41,43 @@ import os as _os
 _os.environ.setdefault("AGENT_DB_PATH", DB_PATH)
 
 
+def _evolve_after_backfill(win_rates: dict) -> None:
+    """L2c 闭环：backfill 后按真实策略 edge 更新自适应权重，并把本轮关键指标
+    append 进 evolution_log。全程兜底，任何异常只打印不抛（绝不阻断日报）。"""
+    param_version = "v0"
+    try:
+        from finance_agent.value.strategy_scorecard import compute_strategy_edge
+        from finance_agent.backtest.strategy_weights import update_weights_from_edge
+        edge = compute_strategy_edge()
+        res = update_weights_from_edge(edge)
+        param_version = res.get("param_version", "v0")
+        if res.get("changed"):
+            console.print(f"🔁 策略权重自适应：{param_version} 调整 {res['deltas']}")
+        else:
+            console.print(f"🔁 策略权重自适应：无变化（{param_version}）")
+    except Exception as e:
+        console.print(f"⚠️ 策略权重自适应跳过（不阻断）: {e}")
+
+    try:
+        from finance_agent.value.evolution_log import (
+            log_evolution, DEFAULT_CSV_PATH, PROJECT,
+        )
+        from finance_agent.value.metrics import compute_value_metrics
+        vm = compute_value_metrics(DB_PATH)
+        hit = vm.get("hit_rate", {}) or {}
+        ca = vm.get("combined_alpha", {}) or {}
+        rid = log_evolution(DEFAULT_CSV_PATH, PROJECT, "win_rate",
+                            hit.get("win_rate"), param_version=param_version,
+                            note="日报 backfill 后")
+        log_evolution(DEFAULT_CSV_PATH, PROJECT, "combined_alpha", ca.get("avg"),
+                      param_version=param_version, run_id=rid)
+        log_evolution(DEFAULT_CSV_PATH, PROJECT, "backfilled_tickers", len(win_rates),
+                      param_version=param_version, run_id=rid)
+        console.print(f"🧬 evolution_log 已记录（run_id={rid}）")
+    except Exception as e:
+        console.print(f"⚠️ evolution_log 跳过（不阻断）: {e}")
+
+
 @app.command()
 def run(
     skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
@@ -72,6 +109,10 @@ async def _run(skip_notify: bool, backfill: bool):
         filled = backfill_dip_outcomes(db_path=DB_PATH)
         if filled:
             console.print(f"📉 回填 {filled} 条暴跌告警回测价格")
+
+        # Step 1b: L2c 评估→反哺参数（自适应策略族权重）+ evolution_log 留痕。
+        # 全程 try 兜底：闭环失败绝不阻断日报主流程（与 Step 3 入库同纪律）。
+        _evolve_after_backfill(win_rates)
 
     # Step 2: 运行今日分析
     console.print("🤖 开始今日分析...")
@@ -391,7 +432,8 @@ def show_actions(
 @app.command()
 def backfill_only():
     """仅回填昨日胜率，不运行新分析"""
-    asyncio.run(backfill_yesterday(DB_PATH))
+    win_rates = asyncio.run(backfill_yesterday(DB_PATH))
+    _evolve_after_backfill(win_rates or {})
     console.print("✅ 胜率回填完成")
 
 
