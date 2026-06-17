@@ -42,28 +42,58 @@ class MacroContext:
     dist_days_qqq: int = 0
     market_top_signal: str = "正常"
 
+    def plain_summary(self) -> str:
+        """把 regime + VIX + posture 翻译成一句"今天大盘怎样、该干嘛"的人话（P1）。"""
+        if "危机" in self.regime:
+            mood = "风险很大、大幅波动"
+        elif "收缩" in self.regime:
+            mood = "偏弱、以防御为主"
+        elif "过渡" in self.regime:
+            mood = "方向不明、多空分歧"
+        elif "扩散" in self.regime:
+            mood = "全面走强"
+        elif "集中" in self.regime:
+            mood = "龙头带动、整体偏多"
+        else:
+            mood = "中性"
+        if self.vix >= 30:
+            mood = "恐慌、" + mood
+        elif self.vix < 20 and not ("危机" in self.regime or "收缩" in self.regime):
+            mood = "平静、" + mood
+
+        # 出货日偏多会单独压低仓位建议；不点出来会出现"偏多却暂缓买入"的自相矛盾
+        if "警告" in self.market_top_signal or "危险" in self.market_top_signal:
+            mood += "，但机构正在悄悄撤退（出货日偏多）"
+
+        ACTION = {
+            "NEW_ENTRY_ALLOWED": "可以正常加仓 / 买入",
+            "REDUCE_ONLY":       "建议暂缓新买入，先持有观望",
+            "CASH_PRIORITY":     "建议多留现金、控制风险，别急着抄底",
+        }
+        action = ACTION.get(self.exposure_posture, "按计划操作")
+        return f"今天大盘{mood}，{action}"
+
     def to_prompt_str(self) -> str:
         def fmt(v: float) -> str:
             return f"{'+' if v >= 0 else ''}{v:.2f}%"
 
-        POSTURE_CN = {
-            "NEW_ENTRY_ALLOWED": "✅ 可新增",
-            "REDUCE_ONLY":       "⚠️ 暂缓新增",
-            "CASH_PRIORITY":     "🚨 优先持现金",
-        }
-        posture_str = POSTURE_CN.get(self.exposure_posture, self.exposure_posture)
-        yield_str = f"　10Y美债：{self.yield_10y:.2f}%" if self.yield_10y > 0 else ""
+        # VIX 短描述（避免原 vix_level 的"低（平静）"再被括号包一层 → 嵌套括号）
+        vix_word = "平静" if self.vix < 20 else ("偏紧张" if self.vix < 30 else "恐慌")
+        yield_str = f"　10年美债利率 {self.yield_10y:.2f}%" if self.yield_10y > 0 else ""
         dist_str = (
-            f"　出货日 SPY:{self.dist_days_spy}/QQQ:{self.dist_days_qqq}（25日）→ {self.market_top_signal}"
+            f"　出货日 标普{self.dist_days_spy}/纳指{self.dist_days_qqq}"
+            f"（25日内机构抛售天数）→ {self.market_top_signal}"
         )
 
-        return (
-            f"VIX：{self.vix:.1f}（{self.vix_level}）｜"
-            f"SPX：{fmt(self.spx_chg)}　NDX：{fmt(self.nasdaq_chg)}　HSI：{fmt(self.hsi_chg)}"
+        detail = (
+            f"恐慌指数 VIX {self.vix:.1f}（{vix_word}）｜"
+            f"标普500(SPX) {fmt(self.spx_chg)}　纳斯达克100(NDX) {fmt(self.nasdaq_chg)}　"
+            f"恒生指数(HSI) {fmt(self.hsi_chg)}"
             f"{yield_str}｜"
-            f"机制：{self.regime}｜仓位建议：{posture_str}｜"
+            f"市场机制：{self.regime}｜"
             f"{dist_str}"
         )
+        return f"{detail}\n👉 一句话：{self.plain_summary()}"
 
 
 def _day_change(ticker_symbol: str) -> float:
