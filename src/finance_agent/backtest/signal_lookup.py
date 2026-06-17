@@ -120,11 +120,24 @@ def get_active_signals(ticker: str) -> list[dict]:
                 "n_signals": data["n_signals"],
                 "t_stat":    round(_t_stat(data), 1),
                 "reliable":  _is_reliable(data),
+                # L2c 自适应权重（flag 关时恒为 1.0，排序与历史完全一致）
+                "weight":    _strategy_weight(strategy_name),
             })
 
-    # 高信赖优先，再按 t-stat 降序——不再用裸 avg_alpha（避免把高α小样本噪音排最前喂给 PM）
-    active.sort(key=lambda x: (x["reliable"], x["t_stat"]), reverse=True)
+    # 高信赖优先，再按 t-stat × 自适应权重降序。
+    # weight 默认 1.0（flag 关），开启后也只小幅升降权——绝不放大金额/仓位，只调
+    # 「先给 PM 看哪条证据」的次序。不进入任何用户可见文案（避免把内部调权当卖点）。
+    active.sort(key=lambda x: (x["reliable"], x["t_stat"] * x["weight"]), reverse=True)
     return active
+
+
+def _strategy_weight(strategy_name: str) -> float:
+    """读 L2c 自适应权重；任何异常/未启用都回退 1.0（绝不拖垮信号查找）。"""
+    try:
+        from finance_agent.backtest.strategy_weights import get_strategy_weight
+        return get_strategy_weight(strategy_name)
+    except Exception:
+        return 1.0
 
 
 def format_strategy_evidence(ticker: str) -> str:
