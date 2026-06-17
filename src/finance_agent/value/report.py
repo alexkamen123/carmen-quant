@@ -230,18 +230,9 @@ def _strategy_edge_text() -> str:
 
 
 def _glossary_section() -> str:
-    """名词小课堂：把卡片里出现的选股套路用一句大白话讲清楚（用户反馈不懂含义）。
-    每条=信号长什么样 + 为什么有人据此买。"""
-    return "\n".join([
-        "**📖 名词小课堂（这些“套路”是什么意思）**",
-        "• **RSI超卖**：RSI 是 0–100 的“最近涨太多还是跌太多”温度计，低于 30 = 短期跌过头，常有反弹",
-        "• **布林下轨**：股价“正常波动范围”的下边界，碰到它 = 跌到偏便宜的位置",
-        "• **量价齐升**：成交量放大 + 价格上涨同时发生 = 有真金在买，不是虚涨",
-        "• **动量突破**：价格冲破最近一段时间的高点 = 强势启动",
-        "• **MA金叉**：短期均价线上穿长期均价线 = 趋势可能由跌转涨",
-        "• **均线多头排列**：短、中、长期均价线从上到下依次排好 = 上涨趋势确立",
-        "_这些是“什么形态出现时买，历史上更容易跑赢大盘”的经验规律，不是稳赚公式_",
-    ])
+    """名词小课堂：复用全局术语库（glossary.strategy_glossary_md），不再单独维护一份。"""
+    from finance_agent.notifications.glossary import strategy_glossary_md
+    return strategy_glossary_md()
 
 
 def _panel(title: str, content: str, expanded: bool = False) -> dict:
