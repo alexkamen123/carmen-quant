@@ -1,0 +1,99 @@
+# portfolio.example.yaml —— 配置模板（打码示例，安全可公开）
+#
+# 真实持仓请复制此文件为 config/portfolio.yaml 再填写：
+#     cp config/portfolio.example.yaml config/portfolio.yaml
+# config/portfolio.yaml 已在 .gitignore 中，不会进版本库——真实持仓/金额永远留本地。
+#
+# 下面的股票、股数、成本价、账户余额全部为示意占位，非真实数据。
+
+holdings:
+  # ⚠️  cost_basis 必须填写股票原始货币：
+  #     美股 (market: us)  → 美元 USD（如 194.82 = $194.82/股）
+  #     港股 (market: hk)  → 港币 HKD（如 541.50 = HK$541.50/股）
+  #     A股  (market: cn)  → 人民币 CNY
+  #     填错货币会导致持仓盈亏计算严重偏差（-89% 等异常值）
+
+  # ── 美股 ──────────────────────────────────────────────
+  - ticker: AAA
+    market: us
+    shares: 10
+    cost_basis: 100.00
+    sector: 半导体/AI算力
+    signal_weight: low   # 可选：回测显示技术信号无效时设 low，决策依赖宏观/持仓逻辑
+    peers: ["BBB", "CCC", "DDD"]   # 可选：竞争对手，新闻一并扫描
+    notes: "示例持仓；记录建/加/减仓历史与加权均价"
+
+  - ticker: BBB
+    market: us
+    shares: 5
+    cost_basis: 50.00
+    sector: 宽基ETF
+    is_dca: true          # 可选：定投标的，跳过财报分析
+    notes: "示例定投 ETF"
+
+  # ── 港股 ──────────────────────────────────────────────
+  # 港股代码填 5 位数字字符串（无 .HK），内部自动转换
+  - ticker: "00700"
+    market: hk
+    shares: 5
+    cost_basis: 500.00
+    sector: 互联网/AI
+    peers: ["09988", "09618", "01810"]
+    notes: "示例港股持仓"
+
+# ── 影子观察池（未持有，纯测系统选股能力；单独计分，不混入持仓建议）──
+watchlist:
+  - ticker: EEE
+    market: us
+    sector: 半导体设备
+    notes: "示例影子观察：入选依据/回测统计"
+
+# ── 账户规模配置（供 Position Sizer 计算建议股数）──────────────────────────
+# 填写实际可交易资金规模；全部为示意占位
+account:
+  usd: 1000               # 美元储蓄余额
+  hkd: 1000               # 港元储蓄余额
+  hkd_fixed: 10000        # 定期存款（压舱石，不用于股票）
+  cnh: 1000               # 离岸人民币储蓄
+  investment_hkd: 50000   # 投资账户总市值（含所有持仓）
+  risk_per_trade_pct: 5.0 # 每笔交易最大亏损 = 账户规模 × 此值%
+
+# ── 战略配置锚点（L1 配置分析输出，最高优先级）──────────────────────────
+# 此区块由配置分析会话手动更新，不被日常信号自动覆盖。
+strategy:
+  last_updated: "2026-01-01"
+  source: "配置分析"
+
+  # 月定投资金分配比例（三桶模型）
+  monthly_dca:
+    passive_beta_pct: 50      # 被动Beta桶：宽基ETF
+    hedge_pct: 25             # 对冲桶：黄金/短债
+    ammo_pct: 25              # 弹药桶：机动资金，等待战术机会
+
+  # 对冲桶持仓目标
+  hedge_bucket:
+    target_pct: 12.0          # 对冲桶占总投资组合最低比例（低于此值触发警告）
+    holdings:
+      - ticker: IAU
+        label: "黄金ETF（减震器）"
+        target_shares: 3
+        notes: "示例：对冲桶目标持仓"
+      - ticker: SGOV
+        label: "0-3月美债ETF（压舱石）"
+        target_shares: 4
+        notes: "示例：对冲桶目标持仓"
+
+  # 风险红线（PM裁决必须遵守，不可因战术信号突破）
+  risk_limits:
+    - name: "半导体集中度上限"
+      rule: "sector:半导体/AI算力 <= 45%"
+      current: "0.0%"
+      action_if_breached: "立即停止半导体加仓，触发集中度警告"
+
+    - name: "单只股票上限"
+      rule: "single_ticker <= 15%"
+      action_if_breached: "超过15%须减仓至15%以下"
+
+    - name: "对冲桶下限"
+      rule: "hedge_bucket >= 12%"
+      action_if_breached: "优先补充对冲标的，暂缓其他新建仓"
