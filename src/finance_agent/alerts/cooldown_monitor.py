@@ -38,19 +38,10 @@ COOLDOWN_WATCH: list[dict] = [
         "direction": "spike",
         "max_day_change": 3.0,
         "rsi_gate": 70.0,
-        "action": "挂单卖 1 股，留 2 股",
-        "reason": "浮盈约 48% 已可观，日报长期建议锁利；现涨势已歇，落袋 1 股不贪最后一口。",
+        "action": "挂单卖 1 股，留 1 股",
+        "reason": "06-18 已趁强减 1 股（3→2）；剩 2 股仍有减仓倾向，再冷却可锁 1 股。",
     },
-    {
-        "ticker": "QBTS",
-        "market": "us",
-        "direction": "crash",
-        "max_day_change": 3.0,
-        "rsi_gate": 30.0,
-        "action": "减 1 股（先减一半，留 1 股）",
-        "reason": "营收崩了纯投机，日报转减仓；现已止跌企稳，趁不恐慌减一半，"
-                  "是否清仓留到 08-06 财报看营收。",
-    },
+    # QBTS 于 2026-06-18 全部清仓（信号升级卖出，趁反弹离场），已撤出冷却监控
 ]
 
 _LABEL = {"spike": "已冷却", "crash": "已企稳"}
