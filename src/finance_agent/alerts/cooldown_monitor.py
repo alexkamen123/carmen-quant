@@ -32,16 +32,10 @@ from datetime import datetime
 # rsi_gate      ：spike → RSI 退到此值【以下】算退出超买；
 #                 crash → RSI 升到此值【以上】算退出超卖（脱离恐慌）
 COOLDOWN_WATCH: list[dict] = [
-    {
-        "ticker": "DRAM",
-        "market": "us",
-        "direction": "spike",
-        "max_day_change": 3.0,
-        "rsi_gate": 70.0,
-        "action": "挂单卖 1 股，留 1 股",
-        "reason": "06-18 已趁强减 1 股（3→2）；剩 2 股仍有减仓倾向，再冷却可锁 1 股。",
-    },
-    # QBTS 于 2026-06-18 全部清仓（信号升级卖出，趁反弹离场），已撤出冷却监控
+    # 当前清单为空（2026-06-18）：
+    #   QBTS 已全部清仓、DRAM 已趁强减 1 股锁利到位，两只均无需再盯。
+    #   要再武装：往列表加一条 dict（spike/crash 任一方向），launchd carmen-cooldown
+    #   仍在跑（周二–六 05:30），加完即生效，无需改调度。
 ]
 
 _LABEL = {"spike": "已冷却", "crash": "已企稳"}
