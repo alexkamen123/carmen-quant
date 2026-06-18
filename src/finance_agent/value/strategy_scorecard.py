@@ -75,15 +75,17 @@ def compute_strategy_edge() -> dict:
     if not valid:
         return {"total": 0, "reliable_total": 0, "families": [], "top_reliable": []}
 
-    # 按策略族聚合（n 加权 avg_alpha）
+    # 按策略族聚合（n 加权 avg_alpha + n 加权 beat_rate）
     fam: dict[str, dict] = {}
     for r in valid:
         f = _family(r["strategy"])
         n = r.get("n_signals", 0) or 0
-        d = fam.setdefault(f, {"n_combos": 0, "total_signals": 0, "alpha_w": 0.0, "reliable": 0})
+        d = fam.setdefault(f, {"n_combos": 0, "total_signals": 0, "alpha_w": 0.0,
+                               "beat_w": 0.0, "reliable": 0})
         d["n_combos"] += 1
         d["total_signals"] += n
         d["alpha_w"] += (r.get("avg_alpha", 0) or 0.0) * n
+        d["beat_w"] += (r.get("beat_rate", 0) or 0.0) * n
         if is_reliable(r):
             d["reliable"] += 1
 
@@ -114,6 +116,9 @@ def compute_strategy_edge() -> dict:
         "gate": {"min_n": GATE_MIN_N, "t_min": 2.0, "wilson_min": 0.5},
         "families": families,
         "top_reliable": top,
+        # L2c 权重自适应用：族内 n 加权 beat_rate 原料（不进任何展示，纯内部消费）
+        "_raw_families": {f: {"total_signals": d["total_signals"], "beat_w": d["beat_w"]}
+                          for f, d in fam.items()},
     }
 
 

@@ -11,3 +11,8 @@ dist/
 
 # backtest fixtures (market data snapshots, captured locally)
 tests/fixtures/price_snapshots/*.json
+
+# 本地 Claude Code 配置（机器级权限，勿入库）
+.claude/
+# 一次性调研 brief（保留本地，不入代码历史）
+ONBOARDING.md
