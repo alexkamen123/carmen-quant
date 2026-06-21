@@ -45,7 +45,9 @@ def test_wilson_bounds():
 
 
 def test_direction_helpers():
-    assert _is_bullish("买入", "") and _is_bullish("持有", "小加1")
+    assert _is_bullish("买入", "") and _is_bullish("买入", "小加1")
+    # 止血：「持有/观望 + 小加」rec 优先，语义是持有，不再误判为买入
+    assert not _is_bullish("持有", "小加1")
     assert _is_bearish("减仓", "") and _is_bearish("卖出", "")
     assert not _is_bullish("持有", "维持")
 

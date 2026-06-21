@@ -65,11 +65,19 @@ def classify_dip(thesis_intact: int | None, drop_reason: str | None) -> str:
     return DIP_BUCKET_OPPORTUNITY
 
 
+_PASSIVE_RECS = ("持有", "观望", "按计划定投")  # 立场=不动，position_change 仅注解不构成方向信号
+
+
 def _is_bullish(rec: str, pc: str) -> bool:
+    # rec 优先于 pc：「持有/观望 + 小加」语义是持有，不得计为买入（防 00700 类伪买入污染头条）
+    if rec in _PASSIVE_RECS:
+        return False
     return rec == "买入" or (pc or "").startswith(("大加", "小加"))
 
 
 def _is_bearish(rec: str, pc: str) -> bool:
+    if rec in _PASSIVE_RECS:
+        return False
     return rec in ("减仓", "卖出") or (pc or "").startswith("减仓")
 
 
@@ -165,9 +173,12 @@ def compute_value_metrics(db_path=None) -> dict:
             "SELECT COUNT(*) AS n FROM recommendations WHERE return_7d IS NOT NULL"
         ).fetchone()["n"]
         # 操作建议命中率只统计真实持仓建议（影子选股 is_watch=1 单独分栏，绝不混算）
+        # pc-based 方向匹配须排除被动立场（持有/观望/定投）——否则「持有+小加」会经
+        # position_change LIKE '小加%' 混进方向性闸门量 n_dir（实测 00700 三条伪买入）
         _DIR_FILTER = ("recommendation IN ('买入','减仓','卖出') "
-                       "OR position_change LIKE '大加%' OR position_change LIKE '小加%' "
-                       "OR position_change LIKE '减仓%'")
+                       "OR (IFNULL(recommendation,'') NOT IN ('持有','观望','按计划定投') "
+                       "AND (position_change LIKE '大加%' OR position_change LIKE '小加%' "
+                       "OR position_change LIKE '减仓%'))")
         dir_rows = [dict(r) for r in con.execute(
             "SELECT date, ticker, recommendation, position_change, return_7d, "
             "benchmark_return_7d, return_30d, benchmark_return_30d, "
@@ -319,6 +330,9 @@ def compute_value_metrics(db_path=None) -> dict:
             "WHERE return_7d IS NOT NULL AND benchmark_return_7d IS NOT NULL "
             "AND recommendation IN ('持有', '观望') AND IFNULL(is_watch, 0) = 0"
         ).fetchall()]   # 影子票没有真实持仓，"持有判断"无意义，排除
+    # 与 dir_rows 同口径去重：同票同 ISO 周的连续持有是同一立场，计多条会灌爆分母
+    # （实测 00700×23 / GOOGL×23 等单票日频膨胀）
+    hold_rows = _dedup_weekly(hold_rows)
     h_right = h_wrong = h_neutral = 0
     h_alphas = []
     h_wrong_cases = []
