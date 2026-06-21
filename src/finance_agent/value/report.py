@@ -12,6 +12,7 @@ from finance_agent.value.metrics import (
     DIP_BUCKET_OPPORTUNITY, DIP_BUCKET_BROKEN, DIP_BUCKET_WATCH,
 )
 from finance_agent.value.strategy_scorecard import compute_strategy_edge, format_strategy_edge_section
+from finance_agent.value.cumulative import compute_cumulative_value
 
 _TEMPLATE = {"grey": "grey", "orange": "orange", "green": "green"}
 
@@ -60,10 +61,23 @@ def _adv_section(m: dict) -> str:
     ca = m["combined_alpha"]
     if ca["status"] == "ok":
         if ca["avg"] >= 0:
-            lines.append(f"　**▶ 个股操作整体 vs 躺平买大盘：领先 +{ca['avg']:.1f}%** ✅")
+            lines.append(f"　**▶ 我们的买卖信号·7天平均超额：+{ca['avg']:.1f}%** ✅　_（信号表现，非你账户累计）_")
         else:
-            lines.append(f"　**▶ 个股操作整体 vs 躺平买大盘：落后 {abs(ca['avg']):.1f}%** ❌"
-                         f"（样本少、受早期追高拖累，不代表长期）")
+            lines.append(f"　**▶ 我们的买卖信号·7天平均超额：{ca['avg']:.1f}%** ❌"
+                         f"　_（信号7天表现，非你账户累计；样本少，不代表长期）_")
+
+    # 分窗口超额（7/30/90 天）：7天噪声大，30/90天才见价值兑现
+    abw = m.get("alpha_by_window") or {}
+    parts = []
+    for w, label in (("7d", "7天"), ("30d", "30天"), ("90d", "90天")):
+        s = abw.get(w)
+        if s and s.get("alpha_avg") is not None:
+            parts.append(f"{label} {s['alpha_avg']:+.1f}%（n={s['alpha_n']}）")
+        else:
+            parts.append(f"{label} 未到")
+    if any("未到" not in p for p in parts):
+        lines.append("　_信号超额·分窗口_：" + " ／ ".join(parts)
+                     + "　_（30/90天才是价值兑现窗口，7天多为噪声）_")
 
     # 【ETF·定投类】不评判断，只放收益供横向比较（调风投/定投比例用）
     if avp.get("dca_avg") is not None or avp.get("active_avg") is not None:
@@ -84,7 +98,7 @@ def _adv_section(m: dict) -> str:
 def _behavior_section(m: dict) -> str:
     beh = m["behavior"]
     trades = beh["trades"]
-    lines = [f"**💰 你的操作（交易者的行为对不对）** · 已回填 {beh['n']} 笔"]
+    lines = [f"**💰 你的操作**（每笔=操作后**第7天定格**快照，非最新价）· 已回填 {beh['n']} 笔"]
     if not trades:
         lines.append("暂无已回填的实操记录")
         return "\n".join(lines)
@@ -235,6 +249,33 @@ def _glossary_section() -> str:
     return strategy_glossary_md()
 
 
+def _cumulative_headline(m: dict) -> str | None:
+    """头条：截至今天，听我们的真实持仓 vs 同期躺平，账户累计多赚/少赚多少（钱视角）。
+    不受样本闸门控制——灰态也常驻。无累计数据返回 None（不占卡片）。"""
+    c = m.get("cumulative")
+    if not c:
+        return None
+    sp, pp, ex = c["strategy_cum_pct"], c["passive_cum_pct"], c["excess_pct"]
+    verb = "多赚" if ex >= 0 else "少赚"
+    icon = "🟢" if ex >= 0 else "🔴"
+    basis_tag = "" if c["basis"] == "real" else "（⚠️ 纸面模拟·非你真实账户）"
+    lines = [
+        f"**{icon} 截至 {c['as_of']}：听我们的 vs 躺平买指数**{basis_tag}",
+        f"你按建议持有的这些钱（{c['n_positions']} 只仓位）账面累计 **{sp:+.1f}%**；"
+        f"同期这笔钱躺平买指数 **{pp:+.1f}%**",
+        f"　**▶ 你比躺平 {verb} {abs(ex):.1f}%（约 ${abs(c['excess_amount_usd']):,.0f}）**",
+    ]
+    note = ("_↑ 按你真实持仓×成本×今日最新价算、跨币种已折美元（HKD÷7.8 / CNY÷7.2）；"
+            "躺平=同一笔本金在各仓入场日买对应市场指数(美股SPY/港股恒指)持有至今。"
+            "这是「你账户到今天的累计」，与下方「信号7天命中」是两回事。_")
+    part = c.get("partial") or []
+    if part:
+        names = "、".join(p["ticker"] for p in part[:6])
+        note += f"\n_（{len(part)} 只仓位暂未纳入对比：{names}——缺现价或基准数据，金额为已纳入部分）_"
+    lines.append(note)
+    return "\n".join(lines)
+
+
 def _panel(title: str, content: str, expanded: bool = False) -> dict:
     """schema 2.0 折叠面板：主屏只显标题，点开看 content（C 端瘦身，用户选型）。"""
     return {
@@ -256,7 +297,9 @@ def build_value_card(m: dict) -> dict:
     v = m["verdict"]
     # 选股套路体检 + 名词小课堂合并进一个折叠面板
     strat_block = _strategy_edge_text() + "\n\n" + _glossary_section()
+    head = _cumulative_headline(m)   # 累计「你 vs 躺平」头条，常驻、不受闸门控制
     body_elements = [
+        *([{"tag": "markdown", "content": head}, {"tag": "hr"}] if head else []),
         {"tag": "markdown", "content": f"{v['text']}\n\n`{v['badge']}`"},
         {"tag": "hr"},
         {"tag": "markdown", "content": _adv_section(m)},   # 能力总评——主屏常驻
@@ -282,8 +325,10 @@ def build_value_card(m: dict) -> dict:
 
 def _build_text(m: dict) -> str:
     v = m["verdict"]
+    head = _cumulative_headline(m)
     return "\n".join([
         f"🏆 卡门智投 · 价值体检 {m['data_through'] or ''}",
+        *([head, ""] if head else []),
         v["text"], v["badge"], "",
         _adv_section(m), "", _strategy_edge_text(), "", _behavior_section(m), "",
         _dip_section(m), "", _meta_section(m),
@@ -309,4 +354,10 @@ async def run_value_report(db_path: str = "data/agent.db") -> tuple[dict, str, d
         print(f"[ValueReport] 暴跌回填跳过：{e}")
 
     m = compute_value_metrics(p)
+    # 累计「你 vs 躺平·截至今天」头条——实时拉价，失败兜底 None 绝不崩卡
+    try:
+        m["cumulative"] = compute_cumulative_value(p)
+    except Exception as e:
+        print(f"[ValueReport] 累计头条计算跳过：{e}")
+        m["cumulative"] = None
     return build_value_card(m), _build_text(m), m

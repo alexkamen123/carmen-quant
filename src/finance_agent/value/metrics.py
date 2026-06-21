@@ -84,6 +84,42 @@ def wilson_ci(correct: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
+def _score_window(rows: list[dict], ret_key: str, bm_key: str,
+                  neutral_band: float) -> dict | None:
+    """对给定窗口(7d/30d/90d)算命中率 + 组合 alpha，复用方向判定与 Wilson CI。
+    中性带随窗口缩放（短窗噪声大、长窗放宽）。无可用样本返回 None。
+    benchmark 子集做组合 alpha：bullish=return-bench，bearish 反号（少亏即赚）。"""
+    correct = wrong = 0
+    effs: list[float] = []
+    for r in rows:
+        ret = r.get(ret_key)
+        if ret is None:
+            continue
+        bull = _is_bullish(r["recommendation"], r["position_change"])
+        bear = _is_bearish(r["recommendation"], r["position_change"])
+        if abs(ret) >= neutral_band:
+            hit = (ret > 0) if bull else ((ret < 0) if bear else None)
+            if hit is not None:
+                correct += 1 if hit else 0
+                wrong += 0 if hit else 1
+        bm = r.get(bm_key)
+        if bm is not None:
+            d = ret - bm
+            effs.append(-d if bear else d)
+    n_judged = correct + wrong
+    if n_judged == 0 and not effs:
+        return None
+    ci = wilson_ci(correct, n_judged) if n_judged else None
+    return {
+        "n_judged": n_judged, "correct": correct, "wrong": wrong,
+        "win_rate": round(correct / n_judged * 100, 1) if n_judged else None,
+        "ci_low": round(ci[0] * 100, 1) if ci else None,
+        "ci_high": round(ci[1] * 100, 1) if ci else None,
+        "alpha_n": len(effs),
+        "alpha_avg": round(sum(effs) / len(effs), 2) + 0.0 if effs else None,
+    }
+
+
 def _span_days(dates: list[str]) -> int:
     ds = sorted(d for d in dates if d)
     if len(ds) < 2:
@@ -115,7 +151,8 @@ def compute_value_metrics(db_path=None) -> dict:
                        "OR position_change LIKE '减仓%'")
         dir_rows = [dict(r) for r in con.execute(
             "SELECT date, ticker, recommendation, position_change, return_7d, "
-            "benchmark_return_7d, market FROM recommendations "
+            "benchmark_return_7d, return_30d, benchmark_return_30d, "
+            "return_90d, benchmark_return_90d, market FROM recommendations "
             f"WHERE return_7d IS NOT NULL AND IFNULL(is_watch, 0) = 0 AND ({_DIR_FILTER})"
         ).fetchall()]
         shadow_rows = [dict(r) for r in con.execute(
@@ -186,6 +223,14 @@ def compute_value_metrics(db_path=None) -> dict:
         "ci_high": round(ci[1] * 100, 1) if ci else None,
         "buckets_note": "仅减仓择时" if n_buy == 0 and n_dir > 0 else None,
         "sell_right": sell_right, "sell_wrong": sell_wrong,  # 卖/减专项（能力总评第3问）
+    }
+
+    # ── 多窗口信号超额（7/30/90 天）：消费已回填的长周期列，回应"7天太短"──
+    # 7天噪声大、30/90天才是价值兑现窗口；中性带随窗口放宽。90天暂多为空→显示"未到"。
+    alpha_by_window = {
+        "7d": _score_window(dir_rows, "return_7d", "benchmark_return_7d", NEUTRAL_BAND),
+        "30d": _score_window(dir_rows, "return_30d", "benchmark_return_30d", 3.0),
+        "90d": _score_window(dir_rows, "return_90d", "benchmark_return_90d", 5.0),
     }
 
     # ── BUY类（选股/加仓）alpha —— 当前多为 N=0，显式占位 ──
@@ -373,8 +418,9 @@ def compute_value_metrics(db_path=None) -> dict:
         # 真·跑输基准：橙（仅此情形可说"不如躺平"）
         verdict = {
             "state": 1, "color": "orange",
-            "text": (f"📉 实话实说：截至本期，操作类建议平均**跑输基准 {abs(round(avg_alpha, 2))}%**"
-                     f"{ci_txt}，n={n_dir}。按这些建议操作暂时不如躺平买指数；"
+            "text": (f"📉 我们的买卖信号·**操作后第7天定格**·平均跑输基准 "
+                     f"{abs(round(avg_alpha, 2))}%{ci_txt}，n={n_dir}。"
+                     f"⚠️ 这是「信号」的7天表现，**不是你账户的累计盈亏**；"
                      f"我们更看这条曲线随迭代是否回升，逐条对错见下方明细。{buy_caveat}"),
             "badge": badge,
         }
@@ -382,9 +428,9 @@ def compute_value_metrics(db_path=None) -> dict:
         # alpha≥0 但命中率<50%：少数大赢+多数小输，不否定已证明的正超额收益
         verdict = {
             "state": 1, "color": "orange",
-            "text": (f"⚖️ 平均超额收益为正（**+{round(avg_alpha, 2)}%**），但方向命中率仅 "
+            "text": (f"⚖️ 我们的买卖信号·7天平均超额为正（**+{round(avg_alpha, 2)}%**），但方向命中率仅 "
                      f"{hit_rate['win_rate']}%{ci_txt}，n={n_dir}——盈亏由少数信号驱动，"
-                     f"稳定性待样本验证，逐条见下方明细。{buy_caveat}"),
+                     f"稳定性待验证（此为信号7天表现，非你账户累计），明细见下方。{buy_caveat}"),
             "badge": badge,
         }
     else:
@@ -392,13 +438,14 @@ def compute_value_metrics(db_path=None) -> dict:
         wr_txt = f"、命中率 {hit_rate['win_rate']}%" if hit_rate["win_rate"] is not None else ""
         verdict = {
             "state": 2, "color": "green",
-            "text": (f"📈 初步证据：操作类建议平均**跑赢基准 +{round(avg_alpha, 2)}%**{wr_txt}，"
-                     f"n={n_dir}、覆盖 {n_tk} 只票 {span} 天。样本仍在增长，结论会随数据更新，明细见下。{buy_caveat}"),
+            "text": (f"📈 初步证据：我们的买卖信号·**操作后第7天**·平均跑赢基准 +{round(avg_alpha, 2)}%{wr_txt}，"
+                     f"n={n_dir}、覆盖 {n_tk} 只票 {span} 天（信号7天表现，非你账户累计盈亏）。样本仍在增长，明细见下。{buy_caveat}"),
             "badge": badge,
         }
 
     return {
         "gate": gate, "composition": composition, "hit_rate": hit_rate,
+        "alpha_by_window": alpha_by_window,
         "buy_alpha": buy_alpha, "combined_alpha": combined_alpha,
         "hold_quality": hold_quality, "shadow_picks": shadow_picks,
         "active_vs_passive": active_vs_passive,
