@@ -16,6 +16,7 @@ from finance_agent.db.tracker import (
     list_theses, log_user_action, get_action_history,
     backfill_action_returns, get_feedback_accuracy, feedback_summary,
     get_dip_stats, backfill_dip_outcomes, detect_portfolio_changes, realign_alpha,
+    save_recommendations, _fetch_current_price, _conn, _resolve_db,
 )
 from finance_agent.alerts.earnings_trigger import check_and_alert_earnings
 from finance_agent.alerts.cooldown_monitor import run_cooldown_check
@@ -392,6 +393,59 @@ def log_action(
     console.print(f"✅ 已记录：{ticker.upper()} {action.upper()}")
     if action.upper() == "BUY":
         _try_print_behavior_hint()
+
+
+_WATCH_ALLOWED = {"买入", "减仓", "卖出", "持有", "观望"}
+
+
+@app.command("log-watch")
+def log_watch(
+    ticker: str = typer.Argument(..., help="股票代码，如 GS / 00700"),
+    rec: str    = typer.Argument(..., help="方向裁决：买入/减仓/卖出/持有/观望"),
+    price: float = typer.Option(None, "--price",  "-p", help="裁决时价格，留空自动拉现价"),
+    market: str  = typer.Option("us", "--market", "-m", help="市场：us/hk/cn"),
+    date: str    = typer.Option(None, "--date",   "-d", help="裁决日期 YYYY-MM-DD，留空取今天"),
+):
+    """记录一条影子选股裁决（is_watch=1，不花真钱，纯考选股眼光）。
+
+    可证伪性闸门：只接受离散方向裁决；模糊估值判断（如"偏贵待回调"）请落为'观望'——
+    它不进命中率，只留痕。影子轨与真实账户口径物理隔离，绝不并入「你 vs 躺平」头条。
+    """
+    from datetime import date as _date
+
+    t, r = ticker.upper().strip(), rec.strip()
+    if r not in _WATCH_ALLOWED:
+        console.print(f"❌ rec 必须是 {'/'.join(_WATCH_ALLOWED)} 之一；"
+                      f"模糊估值判断（偏贵待回调等）请落为'观望'，不会进命中率")
+        raise typer.Exit(1)
+
+    d = date or _date.today().isoformat()
+
+    # CLI 层去重保护（不碰 save_recommendations 核心写入路径、不松动 (date,ticker) 唯一性不变式）：
+    # 当天该票已有任意记录则跳过，避免与日报 is_watch=0 行静默冲突
+    p = _resolve_db(DB_PATH)
+    with _conn(p) as con:
+        clash = con.execute(
+            "SELECT is_watch, recommendation FROM recommendations WHERE date=? AND ticker=?",
+            (d, t),
+        ).fetchone()
+    if clash:
+        console.print(f"⚠️ {d} 已有 {t} 记录（is_watch={clash['is_watch']}，{clash['recommendation']}）；"
+                      f"为避免唯一性冲突跳过，如需另记请用 --date 指定其它日期")
+        raise typer.Exit(0)
+
+    if price is None:
+        price = _fetch_current_price(t, market)
+        if price is None:
+            console.print(f"❌ 无法自动获取 {t} 现价，请用 --price 显式指定")
+            raise typer.Exit(1)
+
+    save_recommendations(d, [{
+        "ticker": t, "recommendation": r, "position_change": None,
+        "price_at_rec": price, "market": market, "is_watch": 1,
+    }], db_path=DB_PATH)
+    tag = "方向性·可考眼光" if r in ("买入", "减仓", "卖出") else "非方向性·仅留痕"
+    console.print(f"✅ 影子选股已记：{d} {t} {r} @ {price:.2f}（{market}）· {tag}")
 
 
 def _try_print_behavior_hint() -> None:
