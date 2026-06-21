@@ -120,6 +120,25 @@ def _score_window(rows: list[dict], ret_key: str, bm_key: str,
     }
 
 
+def _dedup_weekly(rows: list[dict]) -> list[dict]:
+    """同一 (ticker, ISO周) 的连续推荐视为同一独立信号，只保留该周首条。
+    消除"同票连推数日"造成的伪独立膨胀（7天窗口高度重叠、同一 thesis，
+    计多条会虚增 n 并重复计入相关结果）。按日期升序取首条，确定性。"""
+    seen: set = set()
+    out: list[dict] = []
+    for r in sorted(rows, key=lambda x: x["date"]):
+        try:
+            y, w, _ = datetime.strptime(r["date"], "%Y-%m-%d").isocalendar()
+            key = (r["ticker"], y, w)
+        except (ValueError, TypeError):
+            key = (r["ticker"], r["date"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
 def _span_days(dates: list[str]) -> int:
     ds = sorted(d for d in dates if d)
     if len(ds) < 2:
@@ -155,6 +174,8 @@ def compute_value_metrics(db_path=None) -> dict:
             "return_90d, benchmark_return_90d, market FROM recommendations "
             f"WHERE return_7d IS NOT NULL AND IFNULL(is_watch, 0) = 0 AND ({_DIR_FILTER})"
         ).fetchall()]
+        # 连推去重（_meta_section 早已自承的缺陷）：同 (票,ISO周) 只算一条独立信号
+        dir_rows = _dedup_weekly(dir_rows)
         shadow_rows = [dict(r) for r in con.execute(
             "SELECT date, ticker, recommendation, position_change, return_7d, "
             "benchmark_return_7d FROM recommendations "

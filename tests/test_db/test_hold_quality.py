@@ -2,7 +2,7 @@
 """task#29：持有判断质量分栏（A）+ 影子选股分栏隔离（B1）测试（零网络）。"""
 from finance_agent.db import tracker
 from finance_agent.value.metrics import compute_value_metrics, HOLD_BAD_ALPHA
-from finance_agent.value.report import _hold_quality_section, _shadow_section
+from finance_agent.value.report import _adv_section, _shadow_section
 
 
 def _seed(db, ticker, rec, ret, bm, is_watch=0, pos=None, date="2026-06-01"):
@@ -28,8 +28,9 @@ def test_hold_quality_buckets(tmp_path):
     assert h == {"n": 3, "right": 1, "wrong": 1, "neutral": 1, "avg_alpha": -2.0,
                  "bad_alpha_threshold": HOLD_BAD_ALPHA,
                  "wrong_cases": [{"date": "2026-06-01", "ticker": "B", "alpha": -7.0}]}
-    out = _hold_quality_section(m)
-    assert "幸亏拿住(跑赢大盘) **1**" in out and "B(06-01 比大盘差7%)" in out
+    # 持有质量现渲染在能力总评第2问（loop③：死代码已删、明细提主屏）
+    out = _adv_section(m)
+    assert "幸亏拿住(跑赢) **1**" in out and "B(06-01 差7%)" in out
 
 
 def test_hold_quality_not_mixed_into_hit_rate(tmp_path):
