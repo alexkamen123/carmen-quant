@@ -22,6 +22,9 @@ GATE_MIN_TICKERS = 8
 GATE_MIN_BM_COV = 0.70
 NEUTRAL_BAND = 1.0   # |7日收益| < 1% 记中性，不进命中率分子分母
 HOLD_BAD_ALPHA = -5.0  # 持有期 alpha ≤ 此值 = 持有错（该减没减）；写死可见防 p-hacking
+# 影子选股轨「攒够才考虑下结论」的展示目标（仅供进度提示，不自动升格为结论；
+# 何时把选股轨升格为确定性头条须单独评审，见设计评审 D2）
+SHADOW_DISPLAY_TARGET = 20
 
 # ── 暴跌分级（order6）：纯规则零 LLM，词表写死可审计（沿用 GATE_* 防 p-hacking 风格）──
 DIP_BUCKET_OPPORTUNITY = "机会型回调"   # thesis 完好 + 情绪/板块/技术性驱动
@@ -298,26 +301,41 @@ def compute_value_metrics(db_path=None) -> dict:
         combined_alpha = {"n": 0, "avg": None, "reliable": False, "status": "no_sample"}
 
     # ── 影子选股（watchlist 推荐，无真实仓位，纯测量选股能力）──
+    # 本轮只展示明细+Wilson CI，措辞固定"样本不足不下结论"，不开"证明了选股能力"头条
+    # （N 小且无自动来源时设头条=复刻它本要解决的 p-hacking，详见设计评审）。
     s_correct = s_wrong = 0
     s_alphas = []
-    for r in shadow_rows:
+    s_picks = []
+    for r in sorted(shadow_rows, key=lambda x: x["date"], reverse=True):
         ret = r["return_7d"]
-        if abs(ret) < NEUTRAL_BAND:
-            continue
         bull = _is_bullish(r["recommendation"], r["position_change"])
         bear = _is_bearish(r["recommendation"], r["position_change"])
-        hit = (ret > 0) if bull else ((ret < 0) if bear else None)
-        if hit is None:
-            continue
-        s_correct += 1 if hit else 0
-        s_wrong += 0 if hit else 1
-        if r["benchmark_return_7d"] is not None:
-            a = ret - r["benchmark_return_7d"]
-            s_alphas.append(-a if bear else a)
+        if abs(ret) < NEUTRAL_BAND:
+            verdict_t = "中性"
+        else:
+            hit = (ret > 0) if bull else ((ret < 0) if bear else None)
+            if hit is None:
+                verdict_t = "—"
+            else:
+                s_correct += 1 if hit else 0
+                s_wrong += 0 if hit else 1
+                verdict_t = "对" if hit else "错"
+                if r["benchmark_return_7d"] is not None:
+                    a = ret - r["benchmark_return_7d"]
+                    s_alphas.append(-a if bear else a)
+        s_picks.append({"date": r["date"], "ticker": r["ticker"],
+                        "rec": r["recommendation"], "ret": ret, "verdict": verdict_t})
+    s_judged = s_correct + s_wrong
+    s_ci = wilson_ci(s_correct, s_judged) if s_judged else None
     shadow_picks = {
         "n": len(shadow_rows), "correct": s_correct, "wrong": s_wrong,
-        "n_tickers": len({r["ticker"] for r in shadow_rows}),
+        "n_judged": s_judged, "n_tickers": len({r["ticker"] for r in shadow_rows}),
+        "win_rate": round(s_correct / s_judged * 100, 1) if s_judged else None,
+        "ci_low": round(s_ci[0] * 100, 1) if s_ci else None,
+        "ci_high": round(s_ci[1] * 100, 1) if s_ci else None,
         "avg_alpha": round(sum(s_alphas) / len(s_alphas), 2) + 0.0 if s_alphas else None,
+        "target": SHADOW_DISPLAY_TARGET,
+        "picks": s_picks[:8],
     }
 
     # ── 持有判断质量（与方向命中率分栏，绝不混算）──

@@ -139,20 +139,43 @@ def _behavior_section(m: dict) -> str:
 
 
 def _shadow_section(m: dict) -> str:
-    """影子选股段（试用名单，不花真钱只考眼光）：空则不占卡片。"""
+    """影子选股段（试用名单，不花真钱只考眼光）：空则不占卡片。
+    本轮口径：只展示明细 + Wilson CI，措辞固定「样本不足不下结论」，绝不开「证明了选股能力」头条
+    （样本小且无自动来源时设头条=复刻 p-hacking）。与真实账户口径物理隔离。"""
     s = m.get("shadow_picks") or {}
     if not s.get("n"):
         return ""
-    n_judged = s["correct"] + s["wrong"]
-    rate = f"说对 {s['correct']}/{n_judged} 次" if n_judged else "暂无结果"
-    if s.get("avg_alpha") is not None:
-        verb = "多赚" if s["avg_alpha"] >= 0 else "少赚"
-        extra = f"，平均比大盘{verb} {abs(s['avg_alpha']):.1f}%"
+    njud = s.get("n_judged") or 0
+    target = s.get("target") or 0
+    short = max(0, target - njud)
+    head = (f"**🔭 选股眼光·影子轨**（没花你一分钱，纯考「我们挑的票准不准」）· "
+            f"{s['n']} 条 / {s['n_tickers']} 票，已满7天可判 {njud} 条")
+    if njud:
+        wr = s.get("win_rate")
+        ci = (f"（95%CI {s['ci_low']}%~{s['ci_high']}%）"
+              if s.get("ci_low") is not None else "")
+        body = f"　说对 {s['correct']}/{njud} 次"
+        if wr is not None:
+            body += f"（命中率 {wr}%{ci}）"
+        if s.get("avg_alpha") is not None:
+            verb = "多赚" if s["avg_alpha"] >= 0 else "少赚"
+            body += f"，平均比大盘{verb} {abs(s['avg_alpha']):.1f}%"
     else:
-        extra = ""
-    return (f"**🔭 试用选股名单**（你没买，只用来考我们的选股眼光）· {s['n']} 条 / {s['n_tickers']} 票\n"
-            f"{rate}{extra}\n"
-            f"_这些票不花你的钱，纯粹用来攒「我们挑的票准不准」的实战记录_")
+        body = "　暂无已满 7 天、方向明确的可判记录"
+    status = (f"　⏳ **样本不足，只记录不下结论**（已攒 {njud} 条 / 目标 {target} 条，"
+              f"还差 {short} 条才考虑评估；何时升格为结论须单独评审）")
+    lines = [head, body, status]
+    picks = s.get("picks") or []
+    if picks:
+        icon = {"对": "🟢", "错": "🔴", "中性": "➖", "—": "·"}
+        detail = "；".join(
+            f"{icon.get(p['verdict'], '·')}{p['date'][5:]} {p['ticker']} {p['rec']}"
+            + (f"({'+' if (p['ret'] or 0) >= 0 else ''}{p['ret']}%)" if p['ret'] is not None else "")
+            for p in picks)
+        lines.append("　" + detail)
+    lines.append("_⚠️ 这些票来自人工/bot 自选关注名单、非预注册完整 universe，存在挑票偏差；"
+                 "纸面胜率系上界、不可外推为真金白银能赚。影子轨绝不并入「你 vs 躺平」累计与操作轨超额。_")
+    return "\n".join(lines)
 
 
 # 暴跌分桶的人话注解（bucket 常量名是 metrics 的 key，此处只管显示）

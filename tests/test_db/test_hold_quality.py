@@ -59,7 +59,7 @@ def test_shadow_rows_isolated(tmp_path):
     s = m["shadow_picks"]
     assert s["n"] == 2 and s["correct"] == 1 and s["wrong"] == 1
     assert s["avg_alpha"] == 0.0   # (+5 + -5)/2
-    assert "试用选股名单" in _shadow_section(m)
+    assert "选股眼光·影子轨" in _shadow_section(m)
 
 
 def test_shadow_section_hidden_when_empty(tmp_path):
