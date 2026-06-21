@@ -17,14 +17,58 @@ from finance_agent.value.cumulative import compute_cumulative_value
 _TEMPLATE = {"grey": "grey", "orange": "orange", "green": "green"}
 
 
+def _takeaway(m: dict) -> str | None:
+    """一句话串场：仅在「账户跑赢躺平 ∧ 持有判断为正 ∧ 买卖信号可比且为负」这一
+    经典『赚靠拿住、短线买卖在亏』模式命中时点破，给行为指导。其余返回 None，不强行串场。
+    确定性判定、零 LLM——治「绿头条 vs 红明细」看似自相矛盾的观感。"""
+    c = m.get("cumulative")
+    if not c or c.get("excess_pct") is None or c["excess_pct"] < 0:
+        return None
+    hold_a = (m.get("hold_quality") or {}).get("avg_alpha")
+    if hold_a is None or hold_a <= 0:
+        return None
+    ca = m.get("combined_alpha") or {}
+    if ca.get("status") != "ok" or ca.get("avg") is None or ca["avg"] >= 0:
+        return None
+    return (f"💡 **一句话看懂**：你账户能跑赢躺平，主要靠**拿住没瞎动**"
+            f"（持有判断跑赢大盘 +{hold_a:.1f}%）；而**短线买卖其实在亏**"
+            f"（买卖信号 7 天 {ca['avg']:.1f}%）。给你的提示：**守住好仓、少折腾**。")
+
+
+_MIN_WINDOW_ALPHA_N = 5   # 分窗口超额低于此样本量不报数值（防「30天 -50.4%(n=4)」噪声吓人）
+
+
+def _format_window_alpha(abw: dict) -> str | None:
+    """分窗口超额一行：样本够(n≥5)才报数值，小样本诚实标「样本少」，无任一够样本则返回 None。"""
+    parts = []
+    has_number = False
+    for w, label in (("7d", "7天"), ("30d", "30天"), ("90d", "90天")):
+        s = abw.get(w)
+        if s and s.get("alpha_avg") is not None and s.get("alpha_n", 0) >= _MIN_WINDOW_ALPHA_N:
+            parts.append(f"{label} {s['alpha_avg']:+.1f}%（n={s['alpha_n']}）")
+            has_number = True
+        elif s and s.get("alpha_n"):
+            parts.append(f"{label} 样本少(n={s['alpha_n']})暂不下结论")
+        else:
+            parts.append(f"{label} 未到")
+    if not has_number:
+        return None
+    return ("　_信号超额·分窗口_：" + " ／ ".join(parts)
+            + "　_（30/90天才是价值兑现窗口，7天多为噪声）_")
+
+
 def _adv_section(m: dict) -> str:
     """能力总评——三问：让你买的赚多少 / 让你拿住的赚还是亏 / 让你卖的没做会怎样。
     个股是真本事，定投单列只放收益供横向比较（用户设计：评整体能力 + 调风投/定投比例）。
     全大白话，不用 alpha/命中率/CI 黑话；口径不变只换说法。"""
     hr, ba, hq = m["hit_rate"], m["buy_alpha"], m.get("hold_quality") or {}
     avp = m.get("active_vs_passive") or {}
-    lines = ["**📊 卡门智投能力总评**　_这些是「我们的建议」战绩，不是你的操作次数_",
-             "**【个股·风险类】这才是真本事**"]
+    lines = []
+    tk = _takeaway(m)
+    if tk:
+        lines += [tk, ""]   # 串场置顶，统领下方分项明细
+    lines += ["**📊 卡门智投能力总评**　_这些是「我们的建议」战绩，不是你的操作次数_",
+              "**【个股·风险类】这才是真本事**"]
 
     # 1️⃣ 让你买的——选股眼光
     if ba["status"] == "no_sample":
@@ -72,18 +116,10 @@ def _adv_section(m: dict) -> str:
             lines.append(f"　**▶ 我们的买卖信号·7天平均超额：{ca['avg']:.1f}%** ❌"
                          f"　_（信号7天表现，非你账户累计；样本少，不代表长期）_")
 
-    # 分窗口超额（7/30/90 天）：7天噪声大，30/90天才见价值兑现
-    abw = m.get("alpha_by_window") or {}
-    parts = []
-    for w, label in (("7d", "7天"), ("30d", "30天"), ("90d", "90天")):
-        s = abw.get(w)
-        if s and s.get("alpha_avg") is not None:
-            parts.append(f"{label} {s['alpha_avg']:+.1f}%（n={s['alpha_n']}）")
-        else:
-            parts.append(f"{label} 未到")
-    if any("未到" not in p for p in parts):
-        lines.append("　_信号超额·分窗口_：" + " ／ ".join(parts)
-                     + "　_（30/90天才是价值兑现窗口，7天多为噪声）_")
+    # 分窗口超额（7/30/90 天）：7天噪声大，30/90天才见价值兑现；小样本不报数值
+    abw_line = _format_window_alpha(m.get("alpha_by_window") or {})
+    if abw_line:
+        lines.append(abw_line)
 
     # 【ETF·定投类】不评判断，只放收益供横向比较（调风投/定投比例用）
     if avp.get("dca_avg") is not None or avp.get("active_avg") is not None:
@@ -92,7 +128,9 @@ def _adv_section(m: dict) -> str:
         act_s = (f"{avp['active_avg']:+.1f}%（{avp['active_n']} 次）"
                  if avp.get("active_avg") is not None else "—")
         lines.append(f"• 定投标的 7 日平均收益：**{dca_s}**")
-        lines.append(f"• 你主动买入 7 日平均收益：**{act_s}**")
+        lines.append(f"• 你主动买入(你实操下单的个股) 7 日平均收益：**{act_s}**"
+                     f"\n　_注：这是你真金白银买的(含没按建议的)、看的是绝对涨跌；"
+                     f"和最上面「让你买的」(只算我们建议的信号、比的是跑赢大盘多少)不是一回事，别直接比_")
         if avp.get("dca_avg") is not None and avp.get("active_avg") is not None:
             winner = "你的主动选股更赚" if avp["active_avg"] > avp["dca_avg"] else "定投/躺平更稳赚"
             lines.append(f"　_横向比：目前 **{winner}** → 可据此调整风投/定投的钱分多少_")

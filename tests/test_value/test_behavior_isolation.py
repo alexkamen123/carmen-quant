@@ -7,7 +7,7 @@
 """
 from finance_agent.db import tracker
 from finance_agent.value.metrics import compute_value_metrics
-from finance_agent.value.report import _behavior_section
+from finance_agent.value.report import _behavior_section, _adv_section
 from finance_agent.weekly.drift import HEDGE_TICKERS
 
 
@@ -59,3 +59,14 @@ def test_behavior_section_marks_cash_not_green(tmp_path):
     sgov_line = next(l for l in txt.split("\n") if "SGOV" in l)
     assert "🟢" not in sgov_line                              # 对冲不冒充选股赚
     assert "1 笔个股操作" in txt                               # 统计只数个股(NVDA)
+
+
+def test_active_buy_line_disambiguated_from_advice(tmp_path):
+    """「你主动买入」(你实操) 必须和「让你买的」(我们建议、算超额) 点清区别，防两个买入数字反向打架。"""
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    with tracker._conn(db) as con:
+        _seed_actions(con, [("2026-05-20", "NVDA", "BUY", 5.0)])
+    txt = _adv_section(compute_value_metrics(db))
+    assert "你主动买入" in txt
+    assert "不是一回事" in txt                                 # 消歧注，避免与「让你买的」混
