@@ -32,6 +32,20 @@ def test_alpha_by_window_consumes_30_90(tmp_path):
     assert abw["90d"] is None          # 90天无样本 → None（优雅"未到"，不崩）
 
 
+def test_weekly_dedup_collapses_consecutive(tmp_path):
+    """loop③：同 (票, ISO周) 连推折成一条独立信号，消除伪膨胀。"""
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    with tracker._conn(db) as con:
+        for d in ("2026-05-04", "2026-05-05", "2026-05-06"):   # 同 ISO 周(20)
+            _insert_rec(con, d, "NVDA", "买入", "小加1", 5.0, 1.0)
+        _insert_rec(con, "2026-05-11", "NVDA", "买入", "小加1", 5.0, 1.0)  # 次周
+        _insert_rec(con, "2026-05-05", "MU", "减仓", "减仓1", -3.0, 1.0)   # 另一只票
+    m = compute_value_metrics(db)
+    # NVDA: 3条同周折1 + 1条次周 = 2；MU: 1 → n_dir=3（而非 5）
+    assert m["gate"]["n_dir"] == 3
+
+
 def test_score_window_bearish_sign_and_neutral_band():
     # bearish 反号：卖出后续跌(ret<0)=帮你躲跌=正贡献
     rows = [{"recommendation": "卖出", "position_change": "", "return_30d": -10.0,

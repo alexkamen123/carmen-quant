@@ -34,7 +34,7 @@ def _adv_section(m: dict) -> str:
         few = f"（仅 {ba['n']} 次，太少先参考）" if ba["n"] < 5 else f"（{ba['n']} 次）"
         lines.append(f"1️⃣ **让你买的**：买入后 7 天平均比大盘**{verb} {abs(ba['avg']):.1f}%**{few}")
 
-    # 2️⃣ 让你拿住的——持有判断（原单列的 hold_quality 并进来）
+    # 2️⃣ 让你拿住的——持有判断（持有也是立场，与买卖同级，不降级）
     if hq.get("n"):
         avg = hq.get("avg_alpha")
         tail = (f"，整体{'跑赢' if avg >= 0 else '跑输'}大盘 {abs(avg):.1f}%") if avg is not None else ""
@@ -42,6 +42,12 @@ def _adv_section(m: dict) -> str:
             f"2️⃣ **让你拿住的**：{hq['n']} 次「持有别动」里，"
             f"幸亏拿住(跑赢) **{hq['right']}** 次、该卖没卖(明显跑输) **{hq['wrong']}** 次{tail}"
         )
+        # 最该减没减——可直接行动的减仓提示（原埋在死代码里，提到主屏）
+        wc = hq.get("wrong_cases") or []
+        if wc:
+            worst = "、".join(f"{c['ticker']}({c['date'][5:]} 差{abs(c['alpha']):.0f}%)"
+                              for c in wc[:3])
+            lines.append(f"　↳ 最该减没减：{worst}")
     else:
         lines.append("2️⃣ **让你拿住的**：暂无可评估的持有建议")
 
@@ -149,33 +155,6 @@ def _shadow_section(m: dict) -> str:
             f"_这些票不花你的钱，纯粹用来攒「我们挑的票准不准」的实战记录_")
 
 
-def _hold_quality_section(m: dict) -> str:
-    """持有判断质量——人话版：劝你拿住的票，是幸亏没卖还是该卖没卖。"""
-    h = m.get("hold_quality") or {}
-    n = h.get("n", 0)
-    lines = [f"**🤝 “拿住别动”的建议准不准** · 共 {n} 次"]
-    if not n:
-        lines.append("暂无可评估的持有记录")
-        return "\n".join(lines)
-    avg = h.get("avg_alpha")
-    if avg is not None:
-        verb = "跑赢大盘" if avg >= 0 else "跑输大盘"
-        avg_str = f"，整体{verb} {abs(avg):.1f}%"
-    else:
-        avg_str = ""
-    lines.append(
-        f"幸亏拿住(跑赢大盘) **{h['right']}** 次 · 该卖没卖(明显跑输) **{h['wrong']}** 次 · "
-        f"不好不坏 **{h['neutral']}** 次{avg_str}"
-    )
-    if h.get("wrong_cases"):
-        worst = "、".join(f"{c['ticker']}({c['date'][5:]} 比大盘差{abs(c['alpha']):.0f}%)"
-                          for c in h["wrong_cases"][:3])
-        lines.append(f"最该减没减：{worst}")
-    lines.append("_“拿住”也是一种判断：拿住后跑赢大盘=对，明显跑输=本该减仓。"
-                 "和买卖建议分开算，定投不计。_")
-    return "\n".join(lines)
-
-
 # 暴跌分桶的人话注解（bucket 常量名是 metrics 的 key，此处只管显示）
 _DIP_GLOSS = {
     DIP_BUCKET_OPPORTUNITY: "跌了但逻辑没破，可能是机会",
@@ -230,7 +209,7 @@ def _meta_section(m: dict) -> str:
         f"• 数据构成：{comp['filled']} 条已满 7 天的记录里，只有 {comp['directional']} 条是明确买/卖"
         f"（能打分），其余 {comp['neutral_or_passive']} 条是“持有/定投”——不算进命中率",
         "• 怎么算的：跟大盘比时，你的票和大盘用**同一个起止日期**算涨跌，避免时间错位造假数。"
-        "已知还没做到：① 同一只票连续几天都推会重复计入 ② 30/90 天的长期结果还没到、目前只看 7 天",
+        "同票连推已按 (票, 周) 去重、不再伪重复计入；7/30/90 天超额已并列展示（90 天样本未满）。",
         f"• 数据截至 {m['data_through'] or '—'}；以上全是真实记录算出来的，没有 AI 编故事。",
     ])
 
