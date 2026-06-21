@@ -1191,8 +1191,12 @@ async def backfill_action_returns(db_path: str | Path | None = None) -> int:
     回填 BUY/SELL/TRIM 操作 7 天后的远期涨跌幅（actual_return）。
     - 找出 7+ 天前、actual_return 为空的记录
     - 用 yfinance 拉操作当天收盘价 → 第 7 个交易日收盘价，计算涨跌幅
-    - 符号约定：BUY 远期为正=买对了；SELL/TRIM 远期为负=卖对了（躲过下跌）
+    - 【符号约定·勿照注释反向改代码】统一存【原始远期涨跌】(不反号)：BUY/SELL/TRIM
+      一律是标的本身的涨跌方向。对错由消费层(metrics._behavior_section)判定——
+      BUY: ret>0=买对；SELL/TRIM: ret<0=躲跌对、ret>0=卖飞踏空。此处只负责如实存涨跌。
     - 港股代码（纯数字）自动转 yfinance 的 NNNN.HK 格式
+    - 实现细节：target_idx=min(6, len-1) 取第 7 个交易日(T+6，偶因停牌差 1 日)；
+      yf.download 的 period='15d' 与 start= 并用时被 yfinance 忽略，靠 start+足量行数兜底。
     """
     p = _resolve_db(db_path)
     init_db(p)

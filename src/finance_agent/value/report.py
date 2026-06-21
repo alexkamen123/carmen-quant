@@ -104,21 +104,25 @@ def _adv_section(m: dict) -> str:
 def _behavior_section(m: dict) -> str:
     beh = m["behavior"]
     trades = beh["trades"]
-    lines = [f"**💰 你的操作**（每笔=操作后**第7天定格**快照，非最新价）· 已回填 {beh['n']} 笔"]
+    # 三层隔离：个股(评选股对错) / 现金对冲(不评胜负)
+    stock = [t for t in trades if t.get("kind") != "cash"]
+    cash = [t for t in trades if t.get("kind") == "cash"]
+    lines = [f"**💰 你的操作**（每笔=下单后**第7天**的涨跌，不是今天的价；"
+             f"和上方账户累计是两码事，别直接相减）· 已回填 {beh['n']} 笔"]
     if not trades:
         lines.append("暂无已回填的实操记录")
         return "\n".join(lines)
 
-    # 大白话总结：把"红多"拆成 真亏 / 卖早(没亏) / 赚，避免误读
-    real_loss = sum(1 for t in trades if t["verdict"] == "亏")
-    sold_early = sum(1 for t in trades if t["verdict"] == "踏空")
-    good = sum(1 for t in trades if t["verdict"] in ("赚", "躲跌✓"))
+    # 大白话总结：把"红多"拆成 真亏 / 卖早(没亏) / 赚，避免误读（只统计个股）
+    real_loss = sum(1 for t in stock if t["verdict"] == "亏")
+    sold_early = sum(1 for t in stock if t["verdict"] == "踏空")
+    good = sum(1 for t in stock if t["verdict"] in ("赚", "躲跌✓"))
     lines.append(
-        f"📊 _{beh['n']} 笔里：真亏 **{real_loss}** 笔、卖早(踏空，没亏只少赚) **{sold_early}** 笔、"
+        f"📊 _{len(stock)} 笔个股操作里：真亏 **{real_loss}** 笔、卖早(踏空，没亏只少赚) **{sold_early}** 笔、"
         f"赚/卖对 **{good}** 笔。红≠全做错，🟡是卖早。_"
     )
 
-    for t in trades:
+    for t in stock:
         sign = "+" if t["ret"] >= 0 else ""
         if t["verdict"] in ("赚", "躲跌✓"):
             icon = "🟢"
@@ -129,6 +133,11 @@ def _behavior_section(m: dict) -> str:
         else:
             icon = "➖"
         lines.append(f"{icon} {t['date'][5:]} **{t['ticker']}** {t['action']} → 7日 {sign}{t['ret']}% · {t['verdict']}")
+    # 现金/对冲单列——不计选股胜负（否则 SGOV 近 0 收益会稀释、冒充选股战绩）
+    if cash:
+        cs = "、".join(f"{t['ticker']}({t['date'][5:]} {'+' if t['ret'] >= 0 else ''}{t['ret']}%)"
+                      for t in cash)
+        lines.append(f"💵 现金管理/对冲(不算选股对错)：{cs}")
     # 观察期提示：未满 7 天的操作还没结果（含首笔系统荐股 AVGO），给个交代
     pend = beh.get("pending") or []
     if pend:
@@ -222,15 +231,21 @@ def _meta_section(m: dict) -> str:
     g, comp = m["gate"], m["composition"]
     th = g["thresholds"]
     if g["gate_passed"]:
-        cred = "样本已够，结论可信度较高"
+        cred = "方向性样本已够，结论可信度较高"
     else:
-        cred = (f"⚠️ 样本还不够，现在的数字只能参考、不能下定论"
-                f"（要攒够 {th['min_n']} 条明确买卖建议、覆盖 {th['min_tickers']} 只票才算数）")
+        cred = (f"现在 {comp['directional']} 条明确买卖建议够给「初步判断」了，"
+                f"样本越多结论越硬，攒到 {th['min_n']} 条、{th['min_tickers']} 只票就很可靠"
+                f"（账户到今天累计赚没赚不受此限，见上方头条）")
     return "\n".join([
         "**📎 把话说在前头（诚实附录）**",
         f"• 结论可信度：{cred}",
-        f"• 数据构成：{comp['filled']} 条已满 7 天的记录里，只有 {comp['directional']} 条是明确买/卖"
-        f"（能打分），其余 {comp['neutral_or_passive']} 条是“持有/定投”——不算进命中率",
+        f"• 数据构成：{comp['filled']} 条已满 7 天的记录拆开看——"
+        f"**{comp['passive']} 条**是“持有/定投/观望”(按兵不动，不算谁对谁错)、"
+        f"**{comp['directional_raw']} 条**是明确买卖建议"
+        + (f"(同一只票一周内反复推荐的只算一次，去重后 {comp['directional']} 条独立信号)"
+           if comp['dedup_dropped'] else f"({comp['directional']} 条独立信号)")
+        + (f"、**{comp['shadow']} 条**是试用选股名单(没花你的钱)" if comp['shadow'] else "")
+        + "。",
         "• 怎么算的：跟大盘比时，你的票和大盘用**同一个起止日期**算涨跌，避免时间错位造假数。"
         "同票连推已按 (票, 周) 去重、不再伪重复计入；7/30/90 天超额已并列展示（90 天样本未满）。",
         f"• 数据截至 {m['data_through'] or '—'}；以上全是真实记录算出来的，没有 AI 编故事。",
@@ -294,6 +309,16 @@ def _panel(title: str, content: str, expanded: bool = False) -> dict:
     }
 
 
+def _header_template(m: dict) -> str:
+    """整卡 header 颜色 = 北极星朴素问题「你 vs 躺平」的答案：
+    有真实账户累计(cumulative.excess)就由它定色(≥0绿/<0橙)，永不被样本闸门焊成永久灰；
+    cumulative 缺失(实时拉价失败/无持仓)才回落 verdict.color。"""
+    c = m.get("cumulative")
+    if c and c.get("excess_pct") is not None:
+        return "green" if c["excess_pct"] >= 0 else "orange"
+    return _TEMPLATE.get(m["verdict"]["color"], "grey")
+
+
 def build_value_card(m: dict) -> dict:
     """schema 2.0：主屏只留「结论 + 能力总评」，详情全部折叠（C 端阅读体验）。"""
     v = m["verdict"]
@@ -319,7 +344,7 @@ def build_value_card(m: dict) -> dict:
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": f"🏆 卡门智投 · 价值体检 {m['data_through'] or ''}"},
-            "template": _TEMPLATE.get(v["color"], "grey"),
+            "template": _header_template(m),
         },
         "body": {"elements": body_elements},
     }

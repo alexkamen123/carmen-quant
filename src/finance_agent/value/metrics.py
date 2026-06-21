@@ -15,6 +15,7 @@ from datetime import datetime
 from finance_agent.db.tracker import (
     _resolve_db, _conn, init_db, get_feedback_accuracy, get_dip_stats,
 )
+from finance_agent.weekly.drift import HEDGE_TICKERS  # 对冲货基单一真相源，复用不另起白名单
 
 # 下结论闸门（写死可见，防 p-hacking）：方向性样本≥30 且覆盖≥8 票 且 benchmark 覆盖≥70%
 GATE_MIN_N = 30
@@ -195,6 +196,16 @@ def compute_value_metrics(db_path=None) -> dict:
             "benchmark_return_7d FROM recommendations "
             f"WHERE return_7d IS NOT NULL AND is_watch = 1 AND ({_DIR_FILTER})"
         ).fetchall()]
+        # composition 三子集计数（与 filled 同口径，绝不混算去重前后）：
+        #   dir_raw = is_watch=0 的方向性【未去重】；shadow = is_watch=1 全部
+        dir_raw_count = con.execute(
+            "SELECT COUNT(*) AS n FROM recommendations "
+            f"WHERE return_7d IS NOT NULL AND IFNULL(is_watch,0)=0 AND ({_DIR_FILTER})"
+        ).fetchone()["n"]
+        shadow_count = con.execute(
+            "SELECT COUNT(*) AS n FROM recommendations "
+            "WHERE return_7d IS NOT NULL AND is_watch = 1"
+        ).fetchone()["n"]
         data_through = con.execute(
             "SELECT MAX(date) AS m FROM recommendations"
         ).fetchone()["m"]
@@ -218,11 +229,20 @@ def compute_value_metrics(db_path=None) -> dict:
                        "min_bm_cov": GATE_MIN_BM_COV},
     }
 
+    # ── 数据构成（三互斥子集，并集=filled；守恒由 test_composition 守门）──
+    # passive = is_watch=0 内的非方向性（持有/观望/定投）：用 iw0 内减法，与 filled 同口径、
+    # NULL 安全；绝不重蹈旧 BUG 用「去重后 n_dir」减「未去重 filled」混族（267/252 谎报）。
+    iw0_filled = filled - shadow_count
+    passive_count = iw0_filled - dir_raw_count
     composition = {
         "filled": filled,
-        "directional": n_dir,
-        "neutral_or_passive": filled - n_dir,
-        "actionable_ratio": round(n_dir / filled, 3) if filled else 0.0,
+        "directional": n_dir,                      # 去重后独立方向性信号
+        "directional_raw": dir_raw_count,          # 去重前
+        "dedup_dropped": dir_raw_count - n_dir,    # 同票同周折叠掉的，单列透明交代
+        "passive": passive_count,                  # 持有/定投/观望（真实条数，不算命中率）
+        "shadow": shadow_count,                    # 影子选股名单（is_watch=1）
+        "actionable_ratio": (round(n_dir / (n_dir + passive_count), 3)
+                             if (n_dir + passive_count) else 0.0),
     }
 
     # ── 方向命中率（窄口径 + Wilson CI）；买/卖分开计数供"能力总评"三问 ──
@@ -382,14 +402,19 @@ def compute_value_metrics(db_path=None) -> dict:
     behavior_trades = []
     for r in act_rows:
         act, ret = r["action"], r["actual_return"]
-        if act == "BUY":
+        # 对冲货基(SGOV 等)是现金管理、不是选股，单列不评选股胜负（kind=cash）
+        kind = "cash" if r["ticker"] in HEDGE_TICKERS else "stock"
+        if kind == "cash":
+            verdict_t = "现金管理"
+        elif act == "BUY":
             verdict_t = "赚" if ret > 0 else ("亏" if ret < 0 else "平")
         elif act in ("SELL", "TRIM"):
             verdict_t = "躲跌✓" if ret < 0 else ("踏空" if ret > 0 else "平")
         else:
             verdict_t = "—"
         behavior_trades.append({"date": r["date"], "ticker": r["ticker"],
-                                "action": act, "ret": ret, "verdict": verdict_t})
+                                "action": act, "ret": ret, "verdict": verdict_t,
+                                "kind": kind})
     # 还在 7 天观察期的操作（含首笔系统荐股 AVGO）——给用户交代"为什么没显示"
     with _conn(p) as con:
         pending = [dict(r) for r in con.execute(
@@ -412,9 +437,10 @@ def compute_value_metrics(db_path=None) -> dict:
             "SELECT return_7d FROM recommendations "
             "WHERE recommendation = '按计划定投' AND return_7d IS NOT NULL"
         ).fetchall()]
-    # 主动：你真实买入操作（user_actions BUY）的 7 日实际涨跌，与定投同口径（都是"投进去后涨多少"）
+    # 主动：你真实买入的【个股】7 日实际涨跌（剔除对冲货基——否则现金类近 0 收益稀释选股能力）
     active_buys = [r["actual_return"] for r in act_rows
-                   if r["action"] == "BUY" and r["actual_return"] is not None]
+                   if r["action"] == "BUY" and r["actual_return"] is not None
+                   and r["ticker"] not in HEDGE_TICKERS]
     active_vs_passive = {
         "dca_n": len(dca),
         "dca_avg": round(sum(dca) / len(dca), 2) + 0.0 if dca else None,
@@ -451,12 +477,12 @@ def compute_value_metrics(db_path=None) -> dict:
         dir_kind = "减仓" if n_buy == 0 and n_dir > 0 else "买卖混合"
         verdict = {
             "state": 0, "color": "grey",
-            "text": (f"⏳ 卡门智投仍在积累战绩：到目前**我们发出的明确买/卖建议**共 {n_dir} 条"
-                     f"（不是你的操作次数，是系统每天给每只票打分里方向明确的那些）、"
-                     f"覆盖 {n_tk} 只票、约 {span} 天，其中买入类已满 7 天的 {n_buy} 条"
-                     f"（方向以{dir_kind}为主），**样本不足以证明能否帮你跑赢躺平**。"
-                     f"下方是已有真实记录的诚实记分牌；要等累计到 "
-                     f"{GATE_MIN_N} 条买卖建议、覆盖 {GATE_MIN_TICKERS} 只票再下定论。"),
+            "text": (f"⏳ **「我们的买卖建议」准不准**：目前方向明确的买/卖建议共 {n_dir} 条"
+                     f"（系统每天给每只票打分里方向明确的那些，不是你的操作次数）、"
+                     f"覆盖 {n_tk} 只票、约 {span} 天，其中买入类 {n_buy} 条（以{dir_kind}为主）。"
+                     f"**你账户到今天赚没赚，看上方「你 vs 躺平」头条**；这里只单看建议本身的短期命中。"
+                     f"{n_dir} 条还少、先看下方逐条战绩和趋势，攒到 "
+                     f"{GATE_MIN_N} 条、{GATE_MIN_TICKERS} 只票就能下硬结论。"),
             "badge": badge,
         }
     elif avg_alpha is None:
