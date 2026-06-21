@@ -60,10 +60,23 @@ def _adv_section(m: dict) -> str:
     ca = m["combined_alpha"]
     if ca["status"] == "ok":
         if ca["avg"] >= 0:
-            lines.append(f"　**▶ 个股操作整体 vs 躺平买大盘：领先 +{ca['avg']:.1f}%** ✅")
+            lines.append(f"　**▶ 我们的买卖信号·7天平均超额：+{ca['avg']:.1f}%** ✅　_（信号表现，非你账户累计）_")
         else:
-            lines.append(f"　**▶ 个股操作整体 vs 躺平买大盘：落后 {abs(ca['avg']):.1f}%** ❌"
-                         f"（样本少、受早期追高拖累，不代表长期）")
+            lines.append(f"　**▶ 我们的买卖信号·7天平均超额：{ca['avg']:.1f}%** ❌"
+                         f"　_（信号7天表现，非你账户累计；样本少，不代表长期）_")
+
+    # 分窗口超额（7/30/90 天）：7天噪声大，30/90天才见价值兑现
+    abw = m.get("alpha_by_window") or {}
+    parts = []
+    for w, label in (("7d", "7天"), ("30d", "30天"), ("90d", "90天")):
+        s = abw.get(w)
+        if s and s.get("alpha_avg") is not None:
+            parts.append(f"{label} {s['alpha_avg']:+.1f}%（n={s['alpha_n']}）")
+        else:
+            parts.append(f"{label} 未到")
+    if any("未到" not in p for p in parts):
+        lines.append("　_信号超额·分窗口_：" + " ／ ".join(parts)
+                     + "　_（30/90天才是价值兑现窗口，7天多为噪声）_")
 
     # 【ETF·定投类】不评判断，只放收益供横向比较（调风投/定投比例用）
     if avp.get("dca_avg") is not None or avp.get("active_avg") is not None:
@@ -84,7 +97,7 @@ def _adv_section(m: dict) -> str:
 def _behavior_section(m: dict) -> str:
     beh = m["behavior"]
     trades = beh["trades"]
-    lines = [f"**💰 你的操作（交易者的行为对不对）** · 已回填 {beh['n']} 笔"]
+    lines = [f"**💰 你的操作**（每笔=操作后**第7天定格**快照，非最新价）· 已回填 {beh['n']} 笔"]
     if not trades:
         lines.append("暂无已回填的实操记录")
         return "\n".join(lines)

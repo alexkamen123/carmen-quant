@@ -149,7 +149,10 @@ def test_verdict_orange_negative_alpha(tmp_path, monkeypatch):
     _seed_buys(db, [("NVDA", -5, 1), ("MU", -6, 1), ("AMD", -4, 1)])  # avg_alpha<0
     m = compute_value_metrics(db)
     assert m["verdict"]["state"] == 1
-    assert "跑输基准" in m["verdict"]["text"] and "不如躺平" in m["verdict"]["text"]
+    txt = m["verdict"]["text"]
+    assert "跑输基准" in txt and "信号" in txt and "第7天" in txt
+    # P0-3 止血：不再把信号7天超额冒充成"你账户截至本期不如躺平"
+    assert "不如躺平" not in txt and "截至本期" not in txt
 
 
 def test_verdict_orange_positive_alpha_low_winrate(tmp_path, monkeypatch):
@@ -159,7 +162,7 @@ def test_verdict_orange_positive_alpha_low_winrate(tmp_path, monkeypatch):
     _seed_buys(db, [("NVDA", 20, 0), ("MU", -2, 0), ("AMD", -2, 0)])  # avg_alpha=+5.33, win=33%
     m = compute_value_metrics(db)
     assert m["verdict"]["state"] == 1
-    assert "平均超额收益为正" in m["verdict"]["text"]
+    assert "超额为正" in m["verdict"]["text"]
     assert "不如躺平" not in m["verdict"]["text"]
 
 
