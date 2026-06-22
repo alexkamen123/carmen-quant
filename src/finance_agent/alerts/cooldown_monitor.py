@@ -26,19 +26,28 @@ from datetime import datetime
 
 
 # ── 冷却盯盘清单 ──────────────────────────────────────────────────────────
-# direction     ："spike" = 涨势冷却（日报想减但当下暴涨超买，等退烧）
-#                 "crash" = 跌势企稳（日报想减但当下暴跌，等止跌再减，别砍在恐慌底）
-# max_day_change：单日涨跌绝对值回到此值内算"动能停了"（两方向通用）
+# direction     ："spike"   = 涨势冷却（日报想减但当下暴涨超买，等退烧）
+#                 "crash"   = 跌势企稳（日报想减但当下暴跌，等止跌再减，别砍在恐慌底）
+#                 "rebound" = 借反弹减（深亏仓位反弹逼近 MA20 中期阻力 + 动能停 → 减亏）
+# max_day_change：单日涨跌绝对值回到此值内算"动能停了"（三方向通用）
 # rsi_gate      ：spike → RSI 退到此值【以下】算退出超买；
-#                 crash → RSI 升到此值【以上】算退出超卖（脱离恐慌）
+#                 crash → RSI 升到此值【以上】算退出超卖；rebound 不看 RSI（置 0）
+# ma20_band     ：仅 rebound——现价 ≥ MA20×(1-band) 即算"逼近阻力"（默认 0.04）
 COOLDOWN_WATCH: list[dict] = [
-    # 当前清单为空（2026-06-18）：
-    #   QBTS 已全部清仓、DRAM 已趁强减 1 股锁利到位，两只均无需再盯。
-    #   要再武装：往列表加一条 dict（spike/crash 任一方向），launchd carmen-cooldown
-    #   仍在跑（周二–六 05:30），加完即生效，无需改调度。
+    {
+        "ticker": "00100",
+        "market": "hk",
+        "direction": "rebound",
+        "max_day_change": 4.0,
+        "rsi_gate": 0.0,
+        "ma20_band": 0.04,
+        "action": "借反弹减 1 股（剩 4 股，逼近 MA20 阻力即减）",
+        "reason": "MiniMax 深亏次新股（PS 极高泡沫、纯投机），借反弹减风险；"
+                  "价逼近 MA20(~600HKD) 中期阻力、动能停即提醒，别赌它突破回成本。",
+    },
 ]
 
-_LABEL = {"spike": "已冷却", "crash": "已企稳"}
+_LABEL = {"spike": "已冷却", "crash": "已企稳", "rebound": "反弹近阻力"}
 
 
 def _yf_symbol(ticker: str, market: str) -> str:
@@ -57,27 +66,62 @@ def is_settled(change_pct: float, rsi: float, max_day_change: float,
     return momentum_stopped and rsi_ok
 
 
+def is_rebound_ready(close: float, ma20: float, change_pct: float,
+                     max_day_change: float, band: float = 0.04) -> bool:
+    """借反弹减判定（纯函数）：深亏仓位反弹逼近 MA20 中期阻力（现价 ≥ MA20×(1-band)）
+    且单日动能停（绝对涨跌 ≤ 阈值）→ 提醒借反弹减，别赌它突破回成本。"""
+    if ma20 <= 0:
+        return False
+    near_resistance = close >= ma20 * (1 - band)
+    return near_resistance and abs(change_pct) <= max_day_change
+
+
+def _hk_hist_akshare(ticker: str):
+    """港股日线历史 AkShare 兜底（yfinance 对港股新股常空），返回小写 OHLCV df 或 None。"""
+    try:
+        import akshare as ak
+        sym = f"{int(ticker):05d}" if ticker.isdigit() else ticker
+        df = ak.stock_hk_daily(symbol=sym, adjust="qfq")
+        if df is None or len(df) == 0:
+            return None
+        df.columns = [str(c).lower() for c in df.columns]
+        need = ["open", "high", "low", "close", "volume"]
+        if not all(c in df.columns for c in need):
+            return None
+        return df[need].astype(float).reset_index(drop=True)
+    except Exception:
+        return None
+
+
 def _evaluate(item: dict) -> dict | None:
-    """拉日线、算指标，判断是否已平复。返回带实测值的 dict，数据缺失返回 None。"""
+    """拉日线、算指标，判断是否到减仓时机。返回带实测值的 dict，数据缺失返回 None。"""
     sym = _yf_symbol(item["ticker"], item["market"])
     df = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
-    if df.empty:
-        return None
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [c[0].lower() for c in df.columns]
-    else:
-        df.columns = [c.lower() for c in df.columns]
-    if len(df) < 20:
+    if not df.empty:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0].lower() for c in df.columns]
+        else:
+            df.columns = [c.lower() for c in df.columns]
+    # 港股新股 yfinance 常空/不足 → AkShare 兜底全量历史（已小写 OHLCV）
+    if (df is None or df.empty or len(df) < 20) and item["market"] == "hk":
+        df = _hk_hist_akshare(item["ticker"])
+    if df is None or len(df) < 20:
         return None  # 指标窗口不足（RSI14/MA20 需要足够样本）
 
     sig = calculate_signals(df, ticker=item["ticker"])
-    settled = is_settled(sig.change_pct, sig.rsi, item["max_day_change"],
-                         item["direction"], item["rsi_gate"])
+    if item["direction"] == "rebound":
+        # 借反弹减：现价逼近 MA20 中期阻力（从下方）且动能停 → 减亏时机
+        settled = is_rebound_ready(sig.close, sig.ma20, sig.change_pct,
+                                   item["max_day_change"], item.get("ma20_band", 0.04))
+    else:
+        settled = is_settled(sig.change_pct, sig.rsi, item["max_day_change"],
+                             item["direction"], item["rsi_gate"])
     return {
         **item,
         "change_pct": sig.change_pct,
         "rsi": sig.rsi,
         "close": sig.close,
+        "ma20": sig.ma20,
         "settled": settled,
     }
 
@@ -151,7 +195,8 @@ async def run_cooldown_check(force: bool = False, skip_notify: bool = False) -> 
             continue
 
         settled = res["settled"] or force
-        not_yet = "仍过热" if item["direction"] == "spike" else "仍在急跌"
+        not_yet = {"spike": "仍过热", "crash": "仍在急跌",
+                   "rebound": "未到阻力"}.get(item["direction"], "未平复")
         print(f"[Cooldown] {item['ticker']}（{item['direction']}）今日 {res['change_pct']:+.1f}% / "
               f"RSI {res['rsi']:.0f} → {_LABEL[item['direction']] if res['settled'] else not_yet}"
               f"{'（force 强推）' if force and not res['settled'] else ''}")
