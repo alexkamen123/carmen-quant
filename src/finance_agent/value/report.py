@@ -12,7 +12,9 @@ from finance_agent.value.metrics import (
     DIP_BUCKET_OPPORTUNITY, DIP_BUCKET_BROKEN, DIP_BUCKET_WATCH,
 )
 from finance_agent.value.strategy_scorecard import compute_strategy_edge, format_strategy_edge_section
-from finance_agent.value.cumulative import compute_cumulative_value, compute_live_action_returns
+from finance_agent.value.cumulative import (
+    compute_cumulative_value, compute_live_action_returns, compute_live_rec_returns,
+)
 
 _TEMPLATE = {"grey": "grey", "orange": "orange", "green": "green"}
 
@@ -31,8 +33,8 @@ def _takeaway(m: dict) -> str | None:
     if ca.get("status") != "ok" or ca.get("avg") is None or ca["avg"] >= 0:
         return None
     return (f"💡 **一句话看懂**：你账户能跑赢躺平，主要靠**拿住没瞎动**"
-            f"（持有判断跑赢大盘 +{hold_a:.1f}%）；而**短线买卖其实在亏**"
-            f"（买卖信号 7 天 {ca['avg']:.1f}%）。给你的提示：**守住好仓、少折腾**。")
+            f"（持有建议到今天跑赢大盘 +{hold_a:.1f}%）；而**买卖建议到今天其实在亏**"
+            f"（平均超额 {ca['avg']:.1f}%）。给你的提示：**守住好仓、少折腾**。")
 
 
 _MIN_WINDOW_ALPHA_N = 5   # 分窗口超额低于此样本量不报数值（防「30天 -50.4%(n=4)」噪声吓人）
@@ -76,7 +78,7 @@ def _adv_section(m: dict) -> str:
     else:
         verb = "多赚" if ba["avg"] >= 0 else "少赚"
         few = f"（仅 {ba['n']} 次，太少先参考）" if ba["n"] < 5 else f"（{ba['n']} 次）"
-        lines.append(f"1️⃣ **让你买的**：买入后 7 天平均比大盘**{verb} {abs(ba['avg']):.1f}%**{few}")
+        lines.append(f"1️⃣ **让你买的**：买入后**到今天**平均比大盘**{verb} {abs(ba['avg']):.1f}%**{few}")
 
     # 2️⃣ 让你拿住的——持有判断（持有也是立场，与买卖同级，不降级）
     if hq.get("n"):
@@ -111,10 +113,10 @@ def _adv_section(m: dict) -> str:
     ca = m["combined_alpha"]
     if ca["status"] == "ok":
         if ca["avg"] >= 0:
-            lines.append(f"　**▶ 我们的买卖信号·7天平均超额：+{ca['avg']:.1f}%** ✅　_（信号表现，非你账户累计）_")
+            lines.append(f"　**▶ 我们的买卖建议·到今天平均超额：+{ca['avg']:.1f}%** ✅　_（每条建议到今天的终局表现，非你账户加权累计）_")
         else:
-            lines.append(f"　**▶ 我们的买卖信号·7天平均超额：{ca['avg']:.1f}%** ❌"
-                         f"　_（信号7天表现，非你账户累计；样本少，不代表长期）_")
+            lines.append(f"　**▶ 我们的买卖建议·到今天平均超额：{ca['avg']:.1f}%** ❌"
+                         f"　_（每条建议到今天的终局表现，非你账户加权累计；样本少，不代表长期）_")
 
     # 分窗口超额（7/30/90 天）：7天噪声大，30/90天才见价值兑现；小样本不报数值
     abw_line = _format_window_alpha(m.get("alpha_by_window") or {})
@@ -123,7 +125,8 @@ def _adv_section(m: dict) -> str:
 
     # 【ETF·定投类】不评判断，只放收益供横向比较（调风投/定投比例用）
     if avp.get("dca_avg") is not None or avp.get("active_avg") is not None:
-        lines.append("**【ETF·定投类】不评对错，只看收益（定投本就不择时）**")
+        lines.append("**【ETF·定投类】不评对错，只看收益（定投本就不择时）**"
+                     "　_⚠️ 本段是「操作后7天」的横向标尺，与卡片其余「到今天」口径不同，别和上面直接比_")
         dca_s = f"{avp['dca_avg']:+.1f}%（{avp['dca_n']} 次）" if avp.get("dca_avg") is not None else "—"
         act_s = (f"{avp['active_avg']:+.1f}%（{avp['active_n']} 次）"
                  if avp.get("active_avg") is not None else "—")
@@ -308,8 +311,10 @@ def _meta_section(m: dict) -> str:
            if comp['dedup_dropped'] else f"({comp['directional']} 条独立信号)")
         + (f"、**{comp['shadow']} 条**是试用选股名单(没花你的钱)" if comp['shadow'] else "")
         + "。",
-        "• 怎么算的：跟大盘比时，你的票和大盘用**同一个起止日期**算涨跌，避免时间错位造假数。"
-        "同票连推已按 (票, 周) 去重、不再伪重复计入；7/30/90 天超额已并列展示（90 天样本未满）。",
+        "• 怎么算的：**判对错看「到今天」的终局结果**——拿建议发出时的价比今天的价(减同期大盘涨跌"
+        "=跑赢/跑输多少)，操作满 5 天才算、太新的不下结论；同票连推按 (票, 周) 去重。"
+        "下方「信号超额·分窗口(7/30/90天)」是另一码事：那是固定窗口定格，专门看建议是只灵几天的短线、"
+        "还是越拿越值的长线，跟主口径「到今天」互补、别混看。",
         f"• 数据截至 {m['data_through'] or '—'}；以上全是真实记录算出来的，没有 AI 编故事。",
     ])
 
@@ -346,7 +351,8 @@ def _cumulative_headline(m: dict) -> str | None:
     ]
     note = ("_↑ 按你真实持仓×成本×今日最新价算、跨币种已折美元（HKD÷7.8 / CNY÷7.2）；"
             "躺平=同一笔本金在各仓入场日买对应市场指数(美股SPY/港股恒指)持有至今。"
-            "这是「你账户到今天的累计」，与下方「信号7天命中」是两回事。_")
+            "这是「你账户到今天的加权累计」，与下方「每条建议到今天准不准」口径不同"
+            "（头条按持仓金额加权、下方逐条等权平均）。_")
     part = c.get("partial") or []
     if part:
         names = "、".join(p["ticker"] for p in part[:6])
@@ -442,7 +448,16 @@ async def run_value_report(db_path: str = "data/agent.db") -> tuple[dict, str, d
     except Exception as e:
         print(f"[ValueReport] 暴跌回填跳过：{e}")
 
-    m = compute_value_metrics(p)
+    # 终局口径：实时拉每条推荐的「至今」涨跌/基准(满5天才纳入)，作命中率/alpha 主口径；
+    # 拉取失败或无满足项则回落 None → compute_value_metrics 自动沿用第7天定格，保证卡不空。
+    live_recs = None
+    try:
+        lr = compute_live_rec_returns(p, min_days=5)
+        if lr:
+            live_recs = lr
+    except Exception as e:
+        print(f"[ValueReport] 终局口径拉取跳过(回落第7天定格)：{e}")
+    m = compute_value_metrics(p, live_overrides=live_recs)
     # 累计「你 vs 躺平·截至今天」头条——实时拉价，失败兜底 None 绝不崩卡
     try:
         m["cumulative"] = compute_cumulative_value(p)

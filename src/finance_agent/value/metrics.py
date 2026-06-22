@@ -163,10 +163,15 @@ def _span_days(dates: list[str]) -> int:
         return len(ds)
 
 
-def compute_value_metrics(db_path=None) -> dict:
+def compute_value_metrics(db_path=None, live_overrides=None) -> dict:
     """
     返回诚实的价值记分牌（纯数据）。结构：
       gate / composition / hit_rate / buy_alpha / combined_alpha / behavior / dip / verdict / data_through
+
+    live_overrides: {rec_id: (ret_pct, bench_pct|None)} —— 提供则把命中率/alpha 类评估切到
+      【终局/至今】口径（在数据入口替换 return_7d/benchmark，下游计算不改），且只纳入 overrides
+      覆盖的行（compute_live_rec_returns 已按"满 X 天"过滤，太新的不在内）。不传则沿用【第7天定格】。
+      alpha_by_window 始终用原始 7/30/90 定格，作"短效 vs 长效"诊断、不受 override 影响。
     """
     p = _resolve_db(db_path)
     init_db(p)
@@ -184,15 +189,13 @@ def compute_value_metrics(db_path=None) -> dict:
                        "AND (position_change LIKE '大加%' OR position_change LIKE '小加%' "
                        "OR position_change LIKE '减仓%'))")
         dir_rows = [dict(r) for r in con.execute(
-            "SELECT date, ticker, recommendation, position_change, return_7d, "
+            "SELECT id, date, ticker, recommendation, position_change, return_7d, "
             "benchmark_return_7d, return_30d, benchmark_return_30d, "
             "return_90d, benchmark_return_90d, market FROM recommendations "
             f"WHERE return_7d IS NOT NULL AND IFNULL(is_watch, 0) = 0 AND ({_DIR_FILTER})"
         ).fetchall()]
-        # 连推去重（_meta_section 早已自承的缺陷）：同 (票,ISO周) 只算一条独立信号
-        dir_rows = _dedup_weekly(dir_rows)
         shadow_rows = [dict(r) for r in con.execute(
-            "SELECT date, ticker, recommendation, position_change, return_7d, "
+            "SELECT id, date, ticker, recommendation, position_change, return_7d, "
             "benchmark_return_7d FROM recommendations "
             f"WHERE return_7d IS NOT NULL AND is_watch = 1 AND ({_DIR_FILTER})"
         ).fetchall()]
@@ -209,6 +212,21 @@ def compute_value_metrics(db_path=None) -> dict:
         data_through = con.execute(
             "SELECT MAX(date) AS m FROM recommendations"
         ).fetchone()["m"]
+
+    # ── 时间口径切换：原始定格留诊断；live_overrides 提供则主判对错口径切【终局/至今】──
+    # window_rows=全量定格(去重)，给 alpha_by_window 的"短效vs长效"诊断 + composition 数据构成
+    # （不受终局过滤影响，守恒不破）。dir_rows/shadow_rows 若有 overrides 则替换成至今值、
+    # 且只保留被覆盖的行（compute_live_rec_returns 已按"满 X 天"过滤掉太新的）。
+    window_rows = _dedup_weekly([dict(r) for r in dir_rows])
+    n_dir_all = len(window_rows)
+    if live_overrides is not None:
+        dir_rows = [r for r in dir_rows if r["id"] in live_overrides]
+        for r in dir_rows:
+            r["return_7d"], r["benchmark_return_7d"] = live_overrides[r["id"]]
+        shadow_rows = [r for r in shadow_rows if r["id"] in live_overrides]
+        for r in shadow_rows:
+            r["return_7d"], r["benchmark_return_7d"] = live_overrides[r["id"]]
+    dir_rows = _dedup_weekly(dir_rows)
 
     # ── 闸门量 ──
     n_dir = len(dir_rows)
@@ -234,15 +252,17 @@ def compute_value_metrics(db_path=None) -> dict:
     # NULL 安全；绝不重蹈旧 BUG 用「去重后 n_dir」减「未去重 filled」混族（267/252 谎报）。
     iw0_filled = filled - shadow_count
     passive_count = iw0_filled - dir_raw_count
+    # 用 n_dir_all（全量去重，不受终局口径"满X天"过滤影响）——数据构成描述已回填记录的
+    # 真实构成，与判对错口径无关，且保证守恒 directional+dedup_dropped+passive+shadow==filled。
     composition = {
         "filled": filled,
-        "directional": n_dir,                      # 去重后独立方向性信号
-        "directional_raw": dir_raw_count,          # 去重前
-        "dedup_dropped": dir_raw_count - n_dir,    # 同票同周折叠掉的，单列透明交代
-        "passive": passive_count,                  # 持有/定投/观望（真实条数，不算命中率）
-        "shadow": shadow_count,                    # 影子选股名单（is_watch=1）
-        "actionable_ratio": (round(n_dir / (n_dir + passive_count), 3)
-                             if (n_dir + passive_count) else 0.0),
+        "directional": n_dir_all,                      # 去重后独立方向性信号（全量）
+        "directional_raw": dir_raw_count,              # 去重前
+        "dedup_dropped": dir_raw_count - n_dir_all,    # 同票同周折叠掉的，单列透明交代
+        "passive": passive_count,                      # 持有/定投/观望（真实条数，不算命中率）
+        "shadow": shadow_count,                        # 影子选股名单（is_watch=1）
+        "actionable_ratio": (round(n_dir_all / (n_dir_all + passive_count), 3)
+                             if (n_dir_all + passive_count) else 0.0),
     }
 
     # ── 方向命中率（窄口径 + Wilson CI）；买/卖分开计数供"能力总评"三问 ──
@@ -282,10 +302,12 @@ def compute_value_metrics(db_path=None) -> dict:
 
     # ── 多窗口信号超额（7/30/90 天）：消费已回填的长周期列，回应"7天太短"──
     # 7天噪声大、30/90天才是价值兑现窗口；中性带随窗口放宽。90天暂多为空→显示"未到"。
+    # 用 window_rows（原始 7/30/90 定格，不受终局 override 影响）——这正是"短效 vs 长效"诊断：
+    # 看建议是只灵一周的短线信号、还是越拿越值的长线信号；与主口径(终局)互补、各司其职。
     alpha_by_window = {
-        "7d": _score_window(dir_rows, "return_7d", "benchmark_return_7d", NEUTRAL_BAND),
-        "30d": _score_window(dir_rows, "return_30d", "benchmark_return_30d", 3.0),
-        "90d": _score_window(dir_rows, "return_90d", "benchmark_return_90d", 5.0),
+        "7d": _score_window(window_rows, "return_7d", "benchmark_return_7d", NEUTRAL_BAND),
+        "30d": _score_window(window_rows, "return_30d", "benchmark_return_30d", 3.0),
+        "90d": _score_window(window_rows, "return_90d", "benchmark_return_90d", 5.0),
     }
 
     # ── BUY类（选股/加仓）alpha —— 当前多为 N=0，显式占位 ──
@@ -364,10 +386,16 @@ def compute_value_metrics(db_path=None) -> dict:
     # 其间 = 中性。按计划定投是机械执行不是判断，排除。
     with _conn(p) as con:
         hold_rows = [dict(r) for r in con.execute(
-            "SELECT date, ticker, return_7d, benchmark_return_7d FROM recommendations "
+            "SELECT id, date, ticker, return_7d, benchmark_return_7d FROM recommendations "
             "WHERE return_7d IS NOT NULL AND benchmark_return_7d IS NOT NULL "
             "AND recommendation IN ('持有', '观望') AND IFNULL(is_watch, 0) = 0"
         ).fetchall()]   # 影子票没有真实持仓，"持有判断"无意义，排除
+    # 终局口径：持有判断同样切至今 alpha、只留满 X 天且至今基准可得的行
+    if live_overrides is not None:
+        hold_rows = [r for r in hold_rows if r["id"] in live_overrides]
+        for r in hold_rows:
+            r["return_7d"], r["benchmark_return_7d"] = live_overrides[r["id"]]
+        hold_rows = [r for r in hold_rows if r["benchmark_return_7d"] is not None]
     # 与 dir_rows 同口径去重：同票同 ISO 周的连续持有是同一立场，计多条会灌爆分母
     # （实测 00700×23 / GOOGL×23 等单票日频膨胀）
     hold_rows = _dedup_weekly(hold_rows)
@@ -507,9 +535,9 @@ def compute_value_metrics(db_path=None) -> dict:
         # 真·跑输基准：橙（仅此情形可说"不如躺平"）
         verdict = {
             "state": 1, "color": "orange",
-            "text": (f"📉 我们的买卖信号·**操作后第7天定格**·平均跑输基准 "
+            "text": (f"📉 我们的买卖建议·**到今天**·平均跑输基准 "
                      f"{abs(round(avg_alpha, 2))}%{ci_txt}，n={n_dir}。"
-                     f"⚠️ 这是「信号」的7天表现，**不是你账户的累计盈亏**；"
+                     f"⚠️ 这是「建议本身」到今天的终局表现，**不是你账户的累计盈亏**；"
                      f"我们更看这条曲线随迭代是否回升，逐条对错见下方明细。{buy_caveat}"),
             "badge": badge,
         }
@@ -517,9 +545,9 @@ def compute_value_metrics(db_path=None) -> dict:
         # alpha≥0 但命中率<50%：少数大赢+多数小输，不否定已证明的正超额收益
         verdict = {
             "state": 1, "color": "orange",
-            "text": (f"⚖️ 我们的买卖信号·7天平均超额为正（**+{round(avg_alpha, 2)}%**），但方向命中率仅 "
-                     f"{hit_rate['win_rate']}%{ci_txt}，n={n_dir}——盈亏由少数信号驱动，"
-                     f"稳定性待验证（此为信号7天表现，非你账户累计），明细见下方。{buy_caveat}"),
+            "text": (f"⚖️ 我们的买卖建议·到今天平均超额为正（**+{round(avg_alpha, 2)}%**），但方向命中率仅 "
+                     f"{hit_rate['win_rate']}%{ci_txt}，n={n_dir}——盈亏由少数建议驱动，"
+                     f"稳定性待验证（此为建议到今天的终局表现，非你账户累计），明细见下方。{buy_caveat}"),
             "badge": badge,
         }
     else:
@@ -527,8 +555,8 @@ def compute_value_metrics(db_path=None) -> dict:
         wr_txt = f"、命中率 {hit_rate['win_rate']}%" if hit_rate["win_rate"] is not None else ""
         verdict = {
             "state": 2, "color": "green",
-            "text": (f"📈 初步证据：我们的买卖信号·**操作后第7天**·平均跑赢基准 +{round(avg_alpha, 2)}%{wr_txt}，"
-                     f"n={n_dir}、覆盖 {n_tk} 只票 {span} 天（信号7天表现，非你账户累计盈亏）。样本仍在增长，明细见下。{buy_caveat}"),
+            "text": (f"📈 初步证据：我们的买卖建议·**到今天**·平均跑赢基准 +{round(avg_alpha, 2)}%{wr_txt}，"
+                     f"n={n_dir}、覆盖 {n_tk} 只票 {span} 天（建议到今天的终局表现，非你账户累计盈亏）。样本仍在增长，明细见下。{buy_caveat}"),
             "badge": badge,
         }
 

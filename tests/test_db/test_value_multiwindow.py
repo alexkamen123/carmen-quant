@@ -76,9 +76,9 @@ def test_verdict_subject_is_signal_not_account(tmp_path):
     m = compute_value_metrics(db)
     assert m["gate"]["gate_passed"] is True      # n=32≥30, 8票, bm 100%
     txt = m["verdict"]["text"]
-    # 止血：必须点明是"信号"的"第7天"表现，且明确不是账户累计
-    assert "信号" in txt
-    assert "第7天" in txt
+    # 止血：必须点明是"建议本身"的"到今天"终局表现，且明确不是账户累计
+    assert "建议" in txt
+    assert "到今天" in txt
     assert "不是你账户" in txt or "非你账户" in txt
     # 不得再用这些把信号超额冒充成账户截至今天的结论
     assert "截至本期" not in txt

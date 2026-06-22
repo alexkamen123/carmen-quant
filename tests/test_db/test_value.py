@@ -154,9 +154,10 @@ def test_verdict_orange_negative_alpha(tmp_path, monkeypatch):
     m = compute_value_metrics(db)
     assert m["verdict"]["state"] == 1
     txt = m["verdict"]["text"]
-    assert "跑输基准" in txt and "信号" in txt and "第7天" in txt
-    # P0-3 止血：不再把信号7天超额冒充成"你账户截至本期不如躺平"
+    assert "跑输基准" in txt and "建议" in txt and "到今天" in txt
+    # P0-3 止血：不再把建议超额冒充成"你账户截至本期不如躺平"
     assert "不如躺平" not in txt and "截至本期" not in txt
+    assert "不是你账户" in txt          # 主语锁死=建议本身，非账户累计
 
 
 def test_verdict_orange_positive_alpha_low_winrate(tmp_path, monkeypatch):
