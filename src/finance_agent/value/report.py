@@ -59,18 +59,58 @@ def _format_window_alpha(abw: dict) -> str | None:
             + "　_（30/90天才是价值兑现窗口，7天多为噪声）_")
 
 
+def _summary_section(m: dict) -> str:
+    """主屏极简结论：三类建议各一句话(都到今天)+ 行动建议。定性为主、只带一个锚点数；
+    combined_alpha(-38%)/分窗口/主动vs定投 这些会正负打架的精确数全部下沉到折叠（用户：看不懂）。"""
+    hq = m.get("hold_quality") or {}
+    hr = m.get("hit_rate") or {}
+    ba = m.get("buy_alpha") or {}
+    lines = ["**📊 我们的建议准不准**　_都看「到今天」的结果，不是某天的快照_"]
+    # 让你拿住的（持有判断——通常是账户赚钱主力）
+    a = hq.get("avg_alpha")
+    if hq.get("n") and a is not None:
+        tag = "✅" if a >= 0 else "❌"
+        verb = "跑赢" if a >= 0 else "跑输"
+        extra = "（你账户赚钱主力）" if a >= 0 else ""
+        lines.append(f"· **让你拿住的**：{hq['n']} 次，整体{verb}大盘 **{abs(a):.1f}%** {tag}{extra}")
+    # 让你减仓/卖的（定性：大多卖飞还是减对）
+    sr, sw = hr.get("sell_right", 0), hr.get("sell_wrong", 0)
+    if sr + sw:
+        if sw > sr:
+            lines.append(f"· **让你减仓的**：{sr + sw} 次，大多**卖飞了**(减完又涨) ❌")
+        elif sr > sw:
+            lines.append(f"· **让你减仓的**：{sr + sw} 次，大多**减对了**(躲过下跌) ✅")
+        else:
+            lines.append(f"· **让你减仓的**：{sr + sw} 次，对错各半")
+    # 让你买的（选股——样本通常少，弱化）
+    if ba.get("status") == "no_sample" or not ba.get("n"):
+        lines.append("· **让你买的**：还太少，先观望")
+    else:
+        verb = "多赚" if ba["avg"] >= 0 else "少赚"
+        if ba["n"] < 5:
+            lines.append(f"· **让你买的**：才 {ba['n']} 次(太少先参考)，平均比大盘{verb} {abs(ba['avg']):.1f}%")
+        else:
+            tag = "✅" if ba["avg"] >= 0 else "❌"
+            lines.append(f"· **让你买的**：{ba['n']} 次，平均比大盘**{verb} {abs(ba['avg']):.1f}%** {tag}")
+    # 行动建议：仅"账户赢 ∧ 持有正 ∧ 买卖负"这一'赚靠拿住'模式给（与 _takeaway 同判据）
+    c = m.get("cumulative") or {}
+    ca = m.get("combined_alpha") or {}
+    ca_avg = ca.get("avg")
+    if ((c.get("excess_pct") or 0) >= 0 and (a or 0) > 0
+            and ca.get("status") == "ok" and ca_avg is not None and ca_avg < 0):
+        lines.append("👉 **给你的话**：你赚钱靠拿住、瞎减仓在亏 → **守住好仓、别频繁折腾**")
+    return "\n".join(lines)
+
+
 def _adv_section(m: dict) -> str:
     """能力总评——三问：让你买的赚多少 / 让你拿住的赚还是亏 / 让你卖的没做会怎样。
     个股是真本事，定投单列只放收益供横向比较（用户设计：评整体能力 + 调风投/定投比例）。
     全大白话，不用 alpha/命中率/CI 黑话；口径不变只换说法。"""
     hr, ba, hq = m["hit_rate"], m["buy_alpha"], m.get("hold_quality") or {}
     avp = m.get("active_vs_passive") or {}
-    lines = []
-    tk = _takeaway(m)
-    if tk:
-        lines += [tk, ""]   # 串场置顶，统领下方分项明细
-    lines += ["**📊 卡门智投能力总评**　_这些是「我们的建议」战绩，不是你的操作次数_",
-              "**【个股·风险类】这才是真本事**"]
+    # 串场结论已在主屏 _summary_section，此处是「明细」折叠：给精确数字、分窗口、主动vs定投
+    lines = ["**📊 能力总评·明细**　_主屏给了结论，这里是各项精确数字（到今天口径）_",
+             "**【个股·风险类】这才是真本事**"]
 
     # 1️⃣ 让你买的——选股眼光
     if ba["status"] == "no_sample":
@@ -388,24 +428,22 @@ def _header_template(m: dict) -> str:
 
 
 def build_value_card(m: dict) -> dict:
-    """schema 2.0：主屏只留「结论 + 能力总评」，详情全部折叠（C 端阅读体验）。"""
-    v = m["verdict"]
-    # 选股套路体检 + 名词小课堂合并进一个折叠面板
+    """schema 2.0：主屏只留「头条(你vs躺平) + 一句话结论(三类建议准不准+行动)」，
+    所有精确数字/命中率/分窗口/逐笔/明细全部折叠（用户反馈：信息过载、正负数打架看不懂）。"""
     strat_block = _strategy_edge_text() + "\n\n" + _glossary_section()
     head = _cumulative_headline(m)   # 累计「你 vs 躺平」头条，常驻、不受闸门控制
     body_elements = [
         *([{"tag": "markdown", "content": head}, {"tag": "hr"}] if head else []),
-        {"tag": "markdown", "content": f"{v['text']}\n\n`{v['badge']}`"},
+        {"tag": "markdown", "content": _summary_section(m)},   # 主屏唯一结论块（极简三句+行动）
         {"tag": "hr"},
-        {"tag": "markdown", "content": _adv_section(m)},   # 能力总评——主屏常驻
-        {"tag": "hr"},
-        _panel("🧪 选股套路体检 + 名词小课堂（点开）", strat_block),
-        *([_panel("🔭 试用选股名单（点开）", _shadow_section(m))] if _shadow_section(m) else []),
+        _panel("📊 能力总评·明细 — 命中率/各类超额/分窗口（点开）", _adv_section(m)),
         _panel("💰 你的逐笔操作（点开）", _behavior_section(m)),
+        *([_panel("🔭 试用选股名单（点开）", _shadow_section(m))] if _shadow_section(m) else []),
         _panel("🛡️ 暴跌预警准不准（点开）", _dip_section(m)),
+        _panel("🧪 选股套路体检 + 名词小课堂（点开）", strat_block),
         _panel("📎 把话说在前头 · 诚实附录（点开）", _meta_section(m)),
         {"tag": "markdown", "content":
-            "_仅统计已过 7 日、已回填的记录；过往表现不代表未来收益；样本越小越不可靠；不构成投资建议_"},
+            "_仅统计已回填记录；过往表现不代表未来收益；样本越小越不可靠；不构成投资建议_"},
     ]
     return {
         "schema": "2.0",
@@ -419,13 +457,13 @@ def build_value_card(m: dict) -> dict:
 
 
 def _build_text(m: dict) -> str:
-    v = m["verdict"]
     head = _cumulative_headline(m)
     return "\n".join([
         f"🏆 卡门智投 · 价值体检 {m['data_through'] or ''}",
         *([head, ""] if head else []),
-        v["text"], v["badge"], "",
-        _adv_section(m), "", _strategy_edge_text(), "", _behavior_section(m), "",
+        _summary_section(m), "",
+        "—————— 以下为明细（想深究再看）——————", "",
+        _adv_section(m), "", _behavior_section(m), "",
         _dip_section(m), "", _meta_section(m),
     ])
 
