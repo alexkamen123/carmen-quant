@@ -475,14 +475,24 @@ def compute_value_metrics(db_path=None) -> dict:
                   if n_buy == 0 and n_dir > 0 else "")
     if not gate_passed:
         dir_kind = "减仓" if n_buy == 0 and n_dir > 0 else "买卖混合"
+        # 持有建议也是建议、也有对错（拿住跑赢=对、该减没减=错）——纳入「准不准」总览。
+        # 口径与买卖不同（持有用 vs 大盘 alpha、买卖用方向命中），故分两类各报、绝不混算。
+        hq = hold_quality
+        if hq.get("n"):
+            ha = hq.get("avg_alpha")
+            ha_txt = (f"、整体{'跑赢' if ha >= 0 else '跑输'}大盘 {abs(ha):.1f}%"
+                      if ha is not None else "")
+            hold_clause = (f"②**持有建议**（让你拿住别动）{hq['n']} 条——"
+                           f"幸亏拿住(跑赢) {hq['right']} 次、该减没减(明显跑输) {hq['wrong']} 次{ha_txt}。")
+        else:
+            hold_clause = ""
         verdict = {
             "state": 0, "color": "grey",
-            "text": (f"⏳ **「我们的买卖建议」准不准**：目前方向明确的买/卖建议共 {n_dir} 条"
-                     f"（系统每天给每只票打分里方向明确的那些，不是你的操作次数）、"
-                     f"覆盖 {n_tk} 只票、约 {span} 天，其中买入类 {n_buy} 条（以{dir_kind}为主）。"
-                     f"**你账户到今天赚没赚，看上方「你 vs 躺平」头条**；这里只单看建议本身的短期命中。"
-                     f"{n_dir} 条还少、先看下方逐条战绩和趋势，攒到 "
-                     f"{GATE_MIN_N} 条、{GATE_MIN_TICKERS} 只票就能下硬结论。"),
+            "text": (f"⏳ **「我们的建议」准不准**（每条建议都算账，分两类不混口径）："
+                     f"①**买卖建议** {n_dir} 条（覆盖 {n_tk} 票、约 {span} 天，方向以{dir_kind}为主）"
+                     f"——短期方向命中样本还少、先看趋势；{hold_clause}"
+                     f"**你账户到今天赚没赚看上方「你 vs 躺平」头条**；这里看每条建议本身准不准，"
+                     f"买卖类攒到 {GATE_MIN_N} 条、{GATE_MIN_TICKERS} 只票就能下硬结论。"),
             "badge": badge,
         }
     elif avg_alpha is None:
