@@ -27,6 +27,30 @@ _CCY_USD = {"us": 1.0, "hk": 1.0 / 7.8, "cn": 1.0 / 7.2}
 _DEFAULT_PF = Path(__file__).resolve().parents[2].parent / "config" / "portfolio.yaml"
 
 
+def compute_live_action_returns(db_path=None, price_fn=_fetch_current_price) -> dict[int, float]:
+    """逐笔操作「到今天」的真实涨跌（动态实时拉价）——回答"这笔操作现在赚还是亏"。
+    用与 7 日定格同源的 entry price（user_actions.price）+ 今日价，尺度一致、可并排。
+    返回 {action_id: live_pct}；无 entry / 拉价失败的笔不计入（渲染层 fallback 7 日定格）。
+    港股用 isdigit 判市场（与 backfill_action_returns 一致）。任何单笔失败不影响其余。"""
+    p = _resolve_db(db_path)
+    with _conn(p) as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT id, ticker, price FROM user_actions "
+            "WHERE action IN ('BUY','SELL','TRIM') AND price IS NOT NULL AND price > 0"
+        ).fetchall()]
+    out: dict[int, float] = {}
+    for r in rows:
+        mkt = "hk" if str(r["ticker"]).isdigit() else "us"
+        try:
+            px = price_fn(r["ticker"], mkt)
+        except Exception:
+            px = None
+        if px is None:
+            continue
+        out[r["id"]] = round((px - r["price"]) / r["price"] * 100, 2)
+    return out
+
+
 def aggregate_cumulative(positions: list[dict], as_of: str,
                          basis: str = "real") -> dict | None:
     """纯聚合：positions 每条须含 principal_usd / current_value_usd / passive_value_usd

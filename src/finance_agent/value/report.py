@@ -12,7 +12,7 @@ from finance_agent.value.metrics import (
     DIP_BUCKET_OPPORTUNITY, DIP_BUCKET_BROKEN, DIP_BUCKET_WATCH,
 )
 from finance_agent.value.strategy_scorecard import compute_strategy_edge, format_strategy_edge_section
-from finance_agent.value.cumulative import compute_cumulative_value
+from finance_agent.value.cumulative import compute_cumulative_value, compute_live_action_returns
 
 _TEMPLATE = {"grey": "grey", "orange": "orange", "green": "green"}
 
@@ -139,38 +139,62 @@ def _adv_section(m: dict) -> str:
     return "\n".join(lines)
 
 
+def _verdict_for(action: str, ret: float, kind: str) -> str:
+    """按涨跌判这笔操作对错——live 与 7 日同一判据，只是 ret 取值不同。"""
+    if kind == "cash":
+        return "现金管理"
+    if action == "BUY":
+        return "赚" if ret > 0 else ("亏" if ret < 0 else "平")
+    if action in ("SELL", "TRIM"):
+        return "躲跌✓" if ret < 0 else ("踏空" if ret > 0 else "平")
+    return "—"
+
+
+def _verdict_icon(v: str) -> str:
+    return {"赚": "🟢", "躲跌✓": "🟢", "亏": "🔴", "踏空": "🟡"}.get(v, "➖")
+
+
 def _behavior_section(m: dict) -> str:
     beh = m["behavior"]
     trades = beh["trades"]
     # 三层隔离：个股(评选股对错) / 现金对冲(不评胜负)
     stock = [t for t in trades if t.get("kind") != "cash"]
     cash = [t for t in trades if t.get("kind") == "cash"]
-    lines = [f"**💰 你的操作**（每笔=下单后**第7天**的涨跌，不是今天的价；"
-             f"和上方账户累计是两码事，别直接相减）· 已回填 {beh['n']} 笔"]
+    lines = [f"**💰 你的操作**（每笔=这笔操作**到今天**的真实涨跌，按实时价算；"
+             f"个别拉价失败的退显第7天定格）· 已回填 {beh['n']} 笔"]
     if not trades:
         lines.append("暂无已回填的实操记录")
         return "\n".join(lines)
 
-    # 大白话总结：把"红多"拆成 真亏 / 卖早(没亏) / 赚，避免误读（只统计个股）
-    real_loss = sum(1 for t in stock if t["verdict"] == "亏")
-    sold_early = sum(1 for t in stock if t["verdict"] == "踏空")
-    good = sum(1 for t in stock if t["verdict"] in ("赚", "躲跌✓"))
+    # 每笔取「到今天」优先、回落 7 日定格；统计与判对错都用这个口径（第7天定格会骗人：
+    # 7天亏可能至今已赚、反之亦然，逐笔对账该看你现在到底赚没赚）
+    def _eff(t):
+        live = t.get("live_return")
+        if live is not None:
+            return live, _verdict_for(t["action"], live, t.get("kind", "stock")), True
+        return t["ret"], t["verdict"], False
+
+    real_loss = sold_early = good = 0
+    for t in stock:
+        _, v, _ = _eff(t)
+        real_loss += int(v == "亏")
+        sold_early += int(v == "踏空")
+        good += int(v in ("赚", "躲跌✓"))
     lines.append(
         f"📊 _{len(stock)} 笔个股操作里：真亏 **{real_loss}** 笔、卖早(踏空，没亏只少赚) **{sold_early}** 笔、"
         f"赚/卖对 **{good}** 笔。红≠全做错，🟡是卖早。_"
     )
 
     for t in stock:
-        sign = "+" if t["ret"] >= 0 else ""
-        if t["verdict"] in ("赚", "躲跌✓"):
-            icon = "🟢"
-        elif t["verdict"] == "亏":
-            icon = "🔴"
-        elif t["verdict"] == "踏空":
-            icon = "🟡"   # 卖早=少赚，不是亏，单独黄色，不与真亏混
+        ret, v, is_live = _eff(t)
+        icon = _verdict_icon(v)
+        sign = "+" if ret >= 0 else ""
+        if is_live:
+            r7 = t.get("ret")
+            ref = f"（7日时 {'+' if (r7 or 0) >= 0 else ''}{r7}%）" if r7 is not None else ""
+            lines.append(f"{icon} {t['date'][5:]} **{t['ticker']}** {t['action']} → 至今 {sign}{ret}% · {v}{ref}")
         else:
-            icon = "➖"
-        lines.append(f"{icon} {t['date'][5:]} **{t['ticker']}** {t['action']} → 7日 {sign}{t['ret']}% · {t['verdict']}")
+            lines.append(f"{icon} {t['date'][5:]} **{t['ticker']}** {t['action']} → 第7天 {sign}{ret}% · {v}（缺实时价）")
     # 现金/对冲单列——不计选股胜负（否则 SGOV 近 0 收益会稀释、冒充选股战绩）
     if cash:
         cs = "、".join(f"{t['ticker']}({t['date'][5:]} {'+' if t['ret'] >= 0 else ''}{t['ret']}%)"
@@ -425,4 +449,11 @@ async def run_value_report(db_path: str = "data/agent.db") -> tuple[dict, str, d
     except Exception as e:
         print(f"[ValueReport] 累计头条计算跳过：{e}")
         m["cumulative"] = None
+    # 逐笔「到今天」真实涨跌——实时拉价注入 trades，失败的笔自动回落第7天定格（绝不崩）
+    try:
+        live = compute_live_action_returns(p)
+        for t in m["behavior"]["trades"]:
+            t["live_return"] = live.get(t["id"])
+    except Exception as e:
+        print(f"[ValueReport] 逐笔到今天涨跌跳过：{e}")
     return build_value_card(m), _build_text(m), m

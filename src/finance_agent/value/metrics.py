@@ -396,7 +396,7 @@ def compute_value_metrics(db_path=None) -> dict:
     # ── 行为价值：逐笔（不聚合成胜率）──
     with _conn(p) as con:
         act_rows = [dict(r) for r in con.execute(
-            "SELECT date, ticker, action, actual_return FROM user_actions "
+            "SELECT id, date, ticker, action, actual_return FROM user_actions "
             "WHERE actual_return IS NOT NULL ORDER BY date"
         ).fetchall()]
     behavior_trades = []
@@ -412,7 +412,7 @@ def compute_value_metrics(db_path=None) -> dict:
             verdict_t = "躲跌✓" if ret < 0 else ("踏空" if ret > 0 else "平")
         else:
             verdict_t = "—"
-        behavior_trades.append({"date": r["date"], "ticker": r["ticker"],
+        behavior_trades.append({"id": r["id"], "date": r["date"], "ticker": r["ticker"],
                                 "action": act, "ret": ret, "verdict": verdict_t,
                                 "kind": kind})
     # 还在 7 天观察期的操作（含首笔系统荐股 AVGO）——给用户交代"为什么没显示"
