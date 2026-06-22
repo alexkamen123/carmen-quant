@@ -66,32 +66,32 @@ def _summary_section(m: dict) -> str:
     hr = m.get("hit_rate") or {}
     ba = m.get("buy_alpha") or {}
     lines = ["**📊 我们的建议准不准**　_都看「到今天」的结果，不是某天的快照_"]
-    # 让你拿住的（持有判断——通常是账户赚钱主力）
+    # 让你拿住的（持有判断——通常是账户赚钱主力）。✅/❌ 放行首，扫一眼就知对错
     a = hq.get("avg_alpha")
     if hq.get("n") and a is not None:
         tag = "✅" if a >= 0 else "❌"
         verb = "跑赢" if a >= 0 else "跑输"
         extra = "（你账户赚钱主力）" if a >= 0 else ""
-        lines.append(f"· **让你拿住的**：{hq['n']} 次，整体{verb}大盘 **{abs(a):.1f}%** {tag}{extra}")
+        lines.append(f"{tag} **让你拿住的**：{hq['n']} 次，整体{verb}大盘 **{abs(a):.1f}%**{extra}")
     # 让你减仓/卖的（定性：大多卖飞还是减对）
     sr, sw = hr.get("sell_right", 0), hr.get("sell_wrong", 0)
     if sr + sw:
         if sw > sr:
-            lines.append(f"· **让你减仓的**：{sr + sw} 次，大多**卖飞了**(减完又涨) ❌")
+            lines.append(f"❌ **让你减仓的**：{sr + sw} 次，大多**卖飞了**（减完又涨）")
         elif sr > sw:
-            lines.append(f"· **让你减仓的**：{sr + sw} 次，大多**减对了**(躲过下跌) ✅")
+            lines.append(f"✅ **让你减仓的**：{sr + sw} 次，大多**减对了**（躲过下跌）")
         else:
-            lines.append(f"· **让你减仓的**：{sr + sw} 次，对错各半")
-    # 让你买的（选股——样本通常少，弱化）
+            lines.append(f"➖ **让你减仓的**：{sr + sw} 次，对错各半")
+    # 让你买的（选股——样本通常少，弱化用 🤔）
     if ba.get("status") == "no_sample" or not ba.get("n"):
-        lines.append("· **让你买的**：还太少，先观望")
+        lines.append("🤔 **让你买的**：还太少，先观望")
     else:
         verb = "多赚" if ba["avg"] >= 0 else "少赚"
         if ba["n"] < 5:
-            lines.append(f"· **让你买的**：才 {ba['n']} 次(太少先参考)，平均比大盘{verb} {abs(ba['avg']):.1f}%")
+            lines.append(f"🤔 **让你买的**：才 {ba['n']} 次（太少先参考），平均比大盘{verb} {abs(ba['avg']):.1f}%")
         else:
             tag = "✅" if ba["avg"] >= 0 else "❌"
-            lines.append(f"· **让你买的**：{ba['n']} 次，平均比大盘**{verb} {abs(ba['avg']):.1f}%** {tag}")
+            lines.append(f"{tag} **让你买的**：{ba['n']} 次，平均比大盘**{verb} {abs(ba['avg']):.1f}%**")
     # 行动建议：仅"账户赢 ∧ 持有正 ∧ 买卖负"这一'赚靠拿住'模式给（与 _takeaway 同判据）
     c = m.get("cumulative") or {}
     ca = m.get("combined_alpha") or {}
@@ -382,21 +382,18 @@ def _cumulative_headline(m: dict) -> str | None:
     sp, pp, ex = c["strategy_cum_pct"], c["passive_cum_pct"], c["excess_pct"]
     verb = "多赚" if ex >= 0 else "少赚"
     icon = "🟢" if ex >= 0 else "🔴"
-    basis_tag = "" if c["basis"] == "real" else "（⚠️ 纸面模拟·非你真实账户）"
+    money = f"{'+' if ex >= 0 else '−'}${abs(c['excess_amount_usd']):,.0f}"
+    basis_tag = "" if c["basis"] == "real" else "　_（⚠️ 纸面模拟·非真实账户）_"
     lines = [
-        f"**{icon} 截至 {c['as_of']}：听我们的 vs 躺平买指数**{basis_tag}",
-        f"你按建议持有的这些钱（{c['n_positions']} 只仓位）账面累计 **{sp:+.1f}%**；"
-        f"同期这笔钱躺平买指数 **{pp:+.1f}%**",
-        f"　**▶ 你比躺平 {verb} {abs(ex):.1f}%（约 ${abs(c['excess_amount_usd']):,.0f}）**",
+        # 结论先行：最该看的「多赚 $X」放第一行、最显眼
+        f"**{icon} 听我们的，到今天比躺平{verb} {abs(ex):.1f}%（约 {money}）**{basis_tag}",
+        f"_你按建议持有这 {c['n_positions']} 只，账面 {sp:+.1f}%；同期躺平买指数才 {pp:+.1f}%_",
     ]
-    note = ("_↑ 按你真实持仓×成本×今日最新价算、跨币种已折美元（HKD÷7.8 / CNY÷7.2）；"
-            "躺平=同一笔本金在各仓入场日买对应市场指数(美股SPY/港股恒指)持有至今。"
-            "这是「你账户到今天的加权累计」，与下方「每条建议到今天准不准」口径不同"
-            "（头条按持仓金额加权、下方逐条等权平均）。_")
+    # 口径砍成一句（完整解释在「诚实附录」折叠里）
+    note = "_算法：真实持仓×今日价、已折美元——这是「你账户」的结果，和下方「每条建议准不准」是两回事_"
     part = c.get("partial") or []
     if part:
-        names = "、".join(p["ticker"] for p in part[:6])
-        note += f"\n_（{len(part)} 只仓位暂未纳入对比：{names}——缺现价或基准数据，金额为已纳入部分）_"
+        note += f"；另有 {len(part)} 只缺数据未纳入（{'、'.join(p['ticker'] for p in part[:4])}）"
     lines.append(note)
     return "\n".join(lines)
 
@@ -436,12 +433,12 @@ def build_value_card(m: dict) -> dict:
         *([{"tag": "markdown", "content": head}, {"tag": "hr"}] if head else []),
         {"tag": "markdown", "content": _summary_section(m)},   # 主屏唯一结论块（极简三句+行动）
         {"tag": "hr"},
-        _panel("📊 能力总评·明细 — 命中率/各类超额/分窗口（点开）", _adv_section(m)),
-        _panel("💰 你的逐笔操作（点开）", _behavior_section(m)),
-        *([_panel("🔭 试用选股名单（点开）", _shadow_section(m))] if _shadow_section(m) else []),
-        _panel("🛡️ 暴跌预警准不准（点开）", _dip_section(m)),
-        _panel("🧪 选股套路体检 + 名词小课堂（点开）", strat_block),
-        _panel("📎 把话说在前头 · 诚实附录（点开）", _meta_section(m)),
+        _panel("📊 建议明细 · 命中率 / 各类超额 / 分窗口", _adv_section(m)),
+        _panel("💰 你的逐笔操作 · 每笔到今天赚亏", _behavior_section(m)),
+        *([_panel("🔭 试用选股名单 · 不花钱考眼光", _shadow_section(m))] if _shadow_section(m) else []),
+        _panel("🛡️ 暴跌预警准不准", _dip_section(m)),
+        _panel("🧪 名词小课堂 + 选股套路体检", strat_block),
+        _panel("📎 诚实附录 · 数据怎么来的", _meta_section(m)),
         {"tag": "markdown", "content":
             "_仅统计已回填记录；过往表现不代表未来收益；样本越小越不可靠；不构成投资建议_"},
     ]

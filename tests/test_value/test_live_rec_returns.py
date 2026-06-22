@@ -47,6 +47,18 @@ def test_live_rec_skips_failed_price(tmp_path):
     assert out == {}
 
 
+def test_live_rec_skips_nan_price(tmp_path):
+    """yfinance 偶返 NaN(非 None)——必须拦住，否则 nan 传播污染整卡（"少赚 $nan"）。"""
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    with tracker._conn(db) as con:
+        _ins(con, "2026-06-01", "NVDA", "买入", 200.0)
+    out = compute_live_rec_returns(db, today="2026-06-22", min_days=5,
+                                   price_fn=lambda tk, mkt: float("nan"),
+                                   bench_fn=lambda mkt, s, e: 3.0)
+    assert out == {}
+
+
 def test_live_rec_bench_none_ok(tmp_path):
     """基准拉取失败不影响涨幅记录（alpha 下游自行处理 None）。"""
     db = tmp_path / "t.db"

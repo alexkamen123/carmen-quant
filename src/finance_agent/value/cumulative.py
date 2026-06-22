@@ -21,6 +21,11 @@ from finance_agent.db.tracker import (
     _resolve_db, _conn, _fetch_current_price, _fetch_benchmark_window,
 )
 
+def _nan_safe(x) -> bool:
+    """None 或 NaN 都视为无效——yfinance 偶尔返 NaN 而非 None，不拦会让 nan 传播污染整卡。"""
+    return x is None or x != x
+
+
 # 货币→美元（仅用于跨币种汇总，与单仓盈亏显示无关；口径同集中度计算）
 _CCY_USD = {"us": 1.0, "hk": 1.0 / 7.8, "cn": 1.0 / 7.2}
 
@@ -75,14 +80,14 @@ def compute_live_rec_returns(db_path=None, today: str | None = None, min_days: i
         if held < min_days:
             continue                      # 太新：还没到评估期，排除
         entry = r["price_at_rec"]
-        if not entry or entry <= 0:
+        if _nan_safe(entry) or entry <= 0:
             continue
         px = _px(r["ticker"], r["market"])
-        if px is None:
-            continue                      # 拉价失败：该条不纳入（下游回落或排除）
+        if _nan_safe(px):
+            continue                      # 拉价失败/NaN：该条不纳入（下游回落或排除）
         live_ret = round((px - entry) / entry * 100, 2)
         bench = _bench(r["market"], r["date"])
-        out[r["id"]] = (live_ret, round(bench, 2) if bench is not None else None)
+        out[r["id"]] = (live_ret, round(bench, 2) if not _nan_safe(bench) else None)
     return out
 
 
@@ -104,7 +109,7 @@ def compute_live_action_returns(db_path=None, price_fn=_fetch_current_price) -> 
             px = price_fn(r["ticker"], mkt)
         except Exception:
             px = None
-        if px is None:
+        if _nan_safe(px) or _nan_safe(r["price"]):
             continue
         out[r["id"]] = round((px - r["price"]) / r["price"] * 100, 2)
     return out
@@ -189,12 +194,12 @@ def compute_cumulative_value(db_path=None, portfolio_path=None, today: str | Non
             partial.append({"ticker": tk, "reason": "无成本/股数"})
             continue
         px = price_fn(tk, mkt)
-        if px is None:
+        if _nan_safe(px) or _nan_safe(cb):
             partial.append({"ticker": tk, "reason": "现价拉取失败"})
             continue
         entry = per_ticker.get(tk.upper()) or inception
         bench_ret = bench_fn(mkt, entry, today) if entry else None
-        if bench_ret is None:
+        if _nan_safe(bench_ret):
             partial.append({"ticker": tk, "reason": "基准对比缺失"})
             continue
         principal_usd = sh * cb * ccy
