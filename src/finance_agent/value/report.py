@@ -44,15 +44,15 @@ def _format_window_alpha(abw: dict) -> str | None:
     """分窗口超额一行：样本够(n≥5)才报数值，小样本诚实标「样本少」，无任一够样本则返回 None。"""
     parts = []
     has_number = False
-    for w, label in (("7d", "7天"), ("30d", "30天"), ("90d", "90天")):
+    for w, label in (("7d", "第 7 天"), ("30d", "第 30 天"), ("90d", "第 90 天")):
         s = abw.get(w)
         if s and s.get("alpha_avg") is not None and s.get("alpha_n", 0) >= _MIN_WINDOW_ALPHA_N:
-            parts.append(f"{label} {s['alpha_avg']:+.1f}%（n={s['alpha_n']}）")
+            parts.append(f"{label} {s['alpha_avg']:+.1f}%（{s['alpha_n']} 次）")
             has_number = True
         elif s and s.get("alpha_n"):
-            parts.append(f"{label} 样本少(n={s['alpha_n']})暂不下结论")
+            parts.append(f"{label} 样本少（{s['alpha_n']} 次）暂不下结论")
         else:
-            parts.append(f"{label} 未到")
+            parts.append(f"{label} 还没到")
     if not has_number:
         return None
     return " ／ ".join(parts)   # 口径标题与免责由调用方承担，这里只给数字
@@ -111,49 +111,55 @@ def _adv_section(m: dict) -> str:
     ca = m["combined_alpha"]
     blocks = ["**📊 能力总评·明细**"]
 
-    # ── 尺①：只看个股，口径「到今天比大盘多赚多少」──
-    b1 = ["**▍只看个股 · 口径「到今天比大盘多赚多少」**"]
+    def _vs(x):   # 跟大盘比的人话：正=多赚、负=少赚
+        return f"比大盘**{'多赚' if x >= 0 else '少赚'} {abs(x):.1f}%**"
+
+    # ── 尺①：只看个股，到今天跟大盘比 ──
+    b1 = ["**▍我们的建议准不准 · 到今天，跟大盘比**"]
     if ba["status"] == "no_sample":
         b1.append("· 让你买的：_还没满 7 天的买入建议可打分_")
     else:
         few = f"仅 {ba['n']} 次，太少先参考" if ba["n"] < 5 else f"{ba['n']} 次"
-        b1.append(f"· 让你买的：**{ba['avg']:+.1f}%**　_{few}_")
+        b1.append(f"· 让你买的：{_vs(ba['avg'])}　_{few}_")
     if hq.get("n"):
         a = hq.get("avg_alpha")
-        head = f"**{a:+.1f}%**" if a is not None else "_暂无_"
+        head = _vs(a) if a is not None else "_暂无_"
         b1.append(f"· 让你拿住的：{head}　_拿对 {hq['right']}、拿错 {hq['wrong']}_")
     sr, sw = hr.get("sell_right", 0), hr.get("sell_wrong", 0)
     if sr + sw:
         note = "样本少但近期转好" if (sr + sw) < 30 else "近期转好"
         b1.append(f"· 让你卖减的：_卖对 {sr}、卖飞 {sw}，{note}_")
     if ca["status"] == "ok":
-        b1.append(f"· **合计买卖超额：{ca['avg']:+.1f}%** {'✅' if ca['avg'] >= 0 else '❌'}"
-                  f"　_每条到今天的终局，非账户加权_")
+        verb = "跑赢大盘" if ca["avg"] >= 0 else "跑输大盘"
+        b1.append(f"· **合计：这些买卖建议平均{verb} {abs(ca['avg']):.1f}%** {'✅' if ca['avg'] >= 0 else '❌'}"
+                  f"　_按每条建议算，不是你账户的实际盈亏_")
     wc = hq.get("wrong_cases") or []
     if wc:
         worst = "、".join(f"{c['ticker']}（{c['date'][5:]} 差{abs(c['alpha']):.0f}%）" for c in wc[:3])
         b1.append(f"· 最该减没减：{worst}")
     blocks.append("\n".join(b1))
 
-    # ── 尺②：定投 vs 主动，口径「7 日绝对收益」（另一把尺，别和①比）──
+    # ── 尺②：定投 vs 你主动买，看买入后头 7 天的涨跌（另一把尺，别和①比）──
     if avp.get("dca_avg") is not None or avp.get("active_avg") is not None:
-        dca_s = f"**{avp['dca_avg']:+.1f}%**（{avp['dca_n']} 次）" if avp.get("dca_avg") is not None else "—"
-        act_s = f"**{avp['active_avg']:+.1f}%**（{avp['active_n']} 次）" if avp.get("active_avg") is not None else "—"
+        dca_s = f"**{avp['dca_avg']:+.1f}%**（{avp['dca_n']} 笔均）" if avp.get("dca_avg") is not None else "—"
+        act_s = f"**{avp['active_avg']:+.1f}%**（{avp['active_n']} 笔均）" if avp.get("active_avg") is not None else "—"
         tail = ""
         if avp.get("dca_avg") is not None and avp.get("active_avg") is not None:
-            tail = "　→　" + ("主动选股更赚" if avp["active_avg"] > avp["dca_avg"] else "定投更稳")
-        blocks.append("**▍定投 vs 主动 · 口径「7 日绝对收益」**\n"
+            tail = "　→　" + ("你主动选股更赚" if avp["active_avg"] > avp["dca_avg"] else "目前定投更稳")
+        blocks.append("**▍定投 vs 你主动买 · 买入后头 7 天的涨跌**\n"
                       f"· 定投 {dca_s}　·　你主动买入 {act_s}{tail}")
 
-    # ── 尺③：短线还是长线，口径「固定窗口定格」──
+    # ── 尺③：建议是短线灵还是长线灵，看买入后第 N 天 ──
     abw_line = _format_window_alpha(m.get("alpha_by_window") or {})
     if abw_line:
-        blocks.append("**▍短线还是长线 · 口径「固定窗口定格」**\n"
-                      f"· {abw_line}　_30/90 天才见价值兑现，7 天多噪声_")
+        blocks.append("**▍建议短线灵还是长线灵 · 买入后第 7/30/90 天**\n"
+                      f"· {abw_line}　_拿够 30/90 天才见真章，7 天多是噪声_")
 
-    # 统一脚注：超额定义 + 拿错/卖飞释义 + 主动vs信号消歧 + 三尺别横比，一次说清
-    blocks.append("_ⓘ 超额 = 你的票涨跌 − 大盘(SPY/恒指)。拿错 = 该减没减后续跑输；卖飞 = 减仓后续还涨。"
-                  "「你主动买入」是你实操下单、「让你买的」是我们的信号，不是一回事。三把尺口径不同，别横着比。_")
+    # 统一脚注：人话定义 + 拿错/卖飞释义 + 主动vs信号消歧 + 三尺别横比，一次说清
+    blocks.append("_ⓘ 「比大盘多赚/少赚」= 你的票涨跌 减去 大盘（美股看 SPY、港股看恒指）。"
+                  "拿错 = 该减没减、后来真跑输了；卖飞 = 减了仓结果它还涨。"
+                  "「你主动买入」是你自己下的单、「让你买的」是我们发的信号，不是一回事。"
+                  "上中下三块算法不同，别拿数字直接横比。_")
     return "\n\n".join(blocks)
 
 

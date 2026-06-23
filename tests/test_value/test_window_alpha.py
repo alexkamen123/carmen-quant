@@ -13,9 +13,9 @@ def test_keeps_big_sample_hides_tiny():
            "90d": None}
     line = _format_window_alpha(abw)
     assert line is not None
-    assert "7天 -5.4%" in line          # 样本够，照报
+    assert "第 7 天 -5.4%" in line       # 样本够，照报（人话：第 N 天，不用 n=）
     assert "-50.4%" not in line          # 小样本数值绝不出现（不吓人不误导）
-    assert "样本少" in line and "n=4" in line
+    assert "样本少" in line and "4 次" in line
 
 
 def test_none_when_all_too_small_or_missing():
