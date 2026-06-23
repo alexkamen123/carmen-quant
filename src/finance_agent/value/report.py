@@ -277,12 +277,14 @@ def _shadow_section(m: dict) -> str:
 _DIP_GLOSS = {
     DIP_BUCKET_OPPORTUNITY: "跌了但逻辑没破，可能是机会",
     DIP_BUCKET_BROKEN: "公司基本面真出问题了",
-    DIP_BUCKET_WATCH: "看不清/数据不全，先观望",
+    DIP_BUCKET_WATCH: "当时没敢判",
 }
 
 
 def _dip_section(m: dict) -> str:
-    """风险预警段（暴跌时我们的判断准不准）——人话版。"""
+    """风险预警段（暴跌时我们的判断准不准）——人话版 + 诚实认账。
+    铁律「不许粉饰」：没敢判却事后多数上涨的，算我们**漏喊的机会**，禁止用「不算分」洗白；
+    没喊『快跑』的几类若已满7天全涨，说明可能只是普涨行情，不许给预警邀功。"""
     dip = m["dip"]
     if dip["n"] == 0:
         return "**🛡️ 暴跌预警准不准**：暂无已满 7 天的暴跌预警记录"
@@ -294,21 +296,50 @@ def _dip_section(m: dict) -> str:
             cases.append(f"{c['ticker']}（{c.get('bucket', '—')}，7日后 {r7s}）")
         return (f"**🛡️ 暴跌预警准不准** · 才 {dip['n']} 条（太少，只当个案看）\n"
                 + "；".join(cases))
+    bks = dip["buckets"]
+    cases = dip.get("cases") or []
     lines = [f"**🛡️ 暴跌预警准不准** · 共 {dip['n']} 次（按“跌的原因”分三类）"]
-    notes = {DIP_BUCKET_BROKEN: "（继续跌=我们预警对了）",
-             DIP_BUCKET_WATCH: "（证据矛盾/早期记录，不算分）"}
     for bucket in (DIP_BUCKET_OPPORTUNITY, DIP_BUCKET_BROKEN, DIP_BUCKET_WATCH):
-        st = dip["buckets"].get(bucket)
+        st = bks.get(bucket)
         if not st:
             continue   # 空桶不显示
         gloss = f"（{_DIP_GLOSS.get(bucket, '')}）"
-        note = notes.get(bucket, "")
-        if st["filled"]:
-            sign = "+" if st["avg_ret7"] >= 0 else ""
-            lines.append(f"　{bucket}{gloss} {st['n']} 次：已满7天 {st['filled']} 次，"
-                         f"{st['up']} 次后续上涨 / 平均 {sign}{st['avg_ret7']}%{note}")
-        else:
-            lines.append(f"　{bucket}{gloss} {st['n']} 次：暂都没满 7 天{note}")
+        if not st["filled"]:
+            # 没满7天：BROKEN 尤其关键——真正考验预警的是它躲没躲过跌
+            tail = "——到底躲没躲过跌，待揭晓" if bucket == DIP_BUCKET_BROKEN else ""
+            lines.append(f"　{bucket}{gloss} {st['n']} 次：暂都没满 7 天{tail}")
+            continue
+        up, fl, avg = st["up"], st["filled"], st["avg_ret7"]
+        sign = "+" if avg >= 0 else ""
+        head = (f"　{bucket}{gloss} {st['n']} 次：已满7天 {fl} 次，"
+                f"{up} 次后续上涨 / 平均 {sign}{avg}%")
+        if bucket == DIP_BUCKET_BROKEN:
+            head += "（续跌=预警对，续涨=我们喊错）"
+        lines.append(head)
+        if bucket == DIP_BUCKET_WATCH:
+            # 诚实认账：当时没敢判，事后多数上涨 = 漏喊的机会（不许「不算分」洗白）
+            if up * 2 >= fl:
+                nulls = sum(1 for c in cases
+                            if c.get("bucket") == bucket and c.get("thesis_intact") is None)
+                contra = sum(1 for c in cases if c.get("bucket") == bucket) - nulls
+                src = []
+                if nulls:
+                    src.append(f"早期没上线判断 {nulls} 次")
+                if contra > 0:
+                    src.append(f"证据打架没敢判 {contra} 次")
+                src_s = "（" + "、".join(src) + "）" if src else ""
+                lines.append(f"　　↳ ❌ 这其实是我们**漏喊的机会**{src_s}："
+                             f"{fl} 次满7天里 {up} 次都涨了、平均 {sign}{avg}%，该买没敢买、白白错过")
+            else:
+                lines.append("　　↳ 这几次没敢判、事后多数下跌，观望躲过了——算没踩雷")
+
+    # 自己泼盆冷水：没喊『快跑』的两类(机会型+待观察)若已满7天全涨 → 可能只是普涨，预警别邀功
+    opp, wat = bks.get(DIP_BUCKET_OPPORTUNITY), bks.get(DIP_BUCKET_WATCH)
+    safe_up = (opp["up"] if opp else 0) + (wat["up"] if wat else 0)
+    safe_fl = (opp["filled"] if opp else 0) + (wat["filled"] if wat else 0)
+    if safe_fl >= 5 and safe_up == safe_fl:
+        lines.append(f"　⚠️ **别急着邀功**：没喊『快跑』的两类 {safe_up}/{safe_fl} 全涨——"
+                     f"这波回调几乎普涨，我们『机会型』判断有多少是真本事、多少是水涨船高，样本还分不清")
     return "\n".join(lines)
 
 
