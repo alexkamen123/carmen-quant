@@ -55,8 +55,7 @@ def _format_window_alpha(abw: dict) -> str | None:
             parts.append(f"{label} 未到")
     if not has_number:
         return None
-    return ("　_信号超额·分窗口_：" + " ／ ".join(parts)
-            + "　_（30/90天才是价值兑现窗口，7天多为噪声）_")
+    return " ／ ".join(parts)   # 口径标题与免责由调用方承担，这里只给数字
 
 
 def _summary_section(m: dict) -> str:
@@ -103,83 +102,59 @@ def _summary_section(m: dict) -> str:
 
 
 def _adv_section(m: dict) -> str:
-    """能力总评——三问：让你买的赚多少 / 让你拿住的赚还是亏 / 让你卖的没做会怎样。
-    个股是真本事，定投单列只放收益供横向比较（用户设计：评整体能力 + 调风投/定投比例）。
-    全大白话，不用 alpha/命中率/CI 黑话；口径不变只换说法。"""
+    """能力总评·明细（折叠）——给精确数字，但按「三把尺子」分块：
+    ① 个股能力·到今天超额  ② 定投vs主动·7日绝对收益  ③ 短线/长线·固定窗口定格。
+    口径写进 ▍小标题、所有消歧/免责合并成底部唯一一条 ⓘ 脚注，
+    避免行内括号注解把数据淹成一堵墙（用户反馈：巨乱）。"""
     hr, ba, hq = m["hit_rate"], m["buy_alpha"], m.get("hold_quality") or {}
     avp = m.get("active_vs_passive") or {}
-    # 串场结论已在主屏 _summary_section，此处是「明细」折叠：给精确数字、分窗口、主动vs定投
-    lines = ["**📊 能力总评·明细**　_主屏给了结论，这里是各项精确数字（到今天口径）_",
-             "**【个股·风险类】这才是真本事**"]
+    ca = m["combined_alpha"]
+    blocks = ["**📊 能力总评·明细**"]
 
-    # 1️⃣ 让你买的——选股眼光
+    # ── 尺①：只看个股，口径「到今天比大盘多赚多少」──
+    b1 = ["**▍只看个股 · 口径「到今天比大盘多赚多少」**"]
     if ba["status"] == "no_sample":
-        lines.append("1️⃣ **让你买的**：还没有满 7 天的买入建议可打分")
+        b1.append("· 让你买的：_还没满 7 天的买入建议可打分_")
     else:
-        verb = "多赚" if ba["avg"] >= 0 else "少赚"
-        few = f"（仅 {ba['n']} 次，太少先参考）" if ba["n"] < 5 else f"（{ba['n']} 次）"
-        lines.append(f"1️⃣ **让你买的**：买入后**到今天**平均比大盘**{verb} {abs(ba['avg']):.1f}%**{few}")
-
-    # 2️⃣ 让你拿住的——持有判断（持有也是立场，与买卖同级，不降级）
+        few = f"仅 {ba['n']} 次，太少先参考" if ba["n"] < 5 else f"{ba['n']} 次"
+        b1.append(f"· 让你买的：**{ba['avg']:+.1f}%**　_{few}_")
     if hq.get("n"):
-        avg = hq.get("avg_alpha")
-        tail = (f"，整体{'跑赢' if avg >= 0 else '跑输'}大盘 {abs(avg):.1f}%") if avg is not None else ""
-        lines.append(
-            f"2️⃣ **让你拿住的**：{hq['n']} 次「持有别动」里，"
-            f"幸亏拿住(跑赢) **{hq['right']}** 次、该卖没卖(明显跑输) **{hq['wrong']}** 次{tail}"
-        )
-        # 最该减没减——可直接行动的减仓提示（原埋在死代码里，提到主屏）
-        wc = hq.get("wrong_cases") or []
-        if wc:
-            worst = "、".join(f"{c['ticker']}({c['date'][5:]} 差{abs(c['alpha']):.0f}%)"
-                              for c in wc[:3])
-            lines.append(f"　↳ 最该减没减：{worst}")
-    else:
-        lines.append("2️⃣ **让你拿住的**：暂无可评估的持有建议")
-
-    # 3️⃣ 让你卖的——反事实：没听我们卖，7 天后会怎样（仅卖/减，不含买入）
+        a = hq.get("avg_alpha")
+        head = f"**{a:+.1f}%**" if a is not None else "_暂无_"
+        b1.append(f"· 让你拿住的：{head}　_拿对 {hq['right']}、拿错 {hq['wrong']}_")
     sr, sw = hr.get("sell_right", 0), hr.get("sell_wrong", 0)
     if sr + sw:
-        warn = "　⚠️ 样本还少，先别当真" if (sr + sw) < 30 else ""
-        lines.append(
-            f"3️⃣ **让你卖/减的**：{sr + sw} 次减仓建议里，"
-            f"**卖对(后续真跌) {sr} 次、卖飞(没卖能多赚) {sw} 次**{warn}\n"
-            f"　_口径=若当时不卖、7 天后涨=卖飞、跌=卖对；早期系统性卖飞、近期转好_"
-        )
-    else:
-        lines.append("3️⃣ **让你卖/减的**：暂无可判对错的卖出建议")
-
-    # 综合：个股整体 vs 躺平
-    ca = m["combined_alpha"]
+        note = "样本少但近期转好" if (sr + sw) < 30 else "近期转好"
+        b1.append(f"· 让你卖减的：_卖对 {sr}、卖飞 {sw}，{note}_")
     if ca["status"] == "ok":
-        if ca["avg"] >= 0:
-            lines.append(f"　**▶ 我们的买卖建议·到今天平均超额：+{ca['avg']:.1f}%** ✅　_（每条建议到今天的终局表现，非你账户加权累计）_")
-        else:
-            lines.append(f"　**▶ 我们的买卖建议·到今天平均超额：{ca['avg']:.1f}%** ❌"
-                         f"　_（每条建议到今天的终局表现，非你账户加权累计；样本少，不代表长期）_")
+        b1.append(f"· **合计买卖超额：{ca['avg']:+.1f}%** {'✅' if ca['avg'] >= 0 else '❌'}"
+                  f"　_每条到今天的终局，非账户加权_")
+    wc = hq.get("wrong_cases") or []
+    if wc:
+        worst = "、".join(f"{c['ticker']}（{c['date'][5:]} 差{abs(c['alpha']):.0f}%）" for c in wc[:3])
+        b1.append(f"· 最该减没减：{worst}")
+    blocks.append("\n".join(b1))
 
-    # 分窗口超额（7/30/90 天）：7天噪声大，30/90天才见价值兑现；小样本不报数值
+    # ── 尺②：定投 vs 主动，口径「7 日绝对收益」（另一把尺，别和①比）──
+    if avp.get("dca_avg") is not None or avp.get("active_avg") is not None:
+        dca_s = f"**{avp['dca_avg']:+.1f}%**（{avp['dca_n']} 次）" if avp.get("dca_avg") is not None else "—"
+        act_s = f"**{avp['active_avg']:+.1f}%**（{avp['active_n']} 次）" if avp.get("active_avg") is not None else "—"
+        tail = ""
+        if avp.get("dca_avg") is not None and avp.get("active_avg") is not None:
+            tail = "　→　" + ("主动选股更赚" if avp["active_avg"] > avp["dca_avg"] else "定投更稳")
+        blocks.append("**▍定投 vs 主动 · 口径「7 日绝对收益」**\n"
+                      f"· 定投 {dca_s}　·　你主动买入 {act_s}{tail}")
+
+    # ── 尺③：短线还是长线，口径「固定窗口定格」──
     abw_line = _format_window_alpha(m.get("alpha_by_window") or {})
     if abw_line:
-        lines.append(abw_line)
+        blocks.append("**▍短线还是长线 · 口径「固定窗口定格」**\n"
+                      f"· {abw_line}　_30/90 天才见价值兑现，7 天多噪声_")
 
-    # 【ETF·定投类】不评判断，只放收益供横向比较（调风投/定投比例用）
-    if avp.get("dca_avg") is not None or avp.get("active_avg") is not None:
-        lines.append("**【ETF·定投类】不评对错，只看收益（定投本就不择时）**"
-                     "　_⚠️ 本段是「操作后7天」的横向标尺，与卡片其余「到今天」口径不同，别和上面直接比_")
-        dca_s = f"{avp['dca_avg']:+.1f}%（{avp['dca_n']} 次）" if avp.get("dca_avg") is not None else "—"
-        act_s = (f"{avp['active_avg']:+.1f}%（{avp['active_n']} 次）"
-                 if avp.get("active_avg") is not None else "—")
-        lines.append(f"• 定投标的 7 日平均收益：**{dca_s}**")
-        lines.append(f"• 你主动买入(你实操下单的个股) 7 日平均收益：**{act_s}**"
-                     f"\n　_注：这是你真金白银买的(含没按建议的)、看的是绝对涨跌；"
-                     f"和最上面「让你买的」(只算我们建议的信号、比的是跑赢大盘多少)不是一回事，别直接比_")
-        if avp.get("dca_avg") is not None and avp.get("active_avg") is not None:
-            winner = "你的主动选股更赚" if avp["active_avg"] > avp["dca_avg"] else "定投/躺平更稳赚"
-            lines.append(f"　_横向比：目前 **{winner}** → 可据此调整风投/定投的钱分多少_")
-
-    lines.append("_“比大盘多赚/少赚”=同期你的票涨跌 减去 大盘指数(美股SPY/港股恒指)涨跌_")
-    return "\n".join(lines)
+    # 统一脚注：超额定义 + 拿错/卖飞释义 + 主动vs信号消歧 + 三尺别横比，一次说清
+    blocks.append("_ⓘ 超额 = 你的票涨跌 − 大盘(SPY/恒指)。拿错 = 该减没减后续跑输；卖飞 = 减仓后续还涨。"
+                  "「你主动买入」是你实操下单、「让你买的」是我们的信号，不是一回事。三把尺口径不同，别横着比。_")
+    return "\n\n".join(blocks)
 
 
 def _verdict_for(action: str, ret: float, kind: str) -> str:
