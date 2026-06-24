@@ -14,6 +14,7 @@ from datetime import datetime
 
 from finance_agent.db.tracker import (
     _resolve_db, _conn, init_db, get_feedback_accuracy, get_dip_stats,
+    _dedup_weekly,   # 唯一权威去重实现在 tracker（下层），此处复用，保证与日报/周报命中率同口径
 )
 from finance_agent.weekly.drift import HEDGE_TICKERS  # 对冲货基单一真相源，复用不另起白名单
 
@@ -130,39 +131,6 @@ def _score_window(rows: list[dict], ret_key: str, bm_key: str,
         "alpha_n": len(effs),
         "alpha_avg": round(sum(effs) / len(effs), 2) + 0.0 if effs else None,
     }
-
-
-def _dir_key(r: dict) -> str:
-    """去重方向键：买/卖/持有三态。买入↔减仓翻转是两个真信号，不可互相折叠。"""
-    if _is_bullish(r.get("recommendation", ""), r.get("position_change", "")):
-        return "B"
-    if _is_bearish(r.get("recommendation", ""), r.get("position_change", "")):
-        return "S"
-    return "H"
-
-
-def _dedup_weekly(rows: list[dict], window_days: int = 7) -> list[dict]:
-    """同票同方向、相隔 < window_days(默认7) 天的连续推荐视为同一独立信号，只保留首条。
-    口径=滚动 7 天窗口（return_7d 窗口 <7 天即高度重叠、同一 thesis），按日期升序取首条、确定性。
-
-    为何不用 (ticker, ISO周)：ISO 周有周一固定边界，周日+周一连发的同一条信号会被劈成
-    两条独立信号双计（实测 07709 减仓 5/17+5/18 ret 全同却双计、-50.1 灌爆 combined_alpha）。
-    滚动窗口对齐「一周内反复推荐只算一次」的本意，且键含方向、不误折买卖翻转。"""
-    last_kept: dict = {}    # (ticker, dir) -> 上一条保留信号的 date
-    out: list[dict] = []
-    for r in sorted(rows, key=lambda x: x["date"]):
-        try:
-            d = datetime.strptime(r["date"], "%Y-%m-%d")
-        except (ValueError, TypeError):
-            out.append(r)      # 日期不可解析：保守保留，不静默吞
-            continue
-        key = (r["ticker"], _dir_key(r))
-        prev = last_kept.get(key)
-        if prev is not None and (d - prev).days < window_days:
-            continue           # 同票同向、窗口内重叠 → 折叠
-        last_kept[key] = d
-        out.append(r)
-    return out
 
 
 def _span_days(dates: list[str]) -> int:
