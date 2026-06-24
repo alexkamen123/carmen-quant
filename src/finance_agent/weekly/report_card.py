@@ -3,6 +3,7 @@
 将 allocation_advisor 的结构化结果渲染成飞书卡片。
 """
 from finance_agent.notifications.glossary import build_glossary_element
+from finance_agent.notifications.cards import collapsible_panel
 
 URGENCY_EMOJI = {"高": "🔴", "中": "🟡", "低": "🟢"}
 SIGNAL_EMOJI = {"强": "🔥", "中": "✨"}
@@ -67,20 +68,18 @@ def build_weekly_card(result: dict) -> dict:
         })
         elements.append({"tag": "hr"})
 
-    # ── 三桶配置漂移（P2）─────────────────────────────────────────────────────
+    # ── 三桶配置漂移（P2）：精确表收进折叠，主屏速览已点出偏离最大的桶（减冗余）──
     drift_rows = result.get("drift_rows", [])
     if drift_rows:
-        drift_lines = ["**📐 三桶配置漂移**（目标 → 当前）"]
+        drift_lines = []
         for r in drift_rows:
             sign = "+" if r["drift"] >= 0 else ""
             drift_lines.append(
                 f"{r['status']} {r['label']}：{r['target_pct']:.0f}% → "
                 f"**{r['current_pct']:.0f}%**（漂移 {sign}{r['drift']:.0f}%）"
             )
-        elements.append({
-            "tag": "div",
-            "text": {"tag": "lark_md", "content": "\n".join(drift_lines)},
-        })
+        elements.append(collapsible_panel(
+            "**📐 三桶配置漂移**（目标 → 当前·点开看全部）", "\n".join(drift_lines)))
         elements.append({"tag": "hr"})
 
     # ── 上期指导执行情况（P2）─────────────────────────────────────────────────
