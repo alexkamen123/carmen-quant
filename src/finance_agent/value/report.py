@@ -126,13 +126,16 @@ def _adv_section(m: dict) -> str:
         head = _vs(a) if a is not None else "_暂无_"
         b1.append(f"· 让你拿住的：{head}　_拿对 {hq['right']}、拿错 {hq['wrong']}_")
     sr, sw = hr.get("sell_right", 0), hr.get("sell_wrong", 0)
+    sa = m.get("sell_alpha") or {}
     if sr + sw:
         note = "样本少但近期转好" if (sr + sw) < 30 else "近期转好"
-        b1.append(f"· 让你卖减的：_卖对 {sr}、卖飞 {sw}，{note}_")
+        # 带上卖侧 alpha，让合计的负值有可见出处（卖飞越多、这里越负）
+        sa_s = f"{_vs(sa['avg'])}　" if sa.get("status") == "ok" and sa.get("avg") is not None else ""
+        b1.append(f"· 让你卖减的：{sa_s}_卖对 {sr}、卖飞 {sw}，{note}_")
     if ca["status"] == "ok":
         verb = "跑赢大盘" if ca["avg"] >= 0 else "跑输大盘"
-        b1.append(f"· **合计：这些买卖建议平均{verb} {abs(ca['avg']):.1f}%** {'✅' if ca['avg'] >= 0 else '❌'}"
-                  f"　_按每条建议算，不是你账户的实际盈亏_")
+        b1.append(f"· **合计：买+卖一起算，平均{verb} {abs(ca['avg']):.1f}%** {'✅' if ca['avg'] >= 0 else '❌'}"
+                  f"　_= 上面「买」和「卖减」的合并（持有不在内），按每条建议算、非你账户实际盈亏_")
     wc = hq.get("wrong_cases") or []
     if wc:
         worst = "、".join(f"{c['ticker']}（{c['date'][5:]} 差{abs(c['alpha']):.0f}%）" for c in wc[:3])
@@ -364,7 +367,7 @@ def _meta_section(m: dict) -> str:
         + (f"、**{comp['shadow']} 条**是试用选股名单(没花你的钱)" if comp['shadow'] else "")
         + "。",
         "• 怎么算的：**判对错看「到今天」的终局结果**——拿建议发出时的价比今天的价(减同期大盘涨跌"
-        "=跑赢/跑输多少)，操作满 5 天才算、太新的不下结论；同票连推按 (票, 周) 去重。"
+        "=跑赢/跑输多少)，操作满 5 天才算、太新的不下结论；同票同向 7 天内连推只算一条。"
         "下方「信号超额·分窗口(7/30/90天)」是另一码事：那是固定窗口定格，专门看建议是只灵几天的短线、"
         "还是越拿越值的长线，跟主口径「到今天」互补、别混看。",
         f"• 数据截至 {m['data_through'] or '—'}；以上全是真实记录算出来的，没有 AI 编故事。",
