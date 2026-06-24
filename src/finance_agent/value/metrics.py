@@ -132,21 +132,35 @@ def _score_window(rows: list[dict], ret_key: str, bm_key: str,
     }
 
 
-def _dedup_weekly(rows: list[dict]) -> list[dict]:
-    """同一 (ticker, ISO周) 的连续推荐视为同一独立信号，只保留该周首条。
-    消除"同票连推数日"造成的伪独立膨胀（7天窗口高度重叠、同一 thesis，
-    计多条会虚增 n 并重复计入相关结果）。按日期升序取首条，确定性。"""
-    seen: set = set()
+def _dir_key(r: dict) -> str:
+    """去重方向键：买/卖/持有三态。买入↔减仓翻转是两个真信号，不可互相折叠。"""
+    if _is_bullish(r.get("recommendation", ""), r.get("position_change", "")):
+        return "B"
+    if _is_bearish(r.get("recommendation", ""), r.get("position_change", "")):
+        return "S"
+    return "H"
+
+
+def _dedup_weekly(rows: list[dict], window_days: int = 7) -> list[dict]:
+    """同票同方向、相隔 < window_days(默认7) 天的连续推荐视为同一独立信号，只保留首条。
+    口径=滚动 7 天窗口（return_7d 窗口 <7 天即高度重叠、同一 thesis），按日期升序取首条、确定性。
+
+    为何不用 (ticker, ISO周)：ISO 周有周一固定边界，周日+周一连发的同一条信号会被劈成
+    两条独立信号双计（实测 07709 减仓 5/17+5/18 ret 全同却双计、-50.1 灌爆 combined_alpha）。
+    滚动窗口对齐「一周内反复推荐只算一次」的本意，且键含方向、不误折买卖翻转。"""
+    last_kept: dict = {}    # (ticker, dir) -> 上一条保留信号的 date
     out: list[dict] = []
     for r in sorted(rows, key=lambda x: x["date"]):
         try:
-            y, w, _ = datetime.strptime(r["date"], "%Y-%m-%d").isocalendar()
-            key = (r["ticker"], y, w)
+            d = datetime.strptime(r["date"], "%Y-%m-%d")
         except (ValueError, TypeError):
-            key = (r["ticker"], r["date"])
-        if key in seen:
+            out.append(r)      # 日期不可解析：保守保留，不静默吞
             continue
-        seen.add(key)
+        key = (r["ticker"], _dir_key(r))
+        prev = last_kept.get(key)
+        if prev is not None and (d - prev).days < window_days:
+            continue           # 同票同向、窗口内重叠 → 折叠
+        last_kept[key] = d
         out.append(r)
     return out
 
@@ -321,6 +335,18 @@ def compute_value_metrics(db_path=None, live_overrides=None) -> dict:
     else:
         buy_alpha = {"n": 0, "avg": None, "status": "no_sample",
                      "note": "尚无可评估的买入信号（回测窗口未到 / 未回填）"}
+
+    # ── SELL类（减仓/卖出）alpha —— 反号：卖后跌=帮你躲跌(正)、卖飞=负 ──
+    # 单列让「合计=买+卖」的负值有可见出处（用户审计：卖减只显计数、合计负像凭空冒出）
+    sell_alpha_rows = [r for r in dir_rows
+                       if _is_bearish(r["recommendation"], r["position_change"])
+                       and r["benchmark_return_7d"] is not None]
+    if sell_alpha_rows:
+        salphas = [-(r["return_7d"] - r["benchmark_return_7d"]) for r in sell_alpha_rows]
+        sell_alpha = {"n": len(salphas), "avg": round(sum(salphas) / len(salphas), 2),
+                      "status": "ok"}
+    else:
+        sell_alpha = {"n": 0, "avg": None, "status": "no_sample"}
 
     # ── 组合 alpha（有 benchmark 子集）—— 覆盖率不足则标灰不结论 ──
     bm_rows = [r for r in dir_rows if r["benchmark_return_7d"] is not None]
@@ -563,7 +589,7 @@ def compute_value_metrics(db_path=None, live_overrides=None) -> dict:
     return {
         "gate": gate, "composition": composition, "hit_rate": hit_rate,
         "alpha_by_window": alpha_by_window,
-        "buy_alpha": buy_alpha, "combined_alpha": combined_alpha,
+        "buy_alpha": buy_alpha, "sell_alpha": sell_alpha, "combined_alpha": combined_alpha,
         "hold_quality": hold_quality, "shadow_picks": shadow_picks,
         "active_vs_passive": active_vs_passive,
         "behavior": behavior, "dip": dip, "verdict": verdict,

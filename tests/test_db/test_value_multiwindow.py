@@ -62,11 +62,14 @@ def test_score_window_bearish_sign_and_neutral_band():
 
 # ── P0-3：verdict 止血——主语切回"信号"，不冒充"你账户截至本期" ──
 def _seed_gate_passing_negative_alpha(db):
-    """32 条减仓建议、8 票，卖出后均上涨(卖飞)→组合 alpha 为负、闸门通过。"""
+    """32 条减仓建议、8 票，卖出后均上涨(卖飞)→组合 alpha 为负、闸门通过。
+    每票跨 4 个月各 1 条（间隔 >7 天），确保滚动 7 天去重后仍是 32 条独立信号。"""
     tracker.init_db(db)
     with tracker._conn(db) as con:
         for i in range(32):
-            _insert_rec(con, f"2026-05-{(i % 27) + 1:02d}", f"TK{i % 8}",
+            month = 5 + (i // 8)            # 05..08，同票各月一条 → 间隔≈1月>7天
+            day = (i % 8) * 3 + 1           # 1,4,...,22
+            _insert_rec(con, f"2026-{month:02d}-{day:02d}", f"TK{i % 8}",
                         "减仓", "减仓1", 5.0, 1.0)   # bearish, ret>0 → 卖飞；eff=-(5-1)=-4
 
 
