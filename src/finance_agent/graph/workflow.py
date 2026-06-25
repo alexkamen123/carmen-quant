@@ -438,18 +438,19 @@ async def format_report_node(state: AgentState) -> AgentState:
         )
         if sell_warn:
             main_md_lines.append(sell_warn)
-        # 该减没减守门：持有立场但技术面明显走弱时追加警示（与卖飞守门互斥）
-        hold_warn = flag_hold_into_weakness(
-            recommendation=s.recommendation,
-            position_change=s.position_change or "",
-            rsi=sig.rsi,
-            price=sig.close,
-            ma20=sig.ma20,
-            ma60=sig.ma60,
-            macd=sig.macd,
-        )
-        if hold_warn:
-            main_md_lines.append(hold_warn)
+        # 该减没减守门：持有立场但技术面明显走弱时追加警示（与卖飞守门互斥）。
+        # ETF/定投标的逆势继续买是策略本意，短路跳过，避免反向误警。
+        if not is_etf and s.recommendation != "按计划定投":
+            hold_warn = flag_hold_into_weakness(
+                recommendation=s.recommendation,
+                rsi=sig.rsi,
+                price=sig.close,
+                ma20=sig.ma20,
+                ma60=sig.ma60,
+                macd=sig.macd,
+            )
+            if hold_warn:
+                main_md_lines.append(hold_warn)
 
         elements.append({
             "tag": "div",

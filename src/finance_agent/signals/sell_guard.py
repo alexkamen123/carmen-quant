@@ -74,7 +74,6 @@ def flag_sell_into_strength(
 
 def flag_hold_into_weakness(
     recommendation: str,
-    position_change: str,
     rsi: float | None,
     price: float | None,
     ma20: float | None,
@@ -85,8 +84,8 @@ def flag_hold_into_weakness(
     守门函数：识别「持有立场 + 技术面明显走弱」并产出警示文案。
 
     触发条件（必须同时满足）：
-      1. 持有立场：recommendation ∈ {"持有","观望"} 或
-         position_change 为空/"维持" 且 recommendation 不是"买入"/"减仓"/"卖出"
+      1. 持有立场：recommendation 不是"买入"/"减仓"/"卖出"
+         （即"持有"/"观望"等明确方向以外的立场都算持有）
       2. 技术面走弱：
          - rsi < 50（非超卖但偏弱，动量转负）
          - price < ma20 < ma60（均线空头排列，趋势向下）
