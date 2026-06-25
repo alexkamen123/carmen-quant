@@ -1,5 +1,7 @@
 #!/bin/bash
 # 卡门智投 自动迭代 Loop · 单轮 headless 触发器（launchd 每晚调用一次）
+# ⚠️ 实验性·未验证：2026-06-25 首验发现 nested headless 多agent cycle 未干净跑通；plist 勿 load，
+#    待在真实 launchd 上下文（非嵌套）+ 工具白名单 验证通过、用户在场见证后再启用。
 # 验证用法：DRY_RUN=1 bash scripts/auto_iter/run_cycle.sh   （只策划不写码不合并）
 set -uo pipefail
 
@@ -25,5 +27,6 @@ cd "$REPO" || { echo "cd 失败" | tee -a "$LOG"; exit 1; }
 echo "[$(date)] 自动迭代单轮开始（DRY_RUN=${DRY_RUN:-0}）" | tee -a "$LOG"
 # headless：-p 打印模式；--dangerously-skip-permissions 让其无人值守跑 bash/git/subagent
 DRY_RUN="${DRY_RUN:-0}" claude -p "$(cat "$PROMPT")" \
-  --dangerously-skip-permissions 2>&1 | tee -a "$LOG"
+  --allowedTools 'Bash(git:*)' 'Bash(uv:*)' 'Bash(gh:*)' 'Bash(python3:*)' Read Write Edit Task Grep Glob \
+  2>&1 | tee -a "$LOG"
 echo "[$(date)] 自动迭代单轮结束，日志：$LOG" | tee -a "$LOG"

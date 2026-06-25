@@ -19,3 +19,4 @@ config/portfolio.yaml
 .claude/
 # 一次性调研 brief（保留本地，不入代码历史）
 ONBOARDING.md
+logs/
