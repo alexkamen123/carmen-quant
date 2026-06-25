@@ -28,9 +28,9 @@ def test_hold_quality_buckets(tmp_path):
     assert h == {"n": 3, "right": 1, "wrong": 1, "neutral": 1, "avg_alpha": -2.0,
                  "bad_alpha_threshold": HOLD_BAD_ALPHA,
                  "wrong_cases": [{"date": "2026-06-01", "ticker": "B", "alpha": -7.0}]}
-    # 持有质量现渲染在能力总评第2问（loop③：死代码已删、明细提主屏）
+    # 持有质量渲染在能力总评尺①「让你拿住的」（loop⑩：注解下沉脚注、文案精简）
     out = _adv_section(m)
-    assert "幸亏拿住(跑赢) **1**" in out and "B(06-01 差7%)" in out
+    assert "拿对 1、拿错 1" in out and "B（06-01 差7%）" in out
 
 
 def test_hold_quality_not_mixed_into_hit_rate(tmp_path):
@@ -59,7 +59,7 @@ def test_shadow_rows_isolated(tmp_path):
     s = m["shadow_picks"]
     assert s["n"] == 2 and s["correct"] == 1 and s["wrong"] == 1
     assert s["avg_alpha"] == 0.0   # (+5 + -5)/2
-    assert "试用选股名单" in _shadow_section(m)
+    assert "选股眼光·影子轨" in _shadow_section(m)
 
 
 def test_shadow_section_hidden_when_empty(tmp_path):

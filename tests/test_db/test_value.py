@@ -45,7 +45,9 @@ def test_wilson_bounds():
 
 
 def test_direction_helpers():
-    assert _is_bullish("买入", "") and _is_bullish("持有", "小加1")
+    assert _is_bullish("买入", "") and _is_bullish("买入", "小加1")
+    # 止血：「持有/观望 + 小加」rec 优先，语义是持有，不再误判为买入
+    assert not _is_bullish("持有", "小加1")
     assert _is_bearish("减仓", "") and _is_bearish("卖出", "")
     assert not _is_bullish("持有", "维持")
 
@@ -88,7 +90,9 @@ def test_metrics_math(tmp_path):
     # 卡片可渲染、含诚实声明
     import json
     blob = json.dumps(build_value_card(m), ensure_ascii=False)
-    assert "价值体检" in blob and "不能下定论" in blob and "诚实附录" in blob
+    # 可信度用「进度」措辞而非「拒绝」措辞（说人话：现在够给初步判断，攒够更可靠）
+    assert "价值体检" in blob and "初步判断" in blob and "诚实附录" in blob
+    assert "不能下定论" not in blob
 
 
 def test_buy_alpha_placeholder_when_no_buy(tmp_path):
@@ -150,9 +154,10 @@ def test_verdict_orange_negative_alpha(tmp_path, monkeypatch):
     m = compute_value_metrics(db)
     assert m["verdict"]["state"] == 1
     txt = m["verdict"]["text"]
-    assert "跑输基准" in txt and "信号" in txt and "第7天" in txt
-    # P0-3 止血：不再把信号7天超额冒充成"你账户截至本期不如躺平"
+    assert "跑输基准" in txt and "建议" in txt and "到今天" in txt
+    # P0-3 止血：不再把建议超额冒充成"你账户截至本期不如躺平"
     assert "不如躺平" not in txt and "截至本期" not in txt
+    assert "不是你账户" in txt          # 主语锁死=建议本身，非账户累计
 
 
 def test_verdict_orange_positive_alpha_low_winrate(tmp_path, monkeypatch):

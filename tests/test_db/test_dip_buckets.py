@@ -77,7 +77,7 @@ def test_dip_section_render():
     }}}
     out = _dip_section(m_big)
     assert f"{DIP_BUCKET_OPPORTUNITY}（跌了但逻辑没破，可能是机会） 4 次" in out
-    assert f"{DIP_BUCKET_BROKEN}（公司基本面真出问题了） 2 次" in out and "继续跌=我们预警对了" in out
+    assert f"{DIP_BUCKET_BROKEN}（公司基本面真出问题了） 2 次" in out and "续跌=预警对" in out
     assert DIP_BUCKET_WATCH not in out                  # 空桶无行
     assert "抄底机会事后上涨" not in out                 # 旧措辞替换非叠加
 

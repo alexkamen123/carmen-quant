@@ -291,6 +291,47 @@ def _clip_md(text: str, limit: int = 45) -> str:
     return clipped + "…"
 
 
+_SHADOW_EMOJI = {"买入": "🟢", "持有": "🟡", "观望": "🟡",
+                 "减仓": "🟠", "卖出": "🔴", "按计划定投": "⬜"}
+_SHADOW_CONF = {"高": "★★★", "中": "★★☆", "低": "★☆☆"}
+
+
+def _panel(title: str, content: str, expanded: bool = False) -> dict:
+    """schema 2.0 折叠面板（与 value/report.py 同款）：主屏只显标题，点开看 content。"""
+    return {
+        "tag": "collapsible_panel",
+        "expanded": expanded,
+        "header": {
+            "title": {"tag": "markdown", "content": title},
+            "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined",
+                     "size": "16px 16px"},
+            "icon_position": "right",
+            "icon_expanded_angle": 180,
+        },
+        "elements": [{"tag": "markdown", "content": content}],
+    }
+
+
+def _build_shadow_panel(shadow_stocks: list) -> dict | None:
+    """非持仓/影子股(shares=0)收进折叠面板：每只只给一句话简评+风险，
+    不渲染入场点/止损/多空辩论等重型字段（减冗余）。空列表返回 None。"""
+    if not shadow_stocks:
+        return None
+    lines = []
+    for s in shadow_stocks:
+        emoji = _SHADOW_EMOJI.get(getattr(s, "recommendation", "") or "", "⬜")
+        conf = _SHADOW_CONF.get(getattr(s, "confidence", "") or "", "")
+        head = f"**{emoji} {s.ticker}** {(s.recommendation or '观望')} {conf}".rstrip()
+        one_line = getattr(s, "one_line", "") or ""
+        risk = getattr(s, "key_risk", "") or ""
+        body = head + (f" — {one_line}" if one_line else "")
+        if risk:
+            body += f"\n　⚠️ {risk}"
+        lines.append(body)
+    title = f"**🔍 非持仓·影子股观察（{len(shadow_stocks)}）**　_点开看触发信号与简评_"
+    return _panel(title, "\n".join(lines))
+
+
 async def format_report_node(state: AgentState) -> AgentState:
     """生成飞书卡片（含辩论过程）和控制台文本"""
     EMOJI      = {"买入": "🟢", "持有": "🟡", "观望": "🟡",
@@ -335,7 +376,11 @@ async def format_report_node(state: AgentState) -> AgentState:
     )
     elements: list[dict] = []
 
-    for i, s in enumerate(state.stocks):
+    # 持仓股(shares>0)走完整明细；非持仓/影子股(shares=0)收进折叠面板，减冗余（用户选型）
+    held_stocks = [s for s in state.stocks if s.shares]
+    shadow_stocks = [s for s in state.stocks if not s.shares]
+
+    for i, s in enumerate(held_stocks):
         emoji = EMOJI.get(s.recommendation, "⬜")
         conf  = CONF.get(s.confidence, "")
         is_etf = s.ticker in ("QQQM", "VOO")
@@ -417,9 +462,15 @@ async def format_report_node(state: AgentState) -> AgentState:
                     "text": {"tag": "lark_md", "content": "\n".join(debate_lines)},
                 })
 
-        # 分隔线（最后一只不加）
-        if i < len(state.stocks) - 1:
+        # 分隔线（最后一只持仓股不加）
+        if i < len(held_stocks) - 1:
             elements.append({"tag": "hr"})
+
+    # 非持仓/影子股折叠面板：紧跟持仓明细之后、底部统计之前
+    shadow_panel = _build_shadow_panel(shadow_stocks)
+    if shadow_panel:
+        elements.append({"tag": "hr"})
+        elements.append(shadow_panel)
 
     # 底部：历史准确率 + 错误提示 + 名词解释 + 免责声明
     acc = accuracy_summary(days=30)

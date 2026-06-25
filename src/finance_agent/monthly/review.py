@@ -25,6 +25,15 @@ from finance_agent.db.tracker import (
 from finance_agent.monthly.scorecard import (
     build_trade_review, trade_review_summary, generate_scorecard,
 )
+from finance_agent.notifications.cards import collapsible_panel
+
+
+def _trade_review_panel(tr_lines: list[str]) -> dict:
+    """逐笔复盘收进折叠：tr_lines[0]=标题进 header、其余 per-trade 明细进 content（减冗余）。
+    主屏已留总评/行为评分/准确率，逐笔细节点开再看。"""
+    title = tr_lines[0] if tr_lines else "**🔍 逐笔复盘**"
+    body = "\n".join(tr_lines[1:]) if len(tr_lines) > 1 else "本月无已回填收益的操作"
+    return collapsible_panel(f"{title}（点开看每笔）", body)
 
 
 REVIEW_SYSTEM = """你是一位家庭投资组合的月度复盘顾问。
@@ -286,10 +295,7 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, 
                 "text": {"tag": "lark_md", "content": "\n".join(sc_lines)},
             },
             {"tag": "hr"},
-            {
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": "\n".join(tr_lines)},
-            },
+            _trade_review_panel(tr_lines),
             {"tag": "hr"},
             {
                 "tag": "div",

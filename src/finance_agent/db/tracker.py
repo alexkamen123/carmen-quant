@@ -180,6 +180,46 @@ def _is_directional(recommendation: str | None, position_change: str | None) -> 
     return rec in ("买入", "减仓", "卖出") or pc.startswith(("大加", "小加", "减仓"))
 
 
+# ── 去重：同票同方向、滚动 window_days 天内的连推视为同一独立信号（唯一权威实现）──
+# value/metrics.py import 本函数复用，保证「日报/周报命中率」与「价值体检」严格同口径。
+_PASSIVE_RECS = ("持有", "观望", "按计划定投")
+
+
+def _dir_key(r: dict) -> str:
+    """去重方向键：买/卖/持有三态（持有/观望/定投+小加 仍是持有，不计买入，与 metrics 同口径）。
+    买入↔减仓翻转是两个真信号，键含方向以免误折。"""
+    rec = r.get("recommendation") or ""
+    pc = r.get("position_change") or ""
+    if rec in _PASSIVE_RECS:
+        return "H"
+    if rec == "买入" or pc.startswith(("大加", "小加")):
+        return "B"
+    if rec in ("减仓", "卖出") or pc.startswith("减仓"):
+        return "S"
+    return "H"
+
+
+def _dedup_weekly(rows: list[dict], window_days: int = 7) -> list[dict]:
+    """同票同方向、相隔 < window_days(默认7) 天的连续推荐折成一条（首条），消除日报连发伪膨胀。
+    口径=滚动 7 天窗口（return_7d 窗口 <7 天即重叠、同一 thesis）；按日期升序取首条、确定性。
+    不用 (ticker, ISO周)：周一固定边界会把周日+周一同一条信号劈成两条双计（审计 2026-06-24）。"""
+    last_kept: dict = {}
+    out: list[dict] = []
+    for r in sorted(rows, key=lambda x: x["date"]):
+        try:
+            d = datetime.strptime(r["date"], "%Y-%m-%d")
+        except (ValueError, TypeError):
+            out.append(r)
+            continue
+        key = (r["ticker"], _dir_key(r))
+        prev = last_kept.get(key)
+        if prev is not None and (d - prev).days < window_days:
+            continue
+        last_kept[key] = d
+        out.append(r)
+    return out
+
+
 def _determine_outcome(recommendation: str, position_change: str, ret: float) -> str:
     """根据方向与实际涨跌判断推荐是否正确"""
     bullish = recommendation in ("买入",) or (position_change or "").startswith(("大加", "小加"))
@@ -1092,7 +1132,7 @@ def accuracy_summary(days: int = 30, db_path: str | Path | None = None) -> str:
         # IFNULL(is_watch,0)=0：影子选股单独分栏（metrics.py 同口径），绝不混入
         # 真实持仓命中率——06-12 自检 P1：影子票（自选高信赖信号）混入会让命中率虚高
         rows = con.execute(
-            "SELECT outcome, recommendation, position_change FROM recommendations "
+            "SELECT date, ticker, outcome, recommendation, position_change FROM recommendations "
             "WHERE date >= ? AND outcome IS NOT NULL AND IFNULL(is_watch, 0) = 0",
             (since,),
         ).fetchall()
@@ -1100,6 +1140,8 @@ def accuracy_summary(days: int = 30, db_path: str | Path | None = None) -> str:
     if not rows:
         return ""
 
+    # 与价值体检同口径去重：同票同向 7 天内连发的日报重复只算一条（审计 bug#1）
+    rows = _dedup_weekly([dict(r) for r in rows])
     correct = sum(1 for r in rows if r["outcome"] == "正确")
     wrong   = sum(1 for r in rows if r["outcome"] == "错误")
     # 中性拆两类（06-12 自检 P1：标签与内容不符）——方向性建议落 ±1% 中性带 ≠ 持有/定投
@@ -1148,6 +1190,8 @@ def weekly_accuracy_summary(db_path: str | Path | None = None) -> dict:
     if not rows:
         return {"available": False}
 
+    # 与价值体检同口径去重：同票同向 7 天内连发只算一条（审计 bug#1）
+    rows = _dedup_weekly([dict(r) for r in rows])
     results = []
     hold_n = hold_ok = 0
     for r in rows:
@@ -1211,8 +1255,12 @@ async def backfill_action_returns(db_path: str | Path | None = None) -> int:
     回填 BUY/SELL/TRIM 操作 7 天后的远期涨跌幅（actual_return）。
     - 找出 7+ 天前、actual_return 为空的记录
     - 用 yfinance 拉操作当天收盘价 → 第 7 个交易日收盘价，计算涨跌幅
-    - 符号约定：BUY 远期为正=买对了；SELL/TRIM 远期为负=卖对了（躲过下跌）
+    - 【符号约定·勿照注释反向改代码】统一存【原始远期涨跌】(不反号)：BUY/SELL/TRIM
+      一律是标的本身的涨跌方向。对错由消费层(metrics._behavior_section)判定——
+      BUY: ret>0=买对；SELL/TRIM: ret<0=躲跌对、ret>0=卖飞踏空。此处只负责如实存涨跌。
     - 港股代码（纯数字）自动转 yfinance 的 NNNN.HK 格式
+    - 实现细节：target_idx=min(6, len-1) 取第 7 个交易日(T+6，偶因停牌差 1 日)；
+      yf.download 的 period='15d' 与 start= 并用时被 yfinance 忽略，靠 start+足量行数兜底。
     """
     p = _resolve_db(db_path)
     init_db(p)
@@ -1679,10 +1727,25 @@ def save_dip_alert(ticker: str, market: str, drop_pct: float,
         return cur.lastrowid
 
 
+def _pick_close_on_or_after(closes, target, max_gap_days: int = 6):
+    """取 target 日(含)之后最近一根收盘价；若最近 bar 距 target 超过 max_gap_days 天则返 None。
+    锚定 target、有上界——杜绝晚回填时窗口已不含 target、误抓偏晚的价冒充（审计 bug#2）。
+    closes: pd.Series(index=DatetimeIndex)。"""
+    t = pd.Timestamp(target)
+    later = closes[closes.index >= t]
+    if later.empty:
+        return None
+    if (later.index[0] - t).days > max_gap_days:
+        return None
+    return float(later.iloc[0])
+
+
 def backfill_dip_outcomes(db_path: str | Path | None = None) -> int:
     """
     对已有 24h 但未回填 price_24h 的记录，以及 7d 未回填 price_7d 的记录，
     拉取当前价格计算实际收益。返回回填条数。
+    取价【锚定 alert 日】拉到今天，并用 _pick_close_on_or_after 加上界，
+    晚回填也不会拿偏晚的价冒充 24h/7d 后价（审计 bug#2 修复）。
     """
     p = _resolve_db(db_path)
     init_db(p)
@@ -1699,8 +1762,11 @@ def backfill_dip_outcomes(db_path: str | Path | None = None) -> int:
         yf_ticker = (f"{int(row['ticker']):04d}.HK"
                      if row["market"] == "hk" else row["ticker"])
         try:
-            hist = yf.download(yf_ticker, period="10d", interval="1d",
-                               progress=False, auto_adjust=True)
+            alerted_dt = datetime.fromisoformat(row["alerted_at"])
+            # 锚定 alert 日拉到今天（+2d 余量），保证窗口始终覆盖 target_1d/target_7d
+            hist = yf.download(yf_ticker, start=alerted_dt.date().isoformat(),
+                               end=(datetime.utcnow().date() + timedelta(days=2)).isoformat(),
+                               interval="1d", progress=False, auto_adjust=True)
             if hist.empty:
                 continue
             if isinstance(hist.columns, pd.MultiIndex):
@@ -1710,19 +1776,17 @@ def backfill_dip_outcomes(db_path: str | Path | None = None) -> int:
             closes = hist["close"].dropna()
             if len(closes) < 1:
                 continue
-            alerted_dt = datetime.fromisoformat(row["alerted_at"])
             base = row["price_at_alert"]
             updates: dict[str, float] = {}
 
             def _ret(price: float) -> float:
                 return round((price - base) / base * 100, 2) if base else 0.0
 
-            # 24h price: first trading close after alerted_at + 1 day
+            # 24h price: alerted_at + 1 天后最近交易日收盘（带上界）
             if row["price_24h"] is None:
-                target_1d = alerted_dt + timedelta(days=1)
-                later = closes[closes.index >= pd.Timestamp(target_1d.date())]
-                if not later.empty:
-                    p24 = round(float(later.iloc[0]), 4)
+                p24 = _pick_close_on_or_after(closes, (alerted_dt + timedelta(days=1)).date())
+                if p24 is not None:
+                    p24 = round(p24, 4)
                     updates["price_24h"] = p24
                     updates["return_24h"] = _ret(p24)
 
@@ -1730,9 +1794,9 @@ def backfill_dip_outcomes(db_path: str | Path | None = None) -> int:
             if row["price_7d"] is None:
                 target_7d = alerted_dt + timedelta(days=7)
                 if datetime.utcnow() >= target_7d:
-                    later = closes[closes.index >= pd.Timestamp(target_7d.date())]
-                    if not later.empty:
-                        p7 = round(float(later.iloc[0]), 4)
+                    p7 = _pick_close_on_or_after(closes, target_7d.date())
+                    if p7 is not None:
+                        p7 = round(p7, 4)
                         updates["price_7d"] = p7
                         updates["return_7d"] = _ret(p7)
 
