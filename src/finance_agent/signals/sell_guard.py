@@ -3,7 +3,7 @@
 卖飞守门：当系统给出减仓/卖出建议、但技术面仍强势上行时，追加警示行。
 不改变建议本身，只产出一行提醒文案。
 
-历史数据背景：卖侧 alpha = −7.37%（n=10），减仓建议卖飞 6/10，平均跑输大盘 7.4%。
+历史数据背景（截至 2026-06-24 审计快照，见 _AUDIT_SNAPSHOT_DATE）：卖侧 alpha = −7.37%（n=10）。
 """
 
 from __future__ import annotations
@@ -14,6 +14,12 @@ _BEARISH_RECOMMENDATIONS = {"减仓", "卖出"}
 
 # hold 立场关键词（买入/减仓/卖出 以外均视为持有立场）
 _NON_HOLD_RECOMMENDATIONS = {"买入", "减仓", "卖出"}
+
+# 审计快照：守门文案引用的历史统计随新数据会变，集中单一常量+标注日期，
+# 避免警示随时间引旧值而「撒谎」（北极星：诚实）。后续轮可由记分牌动态刷新。
+_AUDIT_SNAPSHOT_DATE = "2026-06-24"
+_SELL_FLY_STAT = f"减仓建议卖飞 6/10、平均跑输大盘 7.4%（截至 {_AUDIT_SNAPSHOT_DATE} 审计）"
+_HOLD_MISS_STAT = f"持有判断错 7 例·对走弱票仍持有致显著跑输（截至 {_AUDIT_SNAPSHOT_DATE} 审计）"
 
 
 def flag_sell_into_strength(
@@ -67,7 +73,7 @@ def flag_sell_into_strength(
     # 产出警示文案
     return (
         "⚠️ **卖飞风险**：技术面仍强势（RSI未超买·均线多头排列·MACD正值），"
-        "历史上减仓建议卖飞 6/10、平均跑输大盘 7.4%——"
+        f"历史上{_SELL_FLY_STAT}——"
         "请确认离场理由是基本面恶化或止损触发，而非单纯价格上涨"
     )
 
@@ -124,6 +130,6 @@ def flag_hold_into_weakness(
     # 产出警示文案
     return (
         "⚠️ **该减没减风险**：技术面已明显走弱（RSI偏弱·均线空头排列·MACD负值），"
-        "历史上持有判断错7例·对技术面走弱的票仍持有致显著跑输——"
+        f"历史上{_HOLD_MISS_STAT}——"
         "请确认继续持有的基本面理由，或考虑止损/减仓"
     )
