@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 卡门智投 自动迭代 Loop · 每晚一轮（模板：验证首跑通过后再 cp 到 ~/Library/LaunchAgents/ 并 launchctl load）
+     ⚠️ 无人值守自动合并到生产仓库，启用前确保 STOP_LOOP kill 开关可用、首跑已witness。-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.zhouyihao.carmen-autoiter</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/zhouyihao/Projects/personal/finance-agent/scripts/auto_iter/run_cycle.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HTTPS_PROXY</key>
+        <string>http://127.0.0.1:8118</string>
+        <key>HTTP_PROXY</key>
+        <string>http://127.0.0.1:8118</string>
+        <key>PATH</key>
+        <string>/Users/zhouyihao/.npm-global/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/zhouyihao/Projects/personal/finance-agent/logs/auto_iter/launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/zhouyihao/Projects/personal/finance-agent/logs/auto_iter/launchd.err</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
