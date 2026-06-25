@@ -19,7 +19,7 @@ from finance_agent.db.tracker import (
 from finance_agent.notifications.glossary import build_glossary_element
 from finance_agent.agents.fundamental_analyst import run_fundamental_analysis
 from finance_agent.data.macro import fetch_macro_context
-from finance_agent.signals.sell_guard import flag_sell_into_strength
+from finance_agent.signals.sell_guard import flag_sell_into_strength, flag_hold_into_weakness
 
 router = DataRouter()
 
@@ -438,6 +438,18 @@ async def format_report_node(state: AgentState) -> AgentState:
         )
         if sell_warn:
             main_md_lines.append(sell_warn)
+        # 该减没减守门：持有立场但技术面明显走弱时追加警示（与卖飞守门互斥）
+        hold_warn = flag_hold_into_weakness(
+            recommendation=s.recommendation,
+            position_change=s.position_change or "",
+            rsi=sig.rsi,
+            price=sig.close,
+            ma20=sig.ma20,
+            ma60=sig.ma60,
+            macd=sig.macd,
+        )
+        if hold_warn:
+            main_md_lines.append(hold_warn)
 
         elements.append({
             "tag": "div",
