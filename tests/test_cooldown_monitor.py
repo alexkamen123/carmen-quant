@@ -1,5 +1,27 @@
 """减仓时机提醒：情绪平复判定（双向）+ 卡片构建。"""
-from finance_agent.alerts.cooldown_monitor import is_settled, build_cooldown_card
+from finance_agent.alerts.cooldown_monitor import (
+    is_settled, is_rebound_ready, build_cooldown_card,
+)
+
+
+# ── rebound（借反弹减到 MA20 阻力）──
+def test_rebound_fires_near_ma20_with_stalled_momentum():
+    # 现价 580 逼近 MA20 600（在 0.04 带内：600*0.96=576）且单日 +1.5% 动能停 → 触发
+    assert is_rebound_ready(580.0, 600.0, 1.5, 4.0, 0.04) is True
+
+
+def test_rebound_not_yet_far_below_ma20():
+    # 现价 540 离 MA20 600 还有 10%（<576 阈值）→ 未到阻力
+    assert is_rebound_ready(540.0, 600.0, 1.0, 4.0, 0.04) is False
+
+
+def test_rebound_not_while_surging():
+    # 已到阻力位但单日 +8% 仍在猛冲（>4 阈值）→ 别在冲刺中提醒，等动能停
+    assert is_rebound_ready(595.0, 600.0, 8.0, 4.0, 0.04) is False
+
+
+def test_rebound_guards_zero_ma20():
+    assert is_rebound_ready(100.0, 0.0, 0.0, 4.0) is False
 
 
 # ── spike（涨势冷却）：涨幅收窄 且 RSI 退超买，两条件同时满足才算平复 ──

@@ -233,8 +233,25 @@ def _determine_outcome(recommendation: str, position_change: str, ret: float) ->
     return "中性"   # 持有 / 观望
 
 
+def _hk_price_akshare(ticker: str) -> float | None:
+    """港股最新收盘价 AkShare 兜底：yfinance 对港股新股/冷门票常返回空
+    （如 MiniMax 00100），AkShare stock_hk_daily 能拿到全量历史。
+    注：AkShare 日线可能滞后 1-2 个交易日，但有值远胜于 None（避免仓位被排除）。"""
+    try:
+        import akshare as ak
+        sym = f"{int(ticker):05d}" if ticker.isdigit() else ticker
+        df = ak.stock_hk_daily(symbol=sym, adjust="qfq")
+        if df is None or len(df) == 0:
+            return None
+        df.columns = [str(c).lower() for c in df.columns]
+        return float(df["close"].iloc[-1]) if "close" in df.columns else None
+    except Exception:
+        return None
+
+
 def _fetch_current_price(ticker: str, market: str = "us") -> float | None:
-    """用 yfinance 拉最新收盘价，带 2s 间隔避免 crumb 竞争。"""
+    """拉最新收盘价。优先 yfinance（带间隔避免 crumb 竞争）；
+    港股 yfinance 拿不到时回退 AkShare（新股/冷门票常需要）。"""
     import time
     time.sleep(0.5)  # backfill 是串行循环，0.5s 间隔足够避免 crumb 踩踏
     try:
@@ -243,11 +260,14 @@ def _fetch_current_price(ticker: str, market: str = "us") -> float | None:
         else:
             yf_ticker = ticker
         hist = yf.Ticker(yf_ticker).history(period="2d")
-        if hist.empty:
-            return None
-        return float(hist["Close"].iloc[-1])
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
     except Exception:
-        return None
+        pass
+    # 港股兜底（美股 yfinance 已足够稳，不引入额外依赖）
+    if market == "hk":
+        return _hk_price_akshare(ticker)
+    return None
 
 
 def _fetch_benchmark_return(market: str, rec_date: str) -> float | None:
