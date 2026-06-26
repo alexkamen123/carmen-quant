@@ -123,6 +123,51 @@ def backtest_momentum_sell_broad(price_map: dict, horizon: int = 7) -> dict:
     }
 
 
+def backtest_signal_edge(price_map: dict, mask_fn, horizon: int = 7,
+                         predict_up: bool = True) -> dict:
+    """泛化广历史回测：测「某信号触发日 → forward horizon 收益方向」是否优于基率。
+    用于逐条筛系统的技术信号哪些真有预测力、哪些是噪声（直接影响该信哪些信号下建议）。
+
+    mask_fn(df) -> bool Series：信号在哪些交易日触发（df 含 OHLCV、DatetimeIndex）。
+    predict_up=True：信号预测 forward>0（看涨类，如超卖反弹/突破）；False：预测 forward<0（看跌类，如超买回落）。
+    precision=触发日里命中方向的占比；base=全样本该方向占比。precision>base 且样本足 → 信号有边际。
+    """
+    tp = fp = fn = tn = 0
+    n_total_points = 0
+    for _tk, df in price_map.items():
+        if df is None or "close" not in df or len(df) < 60 + horizon + 1:
+            continue
+        close = df["close"].astype(float)
+        n_total_points += len(close)
+        try:
+            mask = mask_fn(df).reindex(close.index).fillna(False).astype(bool)
+        except Exception:
+            continue
+        fwd = close.shift(-horizon) / close - 1
+        target = (fwd > 0) if predict_up else (fwd < 0)
+        valid = fwd.notna()
+        tp += int((mask & target & valid).sum())
+        fp += int((mask & ~target & valid).sum())
+        fn += int((~mask & target & valid).sum())
+        tn += int((~mask & ~target & valid).sum())
+
+    n_eval = tp + fp + fn + tn
+    n_flagged = tp + fp
+    precision = round(tp / n_flagged, 3) if n_flagged else None
+    base_rate = round((tp + fn) / n_eval, 3) if n_eval else None
+    discriminating = (precision is not None and base_rate is not None and precision > base_rate)
+    sufficient = n_eval >= MIN_EVAL_N and n_flagged >= MIN_FLAGGED
+    verdict = ("insufficient_sample" if not sufficient
+               else "validated" if discriminating else "no_discrimination")
+    edge = round(precision - base_rate, 3) if (precision is not None and base_rate is not None) else None
+    return {
+        "n_total_points": n_total_points, "n_eval": n_eval, "n_flagged": n_flagged,
+        "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+        "precision": precision, "base_rate": base_rate, "edge": edge,
+        "discriminating": discriminating, "sufficient": sufficient, "verdict": verdict,
+    }
+
+
 def load_sell_recs(db_path) -> list[dict]:
     """从 DB 取历史「减仓/卖出」建议（已回填 return_7d + benchmark、非影子）。"""
     from finance_agent.db.tracker import _conn, _resolve_db
