@@ -89,3 +89,4 @@ strategy_weight_adaptation:
   max_weight: 1.3    # 权重上限（绝不翻倍）
   min_combos: 3      # 族内有效组合 < 此值则保持 1.0
   max_step: 0.05     # 单轮单族最大变动幅度（硬阻尼兜底）
+  broad_edge_guardrail: true   # 启用 2026-06-26：广历史反指族(金叉 edge=-0.082)不许被近期beat上调、压到下限
