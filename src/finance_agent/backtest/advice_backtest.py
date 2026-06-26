@@ -71,6 +71,58 @@ def backtest_sell_rule(recs, rule_fn, sig_provider) -> dict:
     }
 
 
+def backtest_momentum_sell_broad(price_map: dict, horizon: int = 7) -> dict:
+    """广历史回测卖飞守门的核心主张：「强势上行(RSI<70·收>MA20>MA60·MACD>0)的股票会接着涨」
+    在多票多年历史上是否成立——突破实际减仓 recs 只有少数、单一行情的样本不足。
+
+    向量化算指标，对每个 (票, 交易日) 点：strong=是否满足强势条件；fly=forward horizon 收益>0
+    （强势日卖出会踏空=卖飞）。precision=强势日里 forward>0 的占比；base=全样本 forward>0 占比。
+    precision>base 且样本足 → 动量主张成立、卖飞守门有据 → 可安全据此改核心建议。
+
+    price_map: {ticker: DataFrame(含 'close' 列、DatetimeIndex)}；注入便于测试、不依赖网络。
+    """
+    import pandas as pd
+    tp = fp = fn = tn = 0
+    n_total_points = 0
+    for _tk, df in price_map.items():
+        if df is None or "close" not in df or len(df) < 60 + horizon + 1:
+            continue
+        close = df["close"].astype(float)
+        n_total_points += len(close)
+        delta = close.diff()
+        up = delta.clip(lower=0).rolling(14).mean()
+        down = (-delta.clip(upper=0)).rolling(14).mean()
+        rs = up / down               # down=0 → inf → rsi=100；up=down=0 → nan（罕见，落入 invalid）
+        rsi = 100 - 100 / (1 + rs)
+        sma20 = close.rolling(20).mean()
+        sma60 = close.rolling(60).mean()
+        macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+        fwd = close.shift(-horizon) / close - 1
+        strong = (rsi < 70) & (close > sma20) & (sma20 > sma60) & (macd > 0)
+        valid = rsi.notna() & sma60.notna() & macd.notna() & fwd.notna()
+        fly = fwd > 0
+        s, f = strong & valid, fly & valid
+        tp += int((s & f).sum())
+        fp += int((s & ~fly & valid).sum())
+        fn += int((~strong & f).sum())
+        tn += int((~strong & ~fly & valid).sum())
+
+    n_eval = tp + fp + fn + tn
+    n_flagged = tp + fp
+    precision = round(tp / n_flagged, 3) if n_flagged else None
+    base_rate = round((tp + fn) / n_eval, 3) if n_eval else None
+    discriminating = (precision is not None and base_rate is not None and precision > base_rate)
+    sufficient = n_eval >= MIN_EVAL_N and n_flagged >= MIN_FLAGGED
+    verdict = ("insufficient_sample" if not sufficient
+               else "validated" if discriminating else "no_discrimination")
+    return {
+        "n_total_points": n_total_points, "n_eval": n_eval, "n_flagged": n_flagged,
+        "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+        "precision": precision, "base_rate": base_rate,
+        "discriminating": discriminating, "sufficient": sufficient, "verdict": verdict,
+    }
+
+
 def load_sell_recs(db_path) -> list[dict]:
     """从 DB 取历史「减仓/卖出」建议（已回填 return_7d + benchmark、非影子）。"""
     from finance_agent.db.tracker import _conn, _resolve_db
