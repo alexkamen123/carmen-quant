@@ -36,9 +36,22 @@ _DEFAULTS = {
     "max_weight": 1.3,       # 权重上限（绝不翻倍）
     "min_combos": 3,         # 族内有效组合 < 此值则保持 1.0（小样本不乱动）
     "max_step": 0.05,        # 单轮单族最大变动幅度（硬阻尼兜底）
+    "broad_edge_guardrail": False,  # 广历史 edge 护栏（默认关，启用前须人审；见下）
 }
 
 _FAMILIES = ("rsi", "ma_align", "ma", "boll", "mom", "vol_surge")
+
+# 广历史 edge 护栏：用 backtest_signal_edge 在 8票×3年 跑出的各族 7日 edge(precision−基率)
+# 当快照（截至 2026-06-25，screen_signals.py 可复现刷新）。教训(cycle5/6)：近期 beat_rate
+# 可能小样本/单一行情过拟合——金叉近期 beat 或虚高，但广历史 7日 edge=−0.082 是【反指】。
+# 护栏：广历史 edge < _REVERSE_EDGE 的族，无论近期 beat 多高，目标权重压到下限，不许上调。
+# 单向（只压反指、不动正/噪声族），保守；feature flag broad_edge_guardrail 默认关。
+_BROAD_EDGE_SNAPSHOT_DATE = "2026-06-25"
+_BROAD_EDGE_7D = {
+    "rsi": 0.065, "vol_surge": 0.033, "boll": 0.054,
+    "ma_align": 0.015, "mom": 0.004, "ma": -0.082,   # ma=金叉，广历史反指
+}
+_REVERSE_EDGE = -0.03    # edge 低于此视为反指，触发护栏压权
 
 
 def _load_settings() -> dict:
@@ -127,7 +140,11 @@ def compute_targets(edge: dict, cfg: dict) -> dict[str, float]:
             targets[fam] = 1.0
             continue
         target = 1.0 + cfg["sensitivity"] * (beat - 0.5)
-        targets[fam] = round(_clamp(target, cfg["min_weight"], cfg["max_weight"]), 4)
+        target = _clamp(target, cfg["min_weight"], cfg["max_weight"])
+        # 广历史 edge 护栏（默认关）：广历史反指族压到下限，不许近期 beat 把它上调
+        if cfg.get("broad_edge_guardrail") and _BROAD_EDGE_7D.get(fam, 0.0) < _REVERSE_EDGE:
+            target = cfg["min_weight"]
+        targets[fam] = round(target, 4)
     return targets
 
 

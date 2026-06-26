@@ -39,6 +39,30 @@ def test_flag_off_weight_is_one_and_no_write(tmp_path, monkeypatch):
     assert sw.get_strategy_weight("rsi_14_30", path=wpath) == 1.0
 
 
+def test_broad_edge_snapshot_documented():
+    """广历史 edge 快照须带日期、且 ma(金叉) 仍标记为反指——快照陈旧时此测试是改动锚点。"""
+    assert sw._BROAD_EDGE_SNAPSHOT_DATE.startswith("2026-")
+    assert sw._BROAD_EDGE_7D["ma"] < sw._REVERSE_EDGE      # 金叉=广历史反指（触发护栏的依据）
+
+
+def test_guardrail_off_by_default_unchanged(tmp_path, monkeypatch):
+    """默认 broad_edge_guardrail=False：金叉(ma)高 beat 仍被上调，现有行为零变化。"""
+    t = sw.compute_targets(_edge({"ma": 0.9}), _cfg())   # 默认护栏关
+    assert t["ma"] > 1.0
+
+
+def test_guardrail_caps_reverse_indicator():
+    """护栏开：广历史反指族(ma 金叉, edge=-0.082)无论近期 beat 多高，压到下限。"""
+    t = sw.compute_targets(_edge({"ma": 0.95}), _cfg(broad_edge_guardrail=True))
+    assert t["ma"] == sw._DEFAULTS["min_weight"]          # 0.7，被护栏压住
+
+
+def test_guardrail_spares_positive_edge_family():
+    """护栏开：广历史正 edge 族(rsi, +0.065)不受影响、照常按 beat 上调。"""
+    t = sw.compute_targets(_edge({"rsi": 0.9}), _cfg(broad_edge_guardrail=True))
+    assert t["rsi"] > 1.0
+
+
 def test_high_beat_raises_weight_low_beat_lowers(tmp_path, monkeypatch):
     monkeypatch.setattr(sw, "_load_settings", lambda: _cfg())
     wpath = tmp_path / "w.json"
