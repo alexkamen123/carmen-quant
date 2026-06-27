@@ -40,27 +40,34 @@ def test_flag_off_weight_is_one_and_no_write(tmp_path, monkeypatch):
 
 
 def test_broad_edge_snapshot_documented():
-    """广历史 edge 快照须带日期、且 ma(金叉) 仍标记为反指——快照陈旧时此测试是改动锚点。"""
+    """广历史 edge 快照须带日期；多元 universe 下 vol_surge 是反指、ma 已松绑——快照陈旧时此测试是改动锚点。"""
     assert sw._BROAD_EDGE_SNAPSHOT_DATE.startswith("2026-")
-    assert sw._BROAD_EDGE_7D["ma"] < sw._REVERSE_EDGE      # 金叉=广历史反指（触发护栏的依据）
+    assert sw._BROAD_EDGE_7D["vol_surge"] < sw._REVERSE_EDGE   # 放量=多元universe 7日反指（触发护栏）
+    assert sw._BROAD_EDGE_7D["ma"] >= sw._REVERSE_EDGE         # 金叉已松绑（旧科技快照看错的反指）
 
 
 def test_guardrail_off_by_default_unchanged(tmp_path, monkeypatch):
-    """默认 broad_edge_guardrail=False：金叉(ma)高 beat 仍被上调，现有行为零变化。"""
-    t = sw.compute_targets(_edge({"ma": 0.9}), _cfg())   # 默认护栏关
-    assert t["ma"] > 1.0
+    """默认 broad_edge_guardrail=False：反指族(vol_surge)高 beat 仍被上调，现有行为零变化。"""
+    t = sw.compute_targets(_edge({"vol_surge": 0.9}), _cfg())   # 默认护栏关
+    assert t["vol_surge"] > 1.0
 
 
 def test_guardrail_caps_reverse_indicator():
-    """护栏开：广历史反指族(ma 金叉, edge=-0.082)无论近期 beat 多高，压到下限。"""
-    t = sw.compute_targets(_edge({"ma": 0.95}), _cfg(broad_edge_guardrail=True))
-    assert t["ma"] == sw._DEFAULTS["min_weight"]          # 0.7，被护栏压住
+    """护栏开：广历史反指族(vol_surge 放量, edge=-0.0452)无论近期 beat 多高，压到下限。"""
+    t = sw.compute_targets(_edge({"vol_surge": 0.95}), _cfg(broad_edge_guardrail=True))
+    assert t["vol_surge"] == sw._DEFAULTS["min_weight"]          # 0.7，被护栏压住
 
 
 def test_guardrail_spares_positive_edge_family():
-    """护栏开：广历史正 edge 族(rsi, +0.065)不受影响、照常按 beat 上调。"""
+    """护栏开：广历史正 edge 族(rsi)不受影响、照常按 beat 上调。"""
     t = sw.compute_targets(_edge({"rsi": 0.9}), _cfg(broad_edge_guardrail=True))
     assert t["rsi"] > 1.0
+
+
+def test_guardrail_frees_golden_cross_after_refresh():
+    """cycle8 核心翻转：金叉(ma)在多元 universe 非反指，护栏开时也不再被压、可随 beat 上调。"""
+    t = sw.compute_targets(_edge({"ma": 0.9}), _cfg(broad_edge_guardrail=True))
+    assert t["ma"] > 1.0                                         # 不再被护栏压到下限
 
 
 def test_high_beat_raises_weight_low_beat_lowers(tmp_path, monkeypatch):

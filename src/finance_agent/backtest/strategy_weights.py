@@ -41,15 +41,22 @@ _DEFAULTS = {
 
 _FAMILIES = ("rsi", "ma_align", "ma", "boll", "mom", "vol_surge")
 
-# 广历史 edge 护栏：用 backtest_signal_edge 在 8票×3年 跑出的各族 7日 edge(precision−基率)
-# 当快照（截至 2026-06-25，screen_signals.py 可复现刷新）。教训(cycle5/6)：近期 beat_rate
-# 可能小样本/单一行情过拟合——金叉近期 beat 或虚高，但广历史 7日 edge=−0.082 是【反指】。
-# 护栏：广历史 edge < _REVERSE_EDGE 的族，无论近期 beat 多高，目标权重压到下限，不许上调。
+# 广历史 edge 护栏：用 backtest_signal_edge 跑出的各族 7日 edge(precision−基率)当快照。
+# 护栏：广历史 edge < _REVERSE_EDGE 的族，无论近期 beat 多高，目标权重压到下限、不许上调。
 # 单向（只压反指、不动正/噪声族），保守；feature flag broad_edge_guardrail 默认关。
-_BROAD_EDGE_SNAPSHOT_DATE = "2026-06-25"
+#
+# 快照演进：
+#   v1（2026-06-25，8票科技股）：ma=-0.082 判反指。但 cycle8 用 6行业/48票/35808样本复跑发现
+#   那是【科技偏过拟合】——金叉 ma@7d 真实 edge=+0.0031（弱正、非反指），被旧快照冤枉降权；
+#   而 vol_surge@7d 真实 edge=-0.0452（< -0.03）才是被旧快照漏掉的反指。故刷新为多元 universe 值，
+#   护栏行为自动对调（ma 松绑、vol_surge 被压），逻辑不变。screen_signals.py 可复现刷新。
+_BROAD_EDGE_SNAPSHOT_DATE = "2026-06-26"   # 6行业/48票/35808样本（去科技偏）
 _BROAD_EDGE_7D = {
-    "rsi": 0.065, "vol_surge": 0.033, "boll": 0.054,
-    "ma_align": 0.015, "mom": 0.004, "ma": -0.082,   # ma=金叉，广历史反指
+    "rsi": 0.0384, "boll": 0.0379, "ma_align": 0.0116,
+    "mom": 0.0091, "ma": 0.0031,        # ma=金叉，多元 universe 弱正、非反指（旧科技快照看错）
+    "vol_surge": -0.0452,               # vol_surge=放量，【仅7日】反指；30日 edge=+0.0115 是正——
+                                        # 本护栏只门控 7 日视角加权（系统 outcome 也以 7日锚定），
+                                        # 勿把此 7日快照外推到更长持有期；多 horizon 快照留后续 cycle。
 }
 _REVERSE_EDGE = -0.03    # edge 低于此视为反指，触发护栏压权
 
