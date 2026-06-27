@@ -10,7 +10,16 @@ import yfinance as yf
 from finance_agent.backtest.advice_backtest import backtest_signal_edge
 from finance_agent.backtest import strategies as S
 
-DEFAULT_TICKERS = ["NVDA", "GOOGL", "AAPL", "MSFT", "TSM", "MU", "AVGO", "AMD", "META", "QCOM"]
+# 去科技偏的 6 行业 universe（cycle8：8票科技股快照被证过拟合，金叉假反指/放量漏判）。
+# 用它刷新 strategy_weights._BROAD_EDGE_7D 才能复现去偏快照。
+DEFAULT_TICKERS = [
+    "NVDA", "AMD", "AVGO", "TSM", "MU", "QCOM", "KLAC", "LRCX",          # 科技半导体
+    "GOOGL", "MSFT", "AAPL", "META", "PLTR", "CRM", "ADBE", "ORCL",      # 科技软件
+    "JPM", "GS", "BAC", "MS", "V", "MA", "AXP", "SCHW",                  # 金融
+    "UNH", "JNJ", "LLY", "PFE", "ABBV", "MRK", "TMO", "ABT",             # 医疗
+    "XOM", "CVX", "CAT", "BA", "GE", "HON", "UNP", "DE",                 # 能源工业
+    "WMT", "COST", "PG", "KO", "HD", "MCD", "SPY", "QQQ",                # 消费ETF
+]
 # (名称, 信号函数, 是否看涨)；strategies 的入场信号均为看涨类
 CANDIDATES = [
     ("RSI超卖反弹", S.rsi_oversold, True),
