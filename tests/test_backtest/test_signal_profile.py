@@ -63,3 +63,14 @@ def test_no_benchmark_graceful():
     stock = _mk([0.01, 0.01])
     r = backtest_signal_profile({"X": stock}, None, _fire_all_but_last, horizon=1)
     assert r["n_flagged"] == 0
+
+
+def test_magnitude_and_tail_payoff():
+    """cycle11·夯实裁判：赢亏幅度+最坏情况，照出『多次小赢一次大亏』(payoff<1)。"""
+    stock = _mk([0.02, 0.01, -0.10])   # 小赢2/小赢1/大亏10
+    bench = _mk([0.0, 0.0, 0.0])
+    r = backtest_signal_profile({"X": stock}, bench, _fire_all_but_last, horizon=1)
+    assert r["win_avg"] == 1.5 and r["loss_avg"] == -10.0   # 赢均1.5%、亏均-10%
+    assert r["worst"] == -10.0                              # 最坏一次
+    assert r["payoff"] == 0.15                              # 赢亏比 1.5/10 <1 → 危险
+    assert r["abs_avg"] == round((2 + 1 - 10) / 3, 2)       # 整体平均仍报

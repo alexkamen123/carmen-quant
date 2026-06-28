@@ -42,17 +42,15 @@ def main(tickers, bench="SPY", horizon=7):
     bench_df = _dl(bench)
     pm = {t: d for t in tickers if (d := _dl(t)) is not None}
     print(f"universe {len(pm)} 票 + {bench} 基准 · horizon={horizon}d")
-    print(f"{'信号':<9}{'触发':>6}{'绝对%':>7}{'超额%':>7}  {'涨市α':>6}{'跌市α':>6}  真赚/赚少/少亏/真亏   角色")
+    print(f"{'信号':<9}{'触发':>6}{'绝对%':>7}{'超额%':>7}  {'赢均':>6}{'亏均':>7}{'赢亏比':>6}{'最坏':>8}  {'角色':>6}")
     for name, fn in SIGNALS:
         r = backtest_signal_profile(pm, bench_df, fn, horizon=horizon)
         if not r.get("n_flagged"):
             print(f"{name:<9}  (无触发)")
             continue
-        q = r["quadrants"]
         print(f"{name:<9}{r['n_flagged']:>6}{r['abs_avg']:>7}{r['alpha_avg']:>7}  "
-              f"{str(r['up']['alpha_avg']):>6}{str(r['down']['alpha_avg']):>6}  "
-              f"{q['q1_real_gain']:.0%}/{q['q2_gain_lag']:.0%}/{q['q3_small_loss']:.0%}/{q['q4_real_loss']:.0%}"
-              f"   {ROLE[r['role']]}")
+              f"{str(r['win_avg']):>6}{str(r['loss_avg']):>7}{str(r['payoff']):>6}{str(r['worst']):>8}  "
+              f"{ROLE[r['role']]:>6}")
 
 
 if __name__ == "__main__":

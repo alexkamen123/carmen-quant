@@ -223,10 +223,21 @@ def backtest_signal_profile(price_map: dict, bench_df, mask_fn, horizon: int = 7
     else:
         role = "weak"
 
+    # 幅度与尾部风险：平均值会糊掉「多次小赢、一次大亏」——拆赢/亏幅度 + 最坏一次 + 赢亏比。
+    wins = our[our > 0]
+    losses = our[our <= 0]
+    win_avg = pct(wins.mean()) if len(wins) else None
+    loss_avg = pct(losses.mean()) if len(losses) else None
+    payoff = (round(float(wins.mean() / -losses.mean()), 2)
+              if len(wins) and len(losses) and losses.mean() < 0 else None)
+
     return {
         "n_flagged": n,
         "abs_avg": pct(our.mean()), "abs_hit": round(float((our > 0).mean()), 3),
         "alpha_avg": pct(alpha.mean()), "alpha_beat": round(float((alpha > 0).mean()), 3),
+        "win_avg": win_avg, "loss_avg": loss_avg,     # 对时平均赚 / 错时平均亏（%）
+        "worst": pct(our.min()),                      # 历史最坏一次（%）
+        "payoff": payoff,                             # 赢亏比 = 平均赢 / 平均亏；<1=小赢大亏、危险
         "up": {"n": int(up.sum()),
                "abs_avg": pct(our[up].mean()) if up.any() else None,
                "alpha_avg": pct(up_a) if up.any() else None},
