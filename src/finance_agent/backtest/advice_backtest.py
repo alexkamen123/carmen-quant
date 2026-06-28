@@ -168,6 +168,81 @@ def backtest_signal_edge(price_map: dict, mask_fn, horizon: int = 7,
     }
 
 
+def backtest_signal_profile(price_map: dict, bench_df, mask_fn, horizon: int = 7) -> dict:
+    """信号体检：两轴 × 分行情 × 幅度，比单一 precision 诚实。
+    信号触发后，分别量【赚没赚】(绝对收益) 与【跑赢没】(超额 alpha = 我们−基准)，按大盘涨/跌拆开，
+    给四象限分布与角色。动机(用户洞察)：alpha 单独看会骗人——大盘跌3%我们跌1%，alpha+2% 漂亮但
+    钱还是少了；且一个信号涨市靠 beta、跌市靠抗跌，单一数会糊掉它是进攻还是防守。
+
+    bench_df: 基准(SPY/恒指…) DataFrame，含 'close'、DatetimeIndex；注入便于测试、不依赖网络。
+    mask_fn(df) -> bool Series：信号触发日。horizon: forward 天数。
+    返回 abs_avg/alpha_avg(平均%)、abs_hit/alpha_beat(占比)、up/down 分行情、quadrants 四象限、role。
+    四象限(我们涨跌 × 跑赢跑输)：q1真赚 / q2赚少(跑输) / q3少亏(跑赢但亏) / q4真亏。
+    角色：defensive(跌市有正alpha、涨市无) / offensive(反之) / all_weather(都正) / weak(都不灵)。"""
+    import numpy as np
+    if bench_df is None or "close" not in bench_df:
+        return {"n_flagged": 0, "role": "weak"}
+    bclose = bench_df["close"].astype(float)
+    bfwd = bclose.shift(-horizon) / bclose - 1
+    our_list, bench_list = [], []
+    for _tk, df in price_map.items():
+        if df is None or "close" not in df or len(df) < horizon + 1:
+            continue
+        close = df["close"].astype(float)
+        fwd = close.shift(-horizon) / close - 1
+        bf = bfwd.reindex(close.index)
+        try:
+            mask = mask_fn(df).reindex(close.index).fillna(False).astype(bool)
+        except Exception:
+            continue
+        v = fwd.notna() & bf.notna() & mask
+        our_list.extend(fwd[v].tolist())
+        bench_list.extend(bf[v].tolist())
+
+    our = np.array(our_list)
+    ben = np.array(bench_list)
+    n = len(our)
+    if n == 0:
+        return {"n_flagged": 0, "role": "weak"}
+    alpha = our - ben
+
+    def pct(x):
+        return round(float(x) * 100, 2)
+
+    up = ben > 0
+    dn = ~up
+    eps = 0.001    # 0.1% 行情中性带（判角色用）
+    up_a = float(alpha[up].mean()) if up.any() else 0.0
+    dn_a = float(alpha[dn].mean()) if dn.any() else 0.0
+    if dn_a > eps and up_a <= eps:
+        role = "defensive"
+    elif up_a > eps and dn_a <= eps:
+        role = "offensive"
+    elif up_a > eps and dn_a > eps:
+        role = "all_weather"
+    else:
+        role = "weak"
+
+    return {
+        "n_flagged": n,
+        "abs_avg": pct(our.mean()), "abs_hit": round(float((our > 0).mean()), 3),
+        "alpha_avg": pct(alpha.mean()), "alpha_beat": round(float((alpha > 0).mean()), 3),
+        "up": {"n": int(up.sum()),
+               "abs_avg": pct(our[up].mean()) if up.any() else None,
+               "alpha_avg": pct(up_a) if up.any() else None},
+        "down": {"n": int(dn.sum()),
+                 "abs_avg": pct(our[dn].mean()) if dn.any() else None,
+                 "alpha_avg": pct(dn_a) if dn.any() else None},
+        "quadrants": {
+            "q1_real_gain": round(float(((our > 0) & (alpha > 0)).mean()), 3),
+            "q2_gain_lag": round(float(((our > 0) & (alpha <= 0)).mean()), 3),
+            "q3_small_loss": round(float(((our <= 0) & (alpha > 0)).mean()), 3),
+            "q4_real_loss": round(float(((our <= 0) & (alpha <= 0)).mean()), 3),
+        },
+        "role": role,
+    }
+
+
 def load_sell_recs(db_path) -> list[dict]:
     """从 DB 取历史「减仓/卖出」建议（已回填 return_7d + benchmark、非影子）。"""
     from finance_agent.db.tracker import _conn, _resolve_db
