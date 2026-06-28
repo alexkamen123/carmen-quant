@@ -43,8 +43,10 @@ _DEFAULTS = {
 # 方案A regime-conditional 护栏：读权重时按【当前行情】压「此行情下反指」的信号族。
 # OOS 验证(cycle12 oos_regime.py，46票×3年 5-fold)：regime-switching 在没见过的票上每折赢
 # static 过滤(7d 0.482% vs 0.379%、30d 1.575% vs 1.177%，均5/5)，非过拟合、能泛化。
-# 各族 7 日 alpha 分行情快照(cycle9 backtest_signal_profile 24票×3年，screen_profiles.py 可刷新)：
-_STRATEGY_FAMILIES_FOR_REGIME = ("rsi", "ma_align", "ma", "boll", "mom", "vol_surge")
+# 各族 7 日 alpha 分行情快照(cycle9 backtest_signal_profile 24票×3年，screen_profiles.py 可刷新)。
+# ⚠️ 同 cycle8 教训：快照会陈旧，启用前用 screen_profiles.py 确认新鲜；regime 护栏优先级高于
+# L2c 近期 beat 学到的权重(反指族不许被近期 beat 上调)，启用须人审并记决策史。
+_REGIME_EDGE_SNAPSHOT_DATE = "2026-06-29"
 _REGIME_EDGE_7D = {
     "rsi":       {"up": 0.50, "down": 1.21},   # 两行情都正（防守更强）
     "boll":      {"up": 0.31, "down": 0.88},

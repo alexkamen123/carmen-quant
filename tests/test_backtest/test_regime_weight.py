@@ -40,7 +40,7 @@ def test_regime_none_no_cap(monkeypatch):
 
 
 def test_regime_snapshot_covers_families():
-    assert set(sw._REGIME_EDGE_7D) == set(sw._STRATEGY_FAMILIES_FOR_REGIME)
+    assert set(sw._REGIME_EDGE_7D) == set(sw._FAMILIES)
 
 
 def test_market_regime_detector():
@@ -49,3 +49,12 @@ def test_market_regime_detector():
     assert market_regime_from_spy(up, ma=50) == "up"
     assert market_regime_from_spy(dn, ma=50) == "down"
     assert market_regime_from_spy(pd.Series([100, 101]), ma=50) is None   # 数据不足
+
+
+def test_regime_hysteresis_band_neutral_zone():
+    """迟滞带(NIT#1)：收盘贴着均线(±band内)→None，不调权，防抖动。"""
+    # 末值略高于 MA50 但在 +1% 带内 → None；明显高于带 → up
+    flat = pd.Series([100.0] * 49 + [100.3])   # MA50≈100.006、末值100.3，差<1%
+    assert market_regime_from_spy(flat, ma=50, band=0.01) is None
+    clear = pd.Series([100.0] * 49 + [103.0])  # 末值高出 ~3% > 1% 带 → up
+    assert market_regime_from_spy(clear, ma=50, band=0.01) == "up"

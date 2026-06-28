@@ -26,7 +26,7 @@ def _current_regime() -> str | None:
         spy = fetch_ohlcv("SPY")
         if spy is None or "close" not in spy:
             return None
-        return market_regime_from_spy(spy["close"])
+        return market_regime_from_spy(spy["close"], band=0.01)   # ±1% 迟滞带，防均线附近抖动
     except Exception:
         return None
 

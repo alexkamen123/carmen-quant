@@ -254,16 +254,21 @@ def backtest_signal_profile(price_map: dict, bench_df, mask_fn, horizon: int = 7
     }
 
 
-def market_regime_from_spy(close, ma: int = 50) -> str | None:
-    """因果行情判定：基准(SPY)最新收盘 vs 其自身 ma 日均线——'up'=在均线上方(risk-on)，'down'=下方。
-    数据不足/无效返回 None。无前视：只用截至当天的数据。"""
+def market_regime_from_spy(close, ma: int = 50, band: float = 0.0) -> str | None:
+    """因果行情判定：基准(SPY)最新收盘 vs 其自身 ma 日均线——'up'=均线上方(risk-on)，'down'=下方。
+    band=迟滞带（如 0.01=±1%）：收盘落在均线 ±band 内视为模糊→返回 None（不调权），避免 SPY
+    贴着均线反复穿越导致行情每日翻转、信号排序抖动（审查 NIT#1）。数据不足/无效→None。无前视。"""
     if close is None or len(close) < ma:
         return None
     cur = float(close.iloc[-1])
     mavg = float(close.rolling(ma).mean().iloc[-1])
-    if mavg != mavg:    # NaN
+    if mavg != mavg or mavg <= 0:    # NaN/无效
         return None
-    return "up" if cur > mavg else "down"
+    if cur > mavg * (1 + band):
+        return "up"
+    if cur < mavg * (1 - band):
+        return "down"
+    return None    # 迟滞带内：模糊，不调权
 
 
 def build_signal_trades(price_map: dict, bench_df, signal_fns: dict, horizon: int = 7,
