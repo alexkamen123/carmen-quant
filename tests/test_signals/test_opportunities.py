@@ -19,7 +19,8 @@ def _wire(monkeypatch, universe, active_map):
     monkeypatch.setattr(opp, "_load_valid_map",
                         lambda: {(t, "s"): {} for t in universe})
     monkeypatch.setattr(opp, "get_active_signals",
-                        lambda tk: active_map.get(tk, []))
+                        lambda tk, regime=None: active_map.get(tk, []))
+    monkeypatch.setattr(opp, "_current_regime", lambda: None)   # 不触发网络/regime 调权
 
 
 def test_scan_excludes_held_and_tags_watch(monkeypatch):
@@ -35,8 +36,9 @@ def test_scan_excludes_held_and_tags_watch(monkeypatch):
 
 def test_scan_single_ticker_failure_isolated(monkeypatch):
     monkeypatch.setattr(opp, "_load_valid_map", lambda: {("A", "s"): {}, ("B", "s"): {}})
+    monkeypatch.setattr(opp, "_current_regime", lambda: None)
 
-    def boom_or_ok(tk):
+    def boom_or_ok(tk, regime=None):
         if tk == "A":
             raise RuntimeError("取数失败")
         return [_sig(3.0)]

@@ -108,7 +108,7 @@ def _is_triggered(strategy_name: str, ohlcv: pd.DataFrame) -> bool:
         return False
 
 
-def get_active_signals(ticker: str) -> list[dict]:
+def get_active_signals(ticker: str, regime: str | None = None) -> list[dict]:
     """
     返回当前已触发且历史有效的策略列表（按 avg_alpha 降序）。
     每项: {strategy, label, avg_alpha, beat_rate, n_signals}
@@ -142,7 +142,7 @@ def get_active_signals(ticker: str) -> list[dict]:
                 "t_stat":    round(_t_stat(data), 1),
                 "reliable":  _is_reliable(data),
                 # L2c 自适应权重（flag 关时恒为 1.0，排序与历史完全一致）
-                "weight":    _strategy_weight(strategy_name),
+                "weight":    _strategy_weight(strategy_name, regime),
             })
 
     # 高信赖优先，再按 t-stat × 自适应权重降序。
@@ -152,11 +152,12 @@ def get_active_signals(ticker: str) -> list[dict]:
     return active
 
 
-def _strategy_weight(strategy_name: str) -> float:
-    """读 L2c 自适应权重；任何异常/未启用都回退 1.0（绝不拖垮信号查找）。"""
+def _strategy_weight(strategy_name: str, regime: str | None = None) -> float:
+    """读 L2c 自适应权重；任何异常/未启用都回退 1.0（绝不拖垮信号查找）。
+    regime 传入时启用方案A regime-conditional 护栏（flag 关时无影响）。"""
     try:
         from finance_agent.backtest.strategy_weights import get_strategy_weight
-        return get_strategy_weight(strategy_name)
+        return get_strategy_weight(strategy_name, regime=regime)
     except Exception:
         return 1.0
 

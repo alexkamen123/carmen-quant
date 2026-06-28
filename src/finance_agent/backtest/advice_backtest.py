@@ -254,6 +254,18 @@ def backtest_signal_profile(price_map: dict, bench_df, mask_fn, horizon: int = 7
     }
 
 
+def market_regime_from_spy(close, ma: int = 50) -> str | None:
+    """因果行情判定：基准(SPY)最新收盘 vs 其自身 ma 日均线——'up'=在均线上方(risk-on)，'down'=下方。
+    数据不足/无效返回 None。无前视：只用截至当天的数据。"""
+    if close is None or len(close) < ma:
+        return None
+    cur = float(close.iloc[-1])
+    mavg = float(close.rolling(ma).mean().iloc[-1])
+    if mavg != mavg:    # NaN
+        return None
+    return "up" if cur > mavg else "down"
+
+
 def build_signal_trades(price_map: dict, bench_df, signal_fns: dict, horizon: int = 7,
                         regime_ma: int = 50) -> list[tuple]:
     """构建 (ticker, family, regime, fwd_alpha) 交易表，供方案A样本外验证。

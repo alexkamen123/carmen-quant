@@ -14,6 +14,23 @@ MAX_SHOW = 5          # 卡片只展示 Top N（按最强 t 值），防信息�
 SEMI_NOTE_SECTORS = "半导体"   # 红线提示用
 
 
+def _current_regime() -> str | None:
+    """方案A：仅当 regime_aware_guardrail 开时，算一次当前行情(SPY vs MA50)供信号按行情调权。
+    flag 关 / 取数失败 → None（不触发任何 regime 调权，零开销零影响）。"""
+    try:
+        from finance_agent.backtest.strategy_weights import _load_settings
+        if not _load_settings().get("regime_aware_guardrail"):
+            return None
+        from finance_agent.backtest.discovery import fetch_ohlcv
+        from finance_agent.backtest.advice_backtest import market_regime_from_spy
+        spy = fetch_ohlcv("SPY")
+        if spy is None or "close" not in spy:
+            return None
+        return market_regime_from_spy(spy["close"])
+    except Exception:
+        return None
+
+
 def scan_opportunities(exclude_tickers: set[str] | None = None,
                        watch_tickers: set[str] | None = None) -> list[dict]:
     """
@@ -26,12 +43,13 @@ def scan_opportunities(exclude_tickers: set[str] | None = None,
     watch = {t.upper() for t in (watch_tickers or set())}
     universe = sorted({t for (t, _) in _load_valid_map().keys()})
 
+    regime = _current_regime()   # flag 关时 None，整段 regime 逻辑零影响
     out = []
     for tk in universe:
         if tk.upper() in exclude:
             continue
         try:
-            active = [a for a in get_active_signals(tk) if a.get("reliable")]
+            active = [a for a in get_active_signals(tk, regime) if a.get("reliable")]
         except Exception:
             continue   # 单票取数失败不拖垮整体扫描
         if active:

@@ -37,7 +37,23 @@ _DEFAULTS = {
     "min_combos": 3,         # 族内有效组合 < 此值则保持 1.0（小样本不乱动）
     "max_step": 0.05,        # 单轮单族最大变动幅度（硬阻尼兜底）
     "broad_edge_guardrail": False,  # 广历史 edge 护栏（默认关，启用前须人审；见下）
+    "regime_aware_guardrail": False,  # 方案A：按行情切换的护栏（默认关；OOS 已验证 cycle12，见下）
 }
+
+# 方案A regime-conditional 护栏：读权重时按【当前行情】压「此行情下反指」的信号族。
+# OOS 验证(cycle12 oos_regime.py，46票×3年 5-fold)：regime-switching 在没见过的票上每折赢
+# static 过滤(7d 0.482% vs 0.379%、30d 1.575% vs 1.177%，均5/5)，非过拟合、能泛化。
+# 各族 7 日 alpha 分行情快照(cycle9 backtest_signal_profile 24票×3年，screen_profiles.py 可刷新)：
+_STRATEGY_FAMILIES_FOR_REGIME = ("rsi", "ma_align", "ma", "boll", "mom", "vol_surge")
+_REGIME_EDGE_7D = {
+    "rsi":       {"up": 0.50, "down": 1.21},   # 两行情都正（防守更强）
+    "boll":      {"up": 0.31, "down": 0.88},
+    "ma_align":  {"up": 0.31, "down": 0.77},
+    "mom":       {"up": 0.66, "down": 0.35},   # 进攻：涨市更强
+    "ma":        {"up": -0.08, "down": -0.66},  # 金叉：两行情都跑输
+    "vol_surge": {"up": 0.16, "down": -0.72},   # 放量：涨市正、跌市反指 ← regime 关键差异
+}
+_REGIME_REVERSE = -0.05    # 当前行情下 alpha 低于此 = 该行情反指，压到下限
 
 _FAMILIES = ("rsi", "ma_align", "ma", "boll", "mom", "vol_surge")
 
@@ -98,19 +114,28 @@ def load_weights(path: Path | None = None) -> dict:
         return {"param_version": "v0", "weights": {}, "updated_at": None}
 
 
-def get_strategy_weight(strategy: str, path: Path | None = None) -> float:
+def get_strategy_weight(strategy: str, path: Path | None = None,
+                        regime: str | None = None) -> float:
     """返回某具体策略（如 rsi_14_30）所属族的权重乘数。
 
     feature flag 关 / 表缺失 / 族无记录 → 1.0（完全不影响现有行为）。
+    regime ('up'/'down')：方案A regime-conditional 护栏——flag 开且当前行情下该族反指时压到下限。
     """
-    if not _load_settings()["enabled"]:
+    cfg = _load_settings()
+    if not cfg["enabled"]:
         return 1.0
     fam = _family(strategy)
     w = load_weights(path)["weights"].get(fam)
     try:
-        return float(w) if w is not None else 1.0
+        weight = float(w) if w is not None else 1.0
     except (TypeError, ValueError):
-        return 1.0
+        weight = 1.0
+    # 方案A（默认关）：当前行情下反指的族压到下限——OOS 已验证有真增量(cycle12)
+    if cfg.get("regime_aware_guardrail") and regime in ("up", "down"):
+        edge = _REGIME_EDGE_7D.get(fam, {}).get(regime)
+        if edge is not None and edge < _REGIME_REVERSE:
+            return cfg["min_weight"]
+    return weight
 
 
 def _family(strategy: str) -> str:
