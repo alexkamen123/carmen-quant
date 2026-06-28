@@ -254,6 +254,100 @@ def backtest_signal_profile(price_map: dict, bench_df, mask_fn, horizon: int = 7
     }
 
 
+def build_signal_trades(price_map: dict, bench_df, signal_fns: dict, horizon: int = 7,
+                        regime_ma: int = 50) -> list[tuple]:
+    """构建 (ticker, family, regime, fwd_alpha) 交易表，供方案A样本外验证。
+    regime【因果】：SPY 收盘 vs 其自身 regime_ma 日均线(当天可知，无前视)——up=在均线上方。
+    fwd_alpha = 个股 forward 收益 − 同期 SPY forward 收益(超额)。signal_fns: {family: mask_fn}。"""
+    if bench_df is None or "close" not in bench_df:
+        return []
+    bclose = bench_df["close"].astype(float)
+    bfwd = bclose.shift(-horizon) / bclose - 1
+    bregime = bclose > bclose.rolling(regime_ma).mean()   # 因果：用截至当天的均线
+    rows = []
+    for tk, df in price_map.items():
+        if df is None or "close" not in df or len(df) < regime_ma + horizon + 1:
+            continue
+        close = df["close"].astype(float)
+        fwd = close.shift(-horizon) / close - 1
+        bf = bfwd.reindex(close.index)
+        reg = bregime.reindex(close.index)
+        for fam, fn in signal_fns.items():
+            try:
+                mask = fn(df).reindex(close.index).fillna(False).astype(bool)
+            except Exception:
+                continue
+            v = mask & fwd.notna() & bf.notna() & reg.notna()
+            for dt in close.index[v]:
+                rows.append((tk, fam, "up" if bool(reg[dt]) else "down",
+                             float(fwd[dt] - bf[dt])))
+    return rows
+
+
+def oos_regime_value(trades: list[tuple], tickers: list, k: int = 5) -> dict:
+    """方案A样本外验证：按票 k-fold——训练集学规则、测试集(没见过的票)验，
+    比较三策略的 OOS 平均超额(alpha)：
+      naive  = 所有触发信号一视同仁；
+      static = 只留训练集里【整体】超额>0 的族(=cycle8护栏思路，不分行情)；
+      regime = 只留训练集里【当前行情】超额>0 的族(=方案A)。
+    关键判据：regime 必须赢过 static，否则增量只是「丢烂信号」、与行情无关，不值得碰引擎。
+    trades: (ticker, family, regime, fwd_alpha) 列表(build_signal_trades 产)。确定性取模分折。"""
+    import numpy as np
+    from collections import defaultdict
+    tks = sorted(set(tickers))
+    if len(tks) < k:
+        k = max(2, len(tks))
+    folds = [tks[i::k] for i in range(k)]
+    res = {"naive": [], "static": [], "regime": []}
+    regime_wins = 0
+    n_folds = 0
+    for f in range(k):
+        test_tk = set(folds[f])
+        if not test_tk:
+            continue
+        train = [t for t in trades if t[0] not in test_tk]
+        test = [t for t in trades if t[0] in test_tk]
+        if not train or not test:
+            continue
+        ov, rg = defaultdict(list), defaultdict(list)
+        for _tk, fam, reg, a in train:
+            ov[fam].append(a)
+            rg[(fam, reg)].append(a)
+        good_static = {fam for fam, v in ov.items() if np.mean(v) > 0}
+        good_regime = {key for key, v in rg.items() if np.mean(v) > 0}
+        naive = [a for _, _, _, a in test]
+        static = [a for _, fam, _, a in test if fam in good_static]
+        regime = [a for _, fam, reg, a in test if (fam, reg) in good_regime]
+        if not naive:
+            continue
+        n_folds += 1
+        nm, sm, rm = np.mean(naive), (np.mean(static) if static else 0.0), (np.mean(regime) if regime else 0.0)
+        res["naive"].append(nm)
+        res["static"].append(sm)
+        res["regime"].append(rm)
+        if rm > sm:
+            regime_wins += 1
+
+    def agg(v):
+        return round(float(np.mean(v)) * 100, 3) if v else None
+
+    naive_a, static_a, regime_a = agg(res["naive"]), agg(res["static"]), agg(res["regime"])
+    eps = 0.05   # 0.05% 增量阈值（OOS 噪声带）
+    if regime_a is None or static_a is None:
+        verdict = "insufficient"
+    elif regime_a > static_a + eps and regime_wins >= max(1, n_folds * 0.6):
+        verdict = "regime_adds_value"           # 方案A 有真增量 → 值得碰引擎
+    elif static_a > (naive_a or 0) + eps:
+        verdict = "static_enough"               # 丢烂信号够了，分行情没多余价值
+    else:
+        verdict = "no_value"
+    return {
+        "n_folds": n_folds, "folds_regime_wins": regime_wins,
+        "naive_alpha": naive_a, "static_alpha": static_a, "regime_alpha": regime_a,
+        "verdict": verdict,
+    }
+
+
 def load_sell_recs(db_path) -> list[dict]:
     """从 DB 取历史「减仓/卖出」建议（已回填 return_7d + benchmark、非影子）。"""
     from finance_agent.db.tracker import _conn, _resolve_db
