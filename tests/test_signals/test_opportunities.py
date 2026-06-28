@@ -3,9 +3,16 @@
 from finance_agent.signals import opportunities as opp
 
 
-def _sig(t_stat, label="RSI超卖", n=100, alpha=2.5, beat=0.65):
-    return {"strategy": "x", "label": label, "n_signals": n,
+def _sig(t_stat, label="RSI超卖", n=100, alpha=2.5, beat=0.65, role=""):
+    return {"strategy": "x", "label": label, "n_signals": n, "role": role,
             "avg_alpha": alpha, "beat_rate": beat, "t_stat": t_stat, "reliable": True}
+
+
+def test_format_shows_signal_role_tag():
+    """cycle10·B：信号性格标签出现在机会区（纯展示、不改权重）。"""
+    opps = [{"ticker": "PANW", "in_watch": False, "signals": [_sig(4.3, role="🛡️抗跌型")]}]
+    out = opp.format_opportunity_section(opps)
+    assert "🛡️抗跌型" in out and "PANW" in out
 
 
 def _wire(monkeypatch, universe, active_map):

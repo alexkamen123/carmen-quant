@@ -35,6 +35,26 @@ def _strategy_label(name: str) -> str:
     return name
 
 
+# 信号性格（cycle9 backtest_signal_profile·24票×3年 alpha 涨/跌市倾向快照，screen_profiles.py 可刷新）：
+# 纯展示用、不改任何权重/建议。⚔️进攻型=涨市超额更强(动量)；🛡️抗跌型=跌市超额更强、防守价值(超卖/布林/均线多头)；
+# 💤跑输型=两个行情都跑不赢大盘(金叉/放量)。顺序敏感：ma_align 必须先于 ma。
+_SIGNAL_ROLE: dict[str, str] = {
+    "rsi":        "🛡️抗跌型",
+    "ma_align":   "🛡️抗跌型",
+    "ma":         "💤跑输型",
+    "boll":       "🛡️抗跌型",
+    "mom":        "⚔️进攻型",
+    "vol_surge":  "💤跑输型",
+}
+
+
+def _strategy_role(name: str) -> str:
+    for prefix, role in _SIGNAL_ROLE.items():
+        if name.startswith(prefix):
+            return role
+    return ""
+
+
 def _t_stat(data: dict) -> float:
     """单调显著性 t = avg_alpha / (std_alpha / sqrt(n))；样本/方差不足返回 0。"""
     n = data.get("n_signals", 0) or 0
@@ -115,6 +135,7 @@ def get_active_signals(ticker: str) -> list[dict]:
             active.append({
                 "strategy":  strategy_name,
                 "label":     _strategy_label(strategy_name),
+                "role":      _strategy_role(strategy_name),   # 性格标签（纯展示，不改权重）
                 "avg_alpha": data["avg_alpha"],
                 "beat_rate": data["beat_rate"],
                 "n_signals": data["n_signals"],

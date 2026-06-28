@@ -50,8 +50,9 @@ def format_opportunity_section(opps: list[dict], semi_room_note: str = "") -> st
         s = o["signals"][0]   # 每票只展示最强一条，其余计数
         more = f"（另 {len(o['signals']) - 1} 个信号）" if len(o["signals"]) > 1 else ""
         tag = "｜已在观察池" if o["in_watch"] else ""
+        role = f" {s['role']}" if s.get("role") else ""   # 信号性格标签（纯展示）
         lines.append(
-            f"· **{o['ticker']}** {s['label']}：历史{s['n_signals']}次 · "
+            f"· **{o['ticker']}** {s['label']}{role}：历史{s['n_signals']}次 · "
             f"7日跑赢SPY {s['beat_rate'] * 100:.0f}% · 超额{s['avg_alpha']:+.1f}% · "
             f"t={s['t_stat']}{more}{tag}"
         )
