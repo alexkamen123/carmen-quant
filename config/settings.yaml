@@ -90,3 +90,4 @@ strategy_weight_adaptation:
   min_combos: 3      # 族内有效组合 < 此值则保持 1.0
   max_step: 0.05     # 单轮单族最大变动幅度（硬阻尼兜底）
   broad_edge_guardrail: true   # 启用 2026-06-26：广历史反指族(金叉 edge=-0.082)不许被近期beat上调、压到下限
+  regime_aware_guardrail: true   # 启用 2026-06-29(方案A)：按当前行情(SPY vs MA50)压"该行情反指"的信号族——跌市压趋势/动量类(mom/ma_align/ma/vol_surge)、放超卖(rsi/boll)。OOS每折赢static验证、快照已对齐因果行情
