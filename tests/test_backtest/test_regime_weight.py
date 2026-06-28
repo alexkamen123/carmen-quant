@@ -27,10 +27,19 @@ def test_regime_caps_reverse_in_down(monkeypatch):
 
 
 def test_regime_spares_good_in_up(monkeypatch):
-    """护栏开·涨市：vol_surge(涨市α+0.16 正) 不压；rsi(两行情都正) 不压。"""
+    """护栏开·涨市：所有族涨市α≥-0.05 → 都不压；rsi/boll 跌市也正 → 不压。"""
     monkeypatch.setattr(sw, "_load_settings", lambda: _cfg(regime_aware_guardrail=True))
-    assert sw.get_strategy_weight("vol_surge_2", regime="up") != sw._DEFAULTS["min_weight"]
+    for fam in ("vol_surge_2", "mom_20", "ma_align_5_20_60", "rsi_14_30"):
+        assert sw.get_strategy_weight(fam, regime="up") != sw._DEFAULTS["min_weight"]
     assert sw.get_strategy_weight("rsi_14_30", regime="down") != sw._DEFAULTS["min_weight"]
+    assert sw.get_strategy_weight("boll_20_2", regime="down") != sw._DEFAULTS["min_weight"]
+
+
+def test_regime_caps_trend_signals_in_downtrend(monkeypatch):
+    """因果快照核心：下跌趋势里趋势/动量类(动量突破/均线多头)也是反指 → 跌市压。"""
+    monkeypatch.setattr(sw, "_load_settings", lambda: _cfg(regime_aware_guardrail=True))
+    assert sw.get_strategy_weight("mom_20", regime="down") == sw._DEFAULTS["min_weight"]
+    assert sw.get_strategy_weight("ma_align_5_20_60", regime="down") == sw._DEFAULTS["min_weight"]
 
 
 def test_regime_none_no_cap(monkeypatch):

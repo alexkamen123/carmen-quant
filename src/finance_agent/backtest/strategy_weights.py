@@ -43,17 +43,19 @@ _DEFAULTS = {
 # 方案A regime-conditional 护栏：读权重时按【当前行情】压「此行情下反指」的信号族。
 # OOS 验证(cycle12 oos_regime.py，46票×3年 5-fold)：regime-switching 在没见过的票上每折赢
 # static 过滤(7d 0.482% vs 0.379%、30d 1.575% vs 1.177%，均5/5)，非过拟合、能泛化。
-# 各族 7 日 alpha 分行情快照(cycle9 backtest_signal_profile 24票×3年，screen_profiles.py 可刷新)。
-# ⚠️ 同 cycle8 教训：快照会陈旧，启用前用 screen_profiles.py 确认新鲜；regime 护栏优先级高于
-# L2c 近期 beat 学到的权重(反指族不许被近期 beat 上调)，启用须人审并记决策史。
-_REGIME_EDGE_SNAPSHOT_DATE = "2026-06-29"
+# 各族 7 日 alpha 分行情快照——【因果行情】(SPY vs MA50，与运行时 market_regime_from_spy
+# 及 cycle12 OOS 验证同口径) 重算，refresh_regime/oos_regime.py 可刷新。
+# 经济意义：下跌趋势(SPY<MA50)里趋势/动量类(动量突破/均线多头/金叉/放量)被反复打脸→跌市压；
+# 只有超卖反弹(rsi/boll)在熊市仍管用(抄反弹)→放。这正是 cycle12 OOS 每折赢 static 的那个规则。
+# ⚠️ 同 cycle8 教训快照会陈旧；regime 护栏优先级高于 L2c 近期 beat(反指族不许被近期 beat 上调)。
+_REGIME_EDGE_SNAPSHOT_DATE = "2026-06-29"   # 因果行情·46票×3年×24809笔
 _REGIME_EDGE_7D = {
-    "rsi":       {"up": 0.50, "down": 1.21},   # 两行情都正（防守更强）
-    "boll":      {"up": 0.31, "down": 0.88},
-    "ma_align":  {"up": 0.31, "down": 0.77},
-    "mom":       {"up": 0.66, "down": 0.35},   # 进攻：涨市更强
-    "ma":        {"up": -0.08, "down": -0.66},  # 金叉：两行情都跑输
-    "vol_surge": {"up": 0.16, "down": -0.72},   # 放量：涨市正、跌市反指 ← regime 关键差异
+    "rsi":       {"up": 0.11, "down": 0.91},    # 超卖：两行情都正（熊市抄反弹仍灵）
+    "ma_align":  {"up": 0.46, "down": -1.11},   # 均线多头：跌市趋势失效→反指
+    "ma":        {"up": 0.07, "down": -0.61},   # 金叉：跌市反指
+    "boll":      {"up": 0.31, "down": 0.63},    # 布林下轨：两行情都正
+    "mom":       {"up": 0.61, "down": -0.93},   # 动量：涨市强、跌市被打脸→反指
+    "vol_surge": {"up": 0.12, "down": -0.59},   # 放量：涨市正、跌市反指
 }
 _REGIME_REVERSE = -0.05    # 当前行情下 alpha 低于此 = 该行情反指，压到下限
 
