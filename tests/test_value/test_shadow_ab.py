@@ -188,6 +188,14 @@ def test_report_guardrail_helps(tmp_path):
     assert rep["verdict"] == "guardrail_helps"
 
 
+def test_sweep_missing_log_insufficient(tmp_path):
+    """sweep（CLI 与每周 value-report 共用）：日志不存在 → 不崩、返 insufficient、backfilled=0。"""
+    rep = sab.sweep(today="2026-07-01", log_path=tmp_path / "nope.jsonl")
+    assert rep["verdict"] == "insufficient"
+    assert rep["backfilled"] == 0
+    assert rep["n"] == 0
+
+
 def _series(vals, start="2026-06-01"):
     idx = pd.date_range(start, periods=len(vals), freq="D")
     return pd.Series(vals, index=idx)

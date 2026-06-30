@@ -168,6 +168,21 @@ def make_live_alpha_fn(horizon: int = HORIZON):
     return alpha_fn
 
 
+def sweep(today: str | None = None, log_path: Path = LOG_PATH) -> dict:
+    """回填到期样本 + 返回裁决（含 backfilled 行数）。CLI 与每周 value-report 共用。
+
+    日志不存在 → 跳过回填、直接出 insufficient（不联网、不崩）。
+    """
+    if today is None:
+        today = _date.today().isoformat()
+    n = 0
+    if log_path.exists():
+        n = backfill_shadow_ab(log_path, make_live_alpha_fn(), today)
+    rep = report_shadow_ab(log_path)
+    rep["backfilled"] = n
+    return rep
+
+
 def report_shadow_ab(log_path: Path = LOG_PATH,
                      min_divergent: int = MIN_DIVERGENT, band: float = 0.1) -> dict:
     """汇总分歧样本：on 篮子均值 vs off 篮子均值，出裁决。

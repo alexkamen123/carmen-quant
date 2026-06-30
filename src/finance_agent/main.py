@@ -330,18 +330,17 @@ def shadow_ab_cmd(
 
     口径：每天日报记一行"开护栏 vs 关护栏"两套机会篮子，7日后回填各自 vs SPY 超额，
     攒够分歧样本(≥10)对比 on/off 篮子均值。纯观测，不改任何线上建议。"""
-    from datetime import date
-    from finance_agent.value.shadow_ab import (
-        LOG_PATH, backfill_shadow_ab, make_live_alpha_fn, report_shadow_ab)
+    from finance_agent.value.shadow_ab import LOG_PATH, report_shadow_ab, sweep
 
     if not LOG_PATH.exists():
         console.print(f"⚪ 暂无影子记录（{LOG_PATH}）——日报跑过且护栏开启后才开始累积")
         return
     if backfill:
         console.print("⏳ 回填到期样本真实超额（联网取数）...")
-        n = backfill_shadow_ab(LOG_PATH, make_live_alpha_fn(), date.today().isoformat())
-        console.print(f"   新回填 {n} 行")
-    rep = report_shadow_ab(LOG_PATH)
+        rep = sweep(log_path=LOG_PATH)
+        console.print(f"   新回填 {rep['backfilled']} 行")
+    else:
+        rep = report_shadow_ab(LOG_PATH)
     label = {"insufficient": "样本不足·暂不下结论", "guardrail_helps": "✅ 护栏帮了忙",
              "guardrail_hurts": "❌ 护栏帮倒忙", "neutral": "⚪ 中性·无显著差异"}
     console.print(f"\n🌡️ 方案A 影子 A/B 体温计")
@@ -367,6 +366,14 @@ async def _value_report(skip_notify: bool):
     if not skip_notify:
         ok = await send_feishu_card(card, fallback_text=text)
         console.print("✅ 价值体检推送成功" if ok else "❌ 价值体检推送失败")
+    # 方案A 影子 A/B：搭周六价值体检的车顺手回填到期样本（静默·不进飞书卡·失败不拖垮）
+    try:
+        from finance_agent.value.shadow_ab import sweep
+        rep = sweep()
+        console.print(
+            f"🌡️ 影子A/B：回填 {rep['backfilled']} 行 · 分歧样本 n={rep['n']} · 裁决 {rep['verdict']}")
+    except Exception as e:
+        console.print(f"[ShadowAB] 周回填跳过（不影响体检）: {e}")
 
 
 @app.command("monthly-review")
