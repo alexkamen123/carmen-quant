@@ -351,6 +351,30 @@ def shadow_ab_cmd(
     console.print(f"   裁决：{label.get(rep['verdict'], rep['verdict'])}")
 
 
+@app.command("oos-monitor")
+def oos_monitor_cmd(
+    trailing_days: int = typer.Option(504, "--trailing-days", help="滚动窗口交易日数(默认2年)；0=全历史"),
+):
+    """方案A walk-forward 主裁判：每月在最新数据重跑样本外验证，追踪 regime-vs-static
+    增量是否衰减。诚实闸门：跌市样本不足→insufficient(不误报)，连续衰减才告警(不自动关flag)。"""
+    from finance_agent.backtest.oos_monitor import run_oos_monitor
+    console.print("🔬 walk-forward OOS 复验（联网取宇宙×~3年，稍候）...")
+    out = run_oos_monitor(trailing_days=(trailing_days or None))
+    if out.get("error"):
+        console.print(f"❌ 取数失败：{out['error']}")
+        return
+    if out.get("skipped"):
+        console.print(f"⏭️ 本月已复验过（{out['skipped']}），只出裁决")
+    for r in out.get("rows", []):
+        console.print(f"   h={r['horizon']}d：regime={r['regime_alpha']}% vs static={r['static_alpha']}%"
+                      f" · 增量edge={r['regime_edge']} · 跌市{r['n_down']}笔 · {r['verdict']}")
+    label = {"healthy": "✅ 方案A仍有效", "decaying": "🚨 增量衰减·建议复审是否关flag",
+             "insufficient_regime_data": "⚪ 跌市样本不足·暂不下结论(涨市常态)"}
+    for h, d in out.get("decay", {}).items():
+        console.print(f"🌡️ h={h}d 衰减裁决：{label.get(d['status'], d['status'])}"
+                      f"（可测月 {d['n_testable']}/{d['k_needed']}）")
+
+
 @app.command("value-report")
 def value_report(
     skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
@@ -386,6 +410,18 @@ def monthly_review(
 
 async def _monthly_review(skip_notify: bool):
     console.print("📆 开始月度投资回顾...")
+    # 方案A walk-forward 主裁判：搭月报的车每月复验一次(独立于月报数据·guarded·失败不拖垮)
+    try:
+        from finance_agent.backtest.oos_monitor import run_oos_monitor
+        out = run_oos_monitor()
+        for h, d in out.get("decay", {}).items():
+            if d["status"] == "decaying":
+                console.print(f"🚨 方案A OOS 衰减(h={h}d)：regime 已连续 {d['n_testable']} 个可测月"
+                              f"不再赢 static，建议复审是否关 regime_aware_guardrail")
+            else:
+                console.print(f"🔬 方案A OOS(h={h}d)：{d['status']}（可测月 {d['n_testable']}）")
+    except Exception as e:
+        console.print(f"[OOS] 月度复验跳过（不影响月报）: {e}")
     result = await run_monthly_review(db_path_str=DB_PATH)
     if result is None:
         console.print("⚪ 上月无已回填数据，跳过月度回顾")
