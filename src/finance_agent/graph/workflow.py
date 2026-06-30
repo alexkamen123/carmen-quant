@@ -262,6 +262,15 @@ async def opportunity_node(state: AgentState) -> AgentState:
         if opps:
             tks = "、".join(o["ticker"] for o in opps[:8])
             print(f"[Opportunity] {len(opps)} 只非持仓票触发高信赖信号：{tks}")
+        # 方案A 影子 A/B 记账：开护栏 vs 关护栏 两套排序，纯记账不影响建议
+        # flag 关 → _current_regime 返 None → record_shadow_ab 自动 no-op
+        try:
+            from datetime import date
+            from finance_agent.signals.opportunities import _current_regime
+            from finance_agent.value.shadow_ab import record_shadow_ab
+            record_shadow_ab(opps, _current_regime(), date.today().isoformat())
+        except Exception as e:
+            print(f"[ShadowAB] 影子记账失败（跳过，不影响日报）: {e}")
         return state.model_copy(update={"opportunities": opps})
     except Exception as e:
         print(f"[Opportunity] 机会扫描失败（跳过，不影响日报）: {e}")

@@ -322,6 +322,36 @@ async def _backfill_realign(apply: bool):
         console.print("\n[dim]确认无误后加 --apply 写库（会先自动备份）[/dim]")
 
 
+@app.command("shadow-ab")
+def shadow_ab_cmd(
+    backfill: bool = typer.Option(True, "--backfill/--no-backfill", help="先回填到期样本的真实超额"),
+):
+    """方案A 影子 A/B 体温计：回填到期样本超额 + 出裁决（护栏到底帮没帮）。
+
+    口径：每天日报记一行"开护栏 vs 关护栏"两套机会篮子，7日后回填各自 vs SPY 超额，
+    攒够分歧样本(≥10)对比 on/off 篮子均值。纯观测，不改任何线上建议。"""
+    from datetime import date
+    from finance_agent.value.shadow_ab import (
+        LOG_PATH, backfill_shadow_ab, make_live_alpha_fn, report_shadow_ab)
+
+    if not LOG_PATH.exists():
+        console.print(f"⚪ 暂无影子记录（{LOG_PATH}）——日报跑过且护栏开启后才开始累积")
+        return
+    if backfill:
+        console.print("⏳ 回填到期样本真实超额（联网取数）...")
+        n = backfill_shadow_ab(LOG_PATH, make_live_alpha_fn(), date.today().isoformat())
+        console.print(f"   新回填 {n} 行")
+    rep = report_shadow_ab(LOG_PATH)
+    label = {"insufficient": "样本不足·暂不下结论", "guardrail_helps": "✅ 护栏帮了忙",
+             "guardrail_hurts": "❌ 护栏帮倒忙", "neutral": "⚪ 中性·无显著差异"}
+    console.print(f"\n🌡️ 方案A 影子 A/B 体温计")
+    console.print(f"   分歧样本 n={rep['n']}（需 ≥10 才下结论）")
+    if rep["on_mean"] is not None:
+        console.print(f"   开护栏篮子均超额 on={rep['on_mean']:+.2f}%  vs  关护栏 off={rep['off_mean']:+.2f}%")
+        console.print(f"   净增量 edge={rep['edge']:+.2f}%")
+    console.print(f"   裁决：{label.get(rep['verdict'], rep['verdict'])}")
+
+
 @app.command("value-report")
 def value_report(
     skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
