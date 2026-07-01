@@ -375,6 +375,31 @@ def oos_monitor_cmd(
                       f"（可测月 {d['n_testable']}/{d['k_needed']}）")
 
 
+@app.command("rankic-monitor")
+def rankic_monitor_cmd(
+    skip_notify: bool = typer.Option(False, "--skip-notify", help="decaying 时不发飞书，只打印"),
+):
+    """P1c 月度 RankIC 自检：建议方向序 vs 后续超额序的秩相关有没有排序力。
+    诚实闸门：样本不足→insufficient不下结论；连续2可测月IC<0.03才推卡(纯观测·不改建议)。"""
+    from finance_agent.value.rankic_monitor import (IC_THRESHOLD, notify_if_decaying,
+                                                    run_rankic_monitor)
+    rk = run_rankic_monitor(db_path=DB_PATH)
+    if rk.get("skipped"):
+        console.print(f"⏭️ 本月已自检过（{rk['skipped']}），只出裁决")
+    snap = rk.get("snapshot")
+    if snap:
+        console.print(f"   样本 n={snap['n']}（方向性 {snap['n_directional']}）· "
+                      f"RankIC={snap['ic']} · {snap['verdict']}")
+    d = rk.get("decay", {})
+    label = {"healthy": "✅ 方向仍有排序力", "decaying": f"🚨 连续衰减(IC<{IC_THRESHOLD})·建议复核策略",
+             "insufficient_history": "⚪ 可测月不足·暂不下结论"}
+    console.print(f"📏 衰减裁决：{label.get(d.get('status'), d.get('status'))}"
+                  f"（可测月 {d.get('n_measured', 0)}/{d.get('k_needed', 2)}，当前 IC {d.get('current_ic')}）")
+    # 同月幂等：本月已记录(skipped)则不重复推卡，防手动重跑刷屏（审查 nit）
+    if not rk.get("skipped"):
+        asyncio.run(notify_if_decaying(d, skip_notify=skip_notify))
+
+
 @app.command("value-report")
 def value_report(
     skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
@@ -422,6 +447,18 @@ async def _monthly_review(skip_notify: bool):
                 console.print(f"🔬 方案A OOS(h={h}d)：{d['status']}（可测月 {d['n_testable']}）")
     except Exception as e:
         console.print(f"[OOS] 月度复验跳过（不影响月报）: {e}")
+    # P1c 月度 RankIC 自检：建议方向有没有排序力(纯观测·guarded·仅 decaying 推卡)
+    try:
+        from finance_agent.value.rankic_monitor import notify_if_decaying, run_rankic_monitor
+        rk = run_rankic_monitor(db_path=DB_PATH)
+        d = rk.get("decay", {})
+        console.print(f"📏 RankIC 自检：{d.get('status')}（可测月 {d.get('n_measured', 0)}"
+                      f"，当前 IC {d.get('current_ic')}）")
+        # 同月幂等：本月已记录(skipped)则不重复推卡，防手动重跑刷屏（审查 nit）
+        if not rk.get("skipped"):
+            await notify_if_decaying(d, skip_notify=skip_notify)
+    except Exception as e:
+        console.print(f"[RankIC] 月度自检跳过（不影响月报）: {e}")
     result = await run_monthly_review(db_path_str=DB_PATH)
     if result is None:
         console.print("⚪ 上月无已回填数据，跳过月度回顾")
