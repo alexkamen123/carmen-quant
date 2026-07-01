@@ -30,6 +30,28 @@ def test_arbiter_block_empty_when_no_rating():
     assert arbiter._arbiter_block("", None, []) == ""
 
 
+def test_shadow_suppresses_injection(monkeypatch):
+    """影子观测档：arbiter 照常算评级，但 pm_arbiter_block 返空 → 不注入 PM、建议逐字节不变。"""
+    monkeypatch.setattr(arbiter, "arbiter_shadow", lambda: True)
+    s = _mk("NVDA", shares=2).model_copy(update={
+        "arbiter_rating": "减持", "arbiter_balanced": False,
+        "arbiter_rationale": ["采纳空头第2条：估值透支"]})
+    assert arbiter.pm_arbiter_block(s) == ""   # shadow 下有评级也不注入
+
+
+def test_record_arbiter_shadow(tmp_path):
+    """影子留痕：把算出的五档评级落盘供日后比对(arbiter vs PM vs outcome)。"""
+    log = tmp_path / "arb.jsonl"
+    s = _mk("NVDA", shares=2).model_copy(update={
+        "arbiter_rating": "减持", "arbiter_balanced": False,
+        "arbiter_rationale": ["采纳空头第2条"]})
+    s2 = _mk("AAPL", shares=1)   # 无评级 → 不落
+    arbiter.record_arbiter_shadow([s, s2], "2026-07-02", log_path=log)
+    import json
+    rows = [json.loads(l) for l in log.read_text().splitlines()]
+    assert len(rows) == 1 and rows[0]["ticker"] == "NVDA" and rows[0]["rating"] == "减持"
+
+
 def test_arbiter_block_balanced_label_only_when_true():
     """诚实(审查Important)：'（多空势均力敌）'只在 balanced=True 才贴，绝不凭 rating=持有 硬贴。"""
     assert "势均力敌" in arbiter._arbiter_block("持有", True, ["采纳多头第1条"])

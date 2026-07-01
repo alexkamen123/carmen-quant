@@ -70,8 +70,12 @@ reflection_injection:
 # 材料。MVP=advisory 强先验，不硬改写最终 recommendation；持有须多空势均力敌。
 # 默认 off：arbiter_node 纯透传、零 LLM 调用、PM 模板逐字节不变。
 # enable 须用户点头，建议先影子观测(评级只落库不注入)比对仲裁 vs PM 分歧再切注入。
+# 启用 2026-07-02(用户点头·影子观测档)：enabled+shadow=true → arbiter 照常算五档评级并落盘
+# data/arbiter_shadow.jsonl，但 pm_arbiter_block 返空、不注入 PM → 线上建议逐字节不变。
+# 攒一段后比对 arbiter vs PM 分歧 + 7/30日 outcome，再决定是否 shadow=false 切真注入(须再点头)。
 debate_arbiter:
-  enabled: false
+  enabled: true
+  shadow: true
 
 # ── dip 预警 ATR 自适应阈值（order8）────────────────────────────────────────
 # effective = max(base_pct, min(k * atr_pct, cap_pct))；gap_up 抬升叠加在此结果上。

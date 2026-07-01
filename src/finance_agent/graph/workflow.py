@@ -289,9 +289,12 @@ async def opportunity_node(state: AgentState) -> AgentState:
 async def arbiter_node(state: AgentState) -> AgentState:
     """P0a 辩论仲裁层：把多空辩论逼成五档评级注入 PM（advisory）。
     flag off → run_arbiter_batch 纯透传、零 LLM；失败不拖垮日报主流程。"""
-    from finance_agent.agents.arbiter import run_arbiter_batch
+    from finance_agent.agents.arbiter import (arbiter_shadow, record_arbiter_shadow,
+                                              run_arbiter_batch)
     try:
         stocks = await run_arbiter_batch(state.stocks)
+        if arbiter_shadow():   # 影子观测档：落盘留痕供日后比对（不注入 PM）
+            record_arbiter_shadow(stocks, state.date or "")
         return state.model_copy(update={"stocks": stocks})
     except Exception as e:
         print(f"[Arbiter] 仲裁节点异常（跳过，不影响日报）: {e}")

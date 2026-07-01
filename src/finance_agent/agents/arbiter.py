@@ -8,6 +8,7 @@ flag off 时 run_arbiter_batch 纯透传、零 LLM 调用、arbiter_rating 恒�
 from __future__ import annotations
 
 import json
+from datetime import date as _date
 from pathlib import Path
 
 import yaml
@@ -20,21 +21,34 @@ from finance_agent.agents.prompts import (ARBITER_STOCK_TEMPLATE, ARBITER_SYSTEM
 from finance_agent.graph.state import StockAnalysis
 
 _CONFIG_DIR = Path(__file__).parents[3] / "config"
+SHADOW_LOG = Path("data/arbiter_shadow.jsonl")
 RATINGS = ("买入", "增持", "持有", "减持", "卖出")
 _CITE_MARKS = ("采纳", "驳回", "第", "多头", "空头", "基本面", "技术")
 
 
-def arbiter_enabled() -> bool:
-    """settings.yaml debate_arbiter.enabled，缺省 False（改核心建议，默认关）。"""
+def _arbiter_cfg() -> dict:
     try:
         p = _CONFIG_DIR / "settings.yaml"
         if p.exists():
             with open(p) as f:
                 s = yaml.safe_load(f) or {}
-            return bool(s.get("debate_arbiter", {}).get("enabled", False))
+            c = s.get("debate_arbiter", {})
+            if isinstance(c, dict):
+                return c
     except Exception:
         pass
-    return False
+    return {}
+
+
+def arbiter_enabled() -> bool:
+    """settings.yaml debate_arbiter.enabled，缺省 False（改核心建议，默认关）。"""
+    return bool(_arbiter_cfg().get("enabled", False))
+
+
+def arbiter_shadow() -> bool:
+    """影子观测档：enabled 且 shadow=true 时，arbiter 照常算+落盘，但不注入 PM（建议逐字节不变）。
+    用于「先只观测比对分歧、再决定是否真注入」。缺省 False。"""
+    return bool(_arbiter_cfg().get("shadow", False))
 
 
 def _cites_evidence(r) -> bool:
@@ -89,8 +103,28 @@ def _arbiter_block(rating: str, balanced, rationale: list[str]) -> str:
 
 
 def pm_arbiter_block(s: StockAnalysis) -> str:
-    """供 portfolio_manager 拼 PM 材料用。"""
+    """供 portfolio_manager 拼 PM 材料用。影子观测档下恒返 ""（只观测不注入，建议逐字节不变）。"""
+    if arbiter_shadow():
+        return ""
     return _arbiter_block(s.arbiter_rating, s.arbiter_balanced, s.arbiter_rationale)
+
+
+def record_arbiter_shadow(stocks: list[StockAnalysis], today: str,
+                          log_path: Path = SHADOW_LOG) -> None:
+    """影子留痕：把算出五档评级的票落盘 JSONL，供日后比对 arbiter vs PM vs outcome。
+    无评级的票不落。落盘失败不抛（不拖垮日报）。"""
+    rows = [{"date": today, "ticker": s.ticker, "rating": s.arbiter_rating,
+             "balanced": s.arbiter_balanced, "rationale": s.arbiter_rationale}
+            for s in stocks if s.arbiter_rating]
+    if not rows:
+        return
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"[Arbiter] 影子留痕失败（跳过）: {e}")
 
 
 def _stock_block(s: StockAnalysis) -> str:
