@@ -218,7 +218,8 @@ async def memory_node(state: AgentState) -> AgentState:
 async def strategy_node(state: AgentState) -> AgentState:
     """注入量化策略信号（仅美股）+ L2b 实盘反馈（全市场，settings 一键关）"""
     from finance_agent.backtest.signal_lookup import format_strategy_evidence
-    from finance_agent.db.tracker import format_live_feedback, get_today_dip_conclusion
+    from finance_agent.db.tracker import (format_live_feedback, format_reflection,
+                                          get_today_dip_conclusion)
     updated = []
     for s in state.stocks:
         if s.is_etf:
@@ -239,6 +240,14 @@ async def strategy_node(state: AgentState) -> AgentState:
             print(f"[Strategy] {s.ticker} 量化信号触发 ↓\n{evidence}")
         if live:
             print(f"[Strategy] {s.ticker} 实盘反馈注入 ↓\n{live}")
+        # P0b 反思闭环：近 N 条已结算方向判断复盘（flag 默认 off → 恒 "" → 线上零变化）
+        refl = ""
+        try:
+            refl = format_reflection(s.ticker)
+        except Exception as e:
+            print(f"[Strategy] {s.ticker} 反思查找失败（跳过）: {e}")
+        if refl:
+            print(f"[Strategy] {s.ticker} 反思注入 ↓\n{refl}")
         dip_note = ""
         try:
             dip_note = get_today_dip_conclusion(s.ticker)
@@ -246,7 +255,7 @@ async def strategy_node(state: AgentState) -> AgentState:
             pass
         if dip_note:
             print(f"[Strategy] {s.ticker} 一致性桥：注入今日盘中卡结论")
-        combined = "\n".join(x for x in (evidence, live, dip_note) if x)
+        combined = "\n".join(x for x in (evidence, live, refl, dip_note) if x)
         updated.append(s.model_copy(update={"strategy_evidence": combined}))
     return state.model_copy(update={"stocks": updated})
 

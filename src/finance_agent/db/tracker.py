@@ -1601,6 +1601,97 @@ def format_live_feedback(ticker: str, db_path: str | Path | None = None,
     return "\n".join(lines)
 
 
+_REFLECTION_DEFAULTS = {"enabled": False, "n": 3}
+
+
+def get_recent_reflections(ticker: str, db_path: str | Path | None = None,
+                           n: int = 3, asof: str | None = None) -> dict | None:
+    """某票最近 n 条已结算方向性建议的复盘（含 vs 基准超额 alpha）。无方向性样本→None。
+
+    区别于 get_live_feedback（池化 60 条胜率、丢基准）：本项聚焦「最近 n 条具体案例 + 超额」，
+    surface live_feedback 从不呈现的 alpha。判对错按方向：看多→跑赢基准算对；减仓/卖出→该股
+    跑输基准算对（卖对了）。benchmark 缺失时退化按绝对涨跌判。
+    asof（回测专用）：只取 rec 日距 asof ≥14 自然日的行（窗口已走完），防未来函数。
+    """
+    p = _resolve_db(db_path)
+    init_db(p)
+    asof_sql = (f" AND julianday(?) - julianday(date) >= {_ASOF_MATURITY_DAYS}"
+                if asof else "")
+    params = (ticker.upper(), asof) if asof else (ticker.upper(),)
+    with _conn(p) as con:
+        raw = con.execute(
+            f"""SELECT date, ticker, recommendation, position_change,
+                       return_7d, benchmark_return_7d
+                FROM recommendations
+                WHERE ticker = ? AND outcome IS NOT NULL AND return_7d IS NOT NULL
+                  AND IFNULL(is_watch, 0) = 0{asof_sql}
+                ORDER BY date DESC, id DESC LIMIT 60""",
+            params,
+        ).fetchall()
+
+    # 日报连发去重：同票同方向 7 天内连推折成一条，与 metrics.py/命中率同口径，
+    # 防「近N次」把一条滚动 thesis 伪膨胀成 N 次独立判断（对抗审查 Nit1）。
+    deduped = _dedup_weekly([dict(r) for r in raw])
+    items: list[dict] = []
+    for r in sorted(deduped, key=lambda x: x["date"], reverse=True):
+        if not _is_directional(r["recommendation"], r["position_change"]):
+            continue
+        d = _dir_key({"recommendation": r["recommendation"],
+                      "position_change": r["position_change"]})
+        if d not in ("B", "S"):   # 只看买/卖方向，持有不进反思
+            continue
+        ret = r["return_7d"]
+        bm = r["benchmark_return_7d"]
+        alpha = round(ret - bm, 1) if bm is not None else None
+        basis = alpha if alpha is not None else ret
+        correct = (basis > 0) if d == "B" else (basis < 0)   # 看多→跑赢为对；卖出→跑输为对
+        items.append({"date": r["date"], "dir": d, "ret": round(ret, 1),
+                      "alpha": alpha, "correct": correct})
+        if len(items) >= n:
+            break
+    if not items:
+        return None
+
+    n_shown = len(items)
+    n_correct = sum(1 for it in items if it["correct"])
+    alphas = [it["alpha"] for it in items if it["alpha"] is not None]
+    avg_alpha = round(sum(alphas) / len(alphas), 1) if alphas else None
+    n_beat = sum(1 for it in items if it["alpha"] is not None and it["alpha"] > 0)
+    # 单向收紧：多数判错 或 平均跑输基准 → 宜更保守；否则可维持。绝无第三态「更激进」。
+    poor = (n_correct * 2 < n_shown) or (avg_alpha is not None and avg_alpha < 0)
+    return {"ticker": ticker.upper(), "n": n_shown, "items": items,
+            "n_correct": n_correct, "n_beat": n_beat, "n_with_bench": len(alphas),
+            "avg_alpha": avg_alpha, "lean": "宜更保守" if poor else "可维持"}
+
+
+def format_reflection(ticker: str, db_path: str | Path | None = None,
+                      asof: str | None = None) -> str:
+    """渲染【历史反思】区块（注入 PM 的 strategy_evidence 槽）。
+    settings reflection_injection.enabled=false 或无方向性样本 → 返回 ""（线上零变化）。
+    确定性模板：零 LLM、零网络。措辞只单向收紧（宜更保守/可维持），绝不产出「更激进」。"""
+    cfg = _load_settings_block("reflection_injection", _REFLECTION_DEFAULTS)
+    if not cfg["enabled"]:
+        return ""
+    refl = get_recent_reflections(ticker, db_path, n=int(cfg.get("n", 3)), asof=asof)
+    if refl is None:
+        return ""
+    dir_label = {"B": "看多", "S": "看空/减仓"}
+    lines = [f"【历史反思】我们近期对 {refl['ticker']} 的方向判断复盘（近{refl['n']}次·7日口径）："]
+    for it in refl["items"]:
+        judged = "判对" if it["correct"] else "判错"
+        lab = dir_label.get(it["dir"], "")
+        if it["alpha"] is not None:
+            comp = "跑赢" if it["alpha"] > 0 else "跑输"
+            lines.append(f"- {it['date']} {lab}：{it['ret']:+.1f}%，"
+                         f"{comp}基准{abs(it['alpha']):.1f}pct（{judged}）")
+        else:
+            lines.append(f"- {it['date']} {lab}：{it['ret']:+.1f}%（无基准，{judged}）")
+    n_wrong = refl["n"] - refl["n_correct"]
+    beat = f"、{refl['n_beat']}/{refl['n_with_bench']}跑赢基准" if refl["n_with_bench"] else ""
+    lines.append(f"近{refl['n']}次 {refl['n_correct']}对{n_wrong}错{beat} → 同类判断{refl['lean']}")
+    return "\n".join(lines)
+
+
 def ticker_signal_stats(ticker: str, db_path: str | Path | None = None) -> str:
     """
     返回某只股票的历史买入信号统计行，供飞书卡片展示信服力数据。

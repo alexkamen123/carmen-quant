@@ -55,6 +55,16 @@ anti_chase_guard:
 live_feedback_injection:
   enabled: true
 
+# ── P0b 反思闭环（改核心建议·默认 off）────────────────────────────────────────
+# 把某票最近 n 条已结算方向性建议(含 vs 基准超额 alpha)浓缩成【历史反思】注入 PM
+# 裁决材料（strategy_evidence 槽）。区别于 live_feedback(池化胜率、丢基准)：聚焦最近
+# 具体案例 + 超额。确定性模板、零 LLM/网络；措辞只单向收紧(宜更保守/可维持)绝无"更激进"。
+# 默认 off：format_reflection 恒返 ""，strategy_evidence 逐字节与改动前一致。
+# enable 须用户点头，且建议先影子观测一段比对分歧再切注入。
+reflection_injection:
+  enabled: false
+  n: 3
+
 # ── dip 预警 ATR 自适应阈值（order8）────────────────────────────────────────
 # effective = max(base_pct, min(k * atr_pct, cap_pct))；gap_up 抬升叠加在此结果上。
 # 只抬升不下调（effective >= base_pct），低波动票不会被降阈值。
