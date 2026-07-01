@@ -286,6 +286,18 @@ async def opportunity_node(state: AgentState) -> AgentState:
         return state
 
 
+async def arbiter_node(state: AgentState) -> AgentState:
+    """P0a 辩论仲裁层：把多空辩论逼成五档评级注入 PM（advisory）。
+    flag off → run_arbiter_batch 纯透传、零 LLM；失败不拖垮日报主流程。"""
+    from finance_agent.agents.arbiter import run_arbiter_batch
+    try:
+        stocks = await run_arbiter_batch(state.stocks)
+        return state.model_copy(update={"stocks": stocks})
+    except Exception as e:
+        print(f"[Arbiter] 仲裁节点异常（跳过，不影响日报）: {e}")
+        return state
+
+
 async def decision_node(state: AgentState) -> AgentState:
     """Portfolio Manager 批量裁决：1 次 Claude 调用处理所有股票"""
     updated_stocks = await run_portfolio_manager_batch(
@@ -675,6 +687,7 @@ def build_graph(checkpointer=None):
     builder.add_node("debate",       debate_node)
     builder.add_node("strategy",     strategy_node)
     builder.add_node("memory",       memory_node)
+    builder.add_node("arbiter",      arbiter_node)
     builder.add_node("decision",     decision_node)
     builder.add_node("opportunity",  opportunity_node)
     builder.add_node("format",       format_report_node)
@@ -686,7 +699,8 @@ def build_graph(checkpointer=None):
     builder.add_edge("fundamentals", "debate")
     builder.add_edge("debate",       "strategy")
     builder.add_edge("strategy",     "memory")
-    builder.add_edge("memory",       "decision")
+    builder.add_edge("memory",       "arbiter")
+    builder.add_edge("arbiter",      "decision")
     builder.add_edge("decision",     "opportunity")
     builder.add_edge("opportunity",  "format")
     builder.add_edge("format",       "track")

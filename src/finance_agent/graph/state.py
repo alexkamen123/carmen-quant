@@ -52,6 +52,11 @@ class StockAnalysis(BaseModel):
     bull_thesis: str = ""
     bear_thesis: str = ""
 
+    # P0a 辩论仲裁层（advisory·flag off 时恒空·独立观测不复用 recommendation 枚举）
+    arbiter_rating: str = ""              # 五档：买入/增持/持有/减持/卖出
+    arbiter_balanced: bool | None = None  # 多空是否势均力敌（持有须为 True）
+    arbiter_rationale: list[str] = Field(default_factory=list)
+
     # Final decision (Claude)
     recommendation: str = ""       # 长期（1-3月）建议
     short_term_action: str = ""    # 短期（本周）执行建议，与长期不同时才有意义

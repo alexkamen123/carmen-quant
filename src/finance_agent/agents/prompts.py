@@ -193,4 +193,21 @@ PM_BATCH_STOCK_TEMPLATE = """--- {ticker}（{market}市场）---
 【基本面】{fundamental_view}
 【多头】{bull_thesis}
 【空头】{bear_thesis}
-【下次财报】{next_earnings_date}"""
+【下次财报】{next_earnings_date}{arbiter_block}"""
+
+# ── P0a 辩论仲裁层（Research Manager 强制五档评级；flag off 时不注入）────────────
+ARBITER_SYSTEM = """你是研究总监，负责给多空辩论下最终仲裁。规则：
+1. 必须输出五档评级之一：买入 / 增持 / 持有 / 减持 / 卖出。禁止模糊。
+2. 只有多空证据【真正势均力敌】时才允许"持有"，并把 balanced 置 true；不许用"持有"回避判断。
+3. rationale 给 2-3 条，每条必须【点名引用】具体证据（如"采纳空头第2条：估值透支"、"驳回多头：增长已被 PE 透支"），禁止空泛表态。
+4. 严格输出 JSON 数组，每项 {"ticker","rating","balanced","rationale":[...]}，无多余文字。"""
+
+ARBITER_USER = """请对以下股票逐一仲裁多空辩论，输出五档评级 JSON 数组：
+
+{stocks_block}"""
+
+ARBITER_STOCK_TEMPLATE = """--- {ticker} ---
+【多头】{bull_thesis}
+【空头】{bear_thesis}
+【技术面】{signals_str}
+【基本面】{fundamental_view}"""

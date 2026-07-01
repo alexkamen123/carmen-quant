@@ -65,6 +65,14 @@ reflection_injection:
   enabled: false
   n: 3
 
+# ── P0a 辩论仲裁层（改核心建议·默认 off）────────────────────────────────────────
+# memory→arbiter→decision：把多空辩论逼成明确五档评级(买入/增持/持有/减持/卖出)注入 PM
+# 材料。MVP=advisory 强先验，不硬改写最终 recommendation；持有须多空势均力敌。
+# 默认 off：arbiter_node 纯透传、零 LLM 调用、PM 模板逐字节不变。
+# enable 须用户点头，建议先影子观测(评级只落库不注入)比对仲裁 vs PM 分歧再切注入。
+debate_arbiter:
+  enabled: false
+
 # ── dip 预警 ATR 自适应阈值（order8）────────────────────────────────────────
 # effective = max(base_pct, min(k * atr_pct, cap_pct))；gap_up 抬升叠加在此结果上。
 # 只抬升不下调（effective >= base_pct），低波动票不会被降阈值。

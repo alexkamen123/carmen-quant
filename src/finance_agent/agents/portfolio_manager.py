@@ -8,6 +8,7 @@ from finance_agent.agents.prompts import (
     PM_SYSTEM, PM_USER,
     PM_BATCH_SYSTEM, PM_BATCH_USER, PM_BATCH_STOCK_TEMPLATE,
 )
+from finance_agent.agents.arbiter import pm_arbiter_block
 from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli, strip_markdown
 from finance_agent.agents.guards import (
@@ -174,6 +175,7 @@ async def run_portfolio_manager_batch(
             bull_thesis=s.bull_thesis or "无",
             bear_thesis=s.bear_thesis or "无",
             next_earnings_date=s.earnings.next_earnings_date or "未知",
+            arbiter_block=pm_arbiter_block(s),   # flag off 时恒 "" → 模板逐字节不变
         ))
 
     POSTURE_NOTE = {
