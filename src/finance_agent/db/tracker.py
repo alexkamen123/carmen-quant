@@ -796,6 +796,22 @@ def get_action_history(ticker: str | None = None,
     return [dict(r) for r in rows]
 
 
+def get_actions_for_pairing(db_path: str | Path | None = None) -> list[dict]:
+    """P2a 只读取数：BUY/SELL/TRIM 全量（含缺股数/缺价行），时间升序（FIFO 配对基础）。
+    ⚠️ 不许在 SQL 层按 shares/price 过滤（对抗审查 CONFIRMED）：静默滤掉缺价卖出会让
+    FIFO 队列错位、后续卖出配到「其实已卖掉」的批次报错误盈亏——缺数据行必须交给
+    pair_fifo_trades 做占位消耗/整票污染停记。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        rows = con.execute(
+            "SELECT date, ticker, action, shares, price FROM user_actions "
+            "WHERE action IN ('BUY','SELL','TRIM') "
+            "ORDER BY date, id",
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_period_actions(since: str, until: str,
                        db_path: str | Path | None = None) -> list[dict]:
     """返回 [since, until] 区间内、actual_return 已回填的操作（逐笔复盘用）。"""

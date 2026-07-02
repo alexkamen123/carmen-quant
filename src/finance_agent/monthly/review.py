@@ -256,6 +256,18 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, 
     else:
         tr_lines = ["**🔍 逐笔复盘**", "本月无已回填收益的操作"]
 
+    # ── P2a Shadow Account 操作剧本（纯观测·guarded·样本不足自动闭嘴不出面板）──
+    playbook_el = None
+    try:
+        from finance_agent.db.tracker import get_actions_for_pairing
+        from finance_agent.monthly.playbook import build_shadow_playbook, playbook_panel
+        playbook_el = playbook_panel(
+            build_shadow_playbook(get_actions_for_pairing(db_path=str(db_path))))
+        if playbook_el:
+            print("[Playbook] 操作剧本已生成（FIFO 已平仓复盘）")
+    except Exception as e:
+        print(f"[Playbook] 操作剧本生成失败（跳过，不影响月报）: {e}")
+
     # ── 本月一句话 TL;DR（置顶：总评 + 行为均分）──
     _dims = scorecard.get("dimensions", [])
     _avg = round(sum(d["score"] for d in _dims) / len(_dims), 1) if _dims else 0
@@ -296,6 +308,8 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, 
             },
             {"tag": "hr"},
             _trade_review_panel(tr_lines),
+            # P2a 操作剧本折叠面板（None=样本不足闭嘴，列表推导自动滤掉）
+            *([{"tag": "hr"}, playbook_el] if playbook_el else []),
             {"tag": "hr"},
             {
                 "tag": "div",
