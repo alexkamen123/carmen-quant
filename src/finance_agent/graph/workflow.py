@@ -268,7 +268,17 @@ async def strategy_node(state: AgentState) -> AgentState:
             pass
         if dip_note:
             print(f"[Strategy] {s.ticker} 一致性桥：注入今日盘中卡结论")
-        combined = "\n".join(x for x in (evidence, live, refl, dip_note) if x)
+        # P1b 情绪双确认减仓提示（flag 默认 off → 恒 "" → 线上零变化）
+        senti = ""
+        try:
+            from finance_agent.signals.sentiment_factor import format_sentiment_note
+            senti = format_sentiment_note(s.ticker, macd_trend=s.signals.macd_trend,
+                                          composite_score=s.signals.composite_score)
+        except Exception as e:
+            print(f"[Strategy] {s.ticker} 情绪双确认检查失败（跳过）: {e}")
+        if senti:
+            print(f"[Strategy] {s.ticker} 情绪双确认注入 ↓\n{senti}")
+        combined = "\n".join(x for x in (evidence, live, refl, dip_note, senti) if x)
         updated.append(s.model_copy(update={"strategy_evidence": combined}))
     return state.model_copy(update={"stocks": updated})
 
@@ -674,6 +684,14 @@ async def track_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"[Tracker] 30/90日回填跳过：{e}")
 
+    # P1b 情绪因子埋点（纯 DB 读零网络；观测 flag off/窗口新闻<3 → 全 None→NULL）
+    def _senti_snapshot(ticker: str) -> dict:
+        try:
+            from finance_agent.signals.sentiment_factor import sentiment_snapshot
+            return sentiment_snapshot(ticker, asof=state.date or None)
+        except Exception:
+            return {"sentiment_7d": None, "sentiment_trend": None, "sentiment_n": None}
+
     # 保存今日推荐
     records = [
         {
@@ -691,6 +709,8 @@ async def track_node(state: AgentState) -> AgentState:
             "momentum_12_1":     s.earnings.momentum_12_1,
             "analyst_upside":    s.earnings.analyst_upside,
             "fundamental_score": s.earnings.fundamental_score,
+            # P1b 情绪因子埋点（同上 NULL 语义）：供月度 RankIC 校验情绪排序力
+            **_senti_snapshot(s.ticker),
         }
         for s in state.stocks
         if s.recommendation  # 跳过没有裁决的股票

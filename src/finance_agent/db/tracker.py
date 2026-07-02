@@ -97,6 +97,8 @@ def _migrate_recommendations_table(con: sqlite3.Connection) -> None:
         # P1a 基本面因子埋点：NULL=未计算（flag off/非美股/取数失败）；供月度 RankIC 校验因子有效性
         ("fcf_yield", "REAL"), ("gp_to_assets", "REAL"), ("momentum_12_1", "REAL"),
         ("analyst_upside", "REAL"), ("fundamental_score", "REAL"),
+        # P1b 情绪因子埋点：NULL=未计算（观测 flag off/窗口内新闻<3 因子闭嘴）；同供 RankIC
+        ("sentiment_7d", "REAL"), ("sentiment_trend", "REAL"), ("sentiment_n", "INTEGER"),
     ]:
         if col not in existing:
             try:
@@ -165,7 +167,9 @@ def save_recommendations(date: str, records: list[dict],
              int(r.get("is_watch") or 0),
              # P1a 因子（可选 key·缺省 None→NULL，向后兼容旧调用方）
              r.get("fcf_yield"), r.get("gp_to_assets"), r.get("momentum_12_1"),
-             r.get("analyst_upside"), r.get("fundamental_score"))
+             r.get("analyst_upside"), r.get("fundamental_score"),
+             # P1b 情绪因子（同上可选 key）
+             r.get("sentiment_7d"), r.get("sentiment_trend"), r.get("sentiment_n"))
             for r in records
             if r["ticker"] not in existing
         ]
@@ -173,8 +177,9 @@ def save_recommendations(date: str, records: list[dict],
             con.executemany(
                 "INSERT INTO recommendations(date,ticker,recommendation,confidence,"
                 "position_change,price_at_rec,market,is_watch,"
-                "fcf_yield,gp_to_assets,momentum_12_1,analyst_upside,fundamental_score) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "fcf_yield,gp_to_assets,momentum_12_1,analyst_upside,fundamental_score,"
+                "sentiment_7d,sentiment_trend,sentiment_n) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
             print(f"[Tracker] 保存 {len(rows)} 条推荐记录（{date}）")

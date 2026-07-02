@@ -85,6 +85,20 @@ debate_arbiter:
 fundamental_factors:
   enabled: false
 
+# ── P1b 新闻情绪因子（双 flag 分层）──────────────────────────────────────────
+# 观测档（默认 on·与 oos_monitor 同治理级别）：news-scan 的 DeepSeek 评分不再「用完即丢」，
+# 归一 [-1,1] 全量落库 news_sentiment_scores + 7日均值/趋势快照埋点 recommendations 供 RankIC。
+# 只读新闻+写独立表/独立列，不注入任何 prompt、不改任何建议。
+news_sentiment_factor:
+  enabled: true
+
+# 注入档（改核心建议·默认 off）：仅「情绪偏负下滑 + 技术动量转负」双确认成立才向 PM 材料
+# 追加减仓复核提示（措辞只单向收紧，绝不构成加仓/买入依据）。
+# 默认 off：format_sentiment_note 恒返 ""，strategy_evidence 逐字节与改动前一致。
+# ⚠️ 归一化/阈值是占位启发式，≥60条outcome经RankIC校准前禁当已验证alpha。enable 须用户点头。
+sentiment_double_confirm_alert:
+  enabled: false
+
 # ── dip 预警 ATR 自适应阈值（order8）────────────────────────────────────────
 # effective = max(base_pct, min(k * atr_pct, cap_pct))；gap_up 抬升叠加在此结果上。
 # 只抬升不下调（effective >= base_pct），低波动票不会被降阈值。

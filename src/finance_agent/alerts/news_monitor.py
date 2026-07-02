@@ -1879,6 +1879,17 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
             impact = result.get("impact", 0)
             sentiment = result.get("sentiment", "中性")
 
+            # P1b 情绪因子落库（纯观测·guarded）：评分不再「用完即丢」，全量进
+            # news_sentiment_scores 供滚动情绪因子；失败绝不拖垮扫描主流程
+            try:
+                from finance_agent.signals.sentiment_factor import record_news_sentiment
+                record_news_sentiment(
+                    ticker=scan_ticker, key=key, date=today_str,
+                    sentiment=sentiment, impact=impact,
+                    title=news["title"], market=market, is_peer=int(is_peer))
+            except Exception as e:
+                print(f"[Sentiment] {scan_ticker} 情绪落库失败（跳过，不影响扫描）: {e}")
+
             if pushed >= MAX_PUSH_PER_SCAN:
                 print(f"[NewsScan] 单次推送达上限 {MAX_PUSH_PER_SCAN}，剩余高分新闻留待下轮")
                 break
