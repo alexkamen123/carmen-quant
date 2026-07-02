@@ -59,6 +59,44 @@ def test_composite_averages_available():
     assert ff.score == 7.5   # (10+5)/2
 
 
+def test_flag_default_off():
+    """改核心建议→flag fundamental_factors.enabled 默认 off。"""
+    assert fs.fundamental_factors_enabled() is False
+
+
+def test_attach_factors_sets_fields_and_appends_view():
+    """attach：因子原始值落 earnings 字段(供埋点)+ to_prompt_str 追加进 fundamental_view(供PM)。"""
+    from finance_agent.graph.state import StockAnalysis, EarningsSummary
+    from finance_agent.signals.models import TechnicalSignals
+    sig = TechnicalSignals(ticker="NVDA", close=100, change_pct=0, rsi=50, rsi_signal="neutral",
+                           ma5=99, ma20=98, ma60=95, ma_signal="neutral", price_vs_ma20=2,
+                           macd=0.1, macd_signal=0.1, macd_hist=0, macd_trend="neutral",
+                           bb_upper=110, bb_lower=90, bb_position=0.5, volume_ratio=1, composite_score=0)
+    a = StockAnalysis(ticker="NVDA", market="us", signals=sig,
+                      earnings=EarningsSummary(fundamental_view="原有基本面分析"))
+    ff = fs.calculate_fundamental_factors({"freeCashflow": 5e9, "marketCap": 1e11,
+                                           "targetMeanPrice": 120, "currentPrice": 100,
+                                           "numberOfAnalystOpinions": 8})
+    out = fs.attach_factors(a, ff)
+    assert out.earnings.fcf_yield == 5.0 and out.earnings.fundamental_score == ff.score
+    assert "原有基本面分析" in out.earnings.fundamental_view       # 不覆盖原文
+    assert "FCF收益率" in out.earnings.fundamental_view           # 追加了因子行
+
+
+def test_attach_factors_none_score_no_view_change():
+    """因子不足(score None)但仍可有单因子文本；无任何因子→view 不变。"""
+    from finance_agent.graph.state import StockAnalysis, EarningsSummary
+    from finance_agent.signals.models import TechnicalSignals
+    sig = TechnicalSignals(ticker="X", close=100, change_pct=0, rsi=50, rsi_signal="neutral",
+                           ma5=99, ma20=98, ma60=95, ma_signal="neutral", price_vs_ma20=2,
+                           macd=0.1, macd_signal=0.1, macd_hist=0, macd_trend="neutral",
+                           bb_upper=110, bb_lower=90, bb_position=0.5, volume_ratio=1, composite_score=0)
+    a = StockAnalysis(ticker="X", market="us", signals=sig,
+                      earnings=EarningsSummary(fundamental_view="原文"))
+    out = fs.attach_factors(a, fs.calculate_fundamental_factors({}))   # 全 None
+    assert out.earnings.fundamental_view == "原文"   # 无因子 → view 逐字不变
+
+
 def test_to_prompt_str_skips_missing():
     """渲染跳过缺失因子、绝不写 'None' 泄漏进 prompt。"""
     ff = fs.calculate_fundamental_factors({"freeCashflow": 5e9, "marketCap": 1e11,

@@ -92,3 +92,66 @@ class YFinanceProvider(DataProvider):
                 "published": str(item.get("providerPublishTime", "")),
             })
         return result
+
+
+# ── P1a 基本面因子原始数据（flag-gated·仅美股·防御式取数）───────────────────────
+def _latest_col(df) -> dict | None:
+    """取财务/资产负债表最近一列 → {行名: 值}（NaN→None）。空/异常→None。"""
+    try:
+        if df is None or df.empty:
+            return None
+        return {k: (None if pd.isna(v) else float(v)) for k, v in df.iloc[:, 0].items()}
+    except Exception:
+        return None
+
+
+def _extract_close(df) -> list | None:
+    """从日线 DataFrame 取收盘 list，兼容 yfinance 1.3.0 的 MultiIndex 列
+    （单票也返回 ('Close',ticker)；不拍平则 df['Close'] 是 DataFrame、.tolist() 抛异常）。
+    空/无 Close 列 → None。对齐 fetch_ohlcv 的 MultiIndex 处理。"""
+    if df is None or getattr(df, "empty", True):
+        return None
+    d = df.copy()
+    if isinstance(d.columns, pd.MultiIndex):
+        d.columns = [c[0].lower() for c in d.columns]
+    else:
+        d.columns = [str(c).lower() for c in d.columns]
+    if "close" not in d.columns:
+        return None
+    close = d["close"]
+    if getattr(close, "ndim", 1) > 1:   # 多票时同名列兜底取首列（本用途仅单票）
+        close = close.iloc[:, 0]
+    return [float(x) for x in close.dropna().tolist()]
+
+
+def _close_series(ticker: str, days: int = 400) -> list | None:
+    """取 ~13 个月日线收盘 list（供 12-1 月动量，独立于 60 天技术面窗口）。
+    走 _download_with_retry（复用已验证取数路径+重试）。异常→None。"""
+    try:
+        end = datetime.today()
+        start = end - timedelta(days=days)
+        return _extract_close(_download_with_retry(ticker, start=start, end=end))
+    except Exception:
+        return None
+
+
+async def fetch_fundamental_factors(ticker: str):
+    """取四因子原始数据并合成 FundamentalFactors。全程防御式，任一子取数失败该因子降级 None，
+    绝不抛异常拖垮日报。仅在 fundamental_factors flag 开时由 fundamentals_node 调用。"""
+    from finance_agent.signals.fundamental_score import calculate_fundamental_factors
+    loop = asyncio.get_event_loop()
+    async with _YF_SEM:
+        info = await loop.run_in_executor(None, lambda: _ticker_info_with_retry(ticker))
+    fin_col = bal_col = close = None
+    try:
+        async with _YF_SEM:
+            fin_col = await loop.run_in_executor(None, lambda: _latest_col(yf.Ticker(ticker).financials))
+            bal_col = await loop.run_in_executor(None, lambda: _latest_col(yf.Ticker(ticker).balance_sheet))
+    except Exception:
+        pass
+    try:
+        async with _YF_SEM:
+            close = await loop.run_in_executor(None, lambda: _close_series(ticker))
+    except Exception:
+        pass
+    return calculate_fundamental_factors(info or {}, fin_col, bal_col, close)

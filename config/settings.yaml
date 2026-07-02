@@ -77,6 +77,14 @@ debate_arbiter:
   enabled: true
   shadow: true
 
+# ── P1a 基本面量化因子（改核心建议·默认 off）─────────────────────────────────────
+# flag on 且美股：fundamentals_node 取 FCF Yield/GP·A/12-1动量/分析师上行4因子、合成0-10分，
+# 追加进 fundamental_view 供辩手+PM，并埋点进 recommendations 供月度 RankIC(P1c) 校验。
+# 默认 off：不取数、不注入、fundamental_view 逐字节不变、因子列恒 NULL。
+# ⚠️ 0-10 映射是 v1 占位 heuristic(非拟合)，≥60条outcome经RankIC校准前禁当已验证alpha、禁用于加仓。
+fundamental_factors:
+  enabled: false
+
 # ── dip 预警 ATR 自适应阈值（order8）────────────────────────────────────────
 # effective = max(base_pct, min(k * atr_pct, cap_pct))；gap_up 抬升叠加在此结果上。
 # 只抬升不下调（effective >= base_pct），低波动票不会被降阈值。

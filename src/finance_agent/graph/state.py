@@ -19,6 +19,12 @@ class EarningsSummary(BaseModel):
     debt_to_equity: float | None = None        # 资产负债率
     next_earnings_date: str = ""               # 下次财报日期 "YYYY-MM-DD"，空字符串表示未知
     fundamental_view: str = ""                 # Claude 的基本面一段话判断
+    # P1a 基本面量化因子（flag off 时恒 None·占位heuristic待RankIC校准）
+    fcf_yield: float | None = None
+    gp_to_assets: float | None = None
+    momentum_12_1: float | None = None
+    analyst_upside: float | None = None
+    fundamental_score: float | None = None     # 0-10 合成
 
 
 class StockAnalysis(BaseModel):

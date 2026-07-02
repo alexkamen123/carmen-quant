@@ -14,10 +14,27 @@ outcome 样本、经月度 RankIC(P1c) 校准前，禁止当作已验证 alpha �
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import BaseModel
 
 MIN_FACTORS_FOR_SCORE = 2   # 可用因子少于此 → 综合分 None
 _ANALYST_MIN_COVER = 3      # 分析师覆盖 <此 → 上行空间不可信
+_CONFIG_DIR = Path(__file__).parents[3] / "config"
+
+
+def fundamental_factors_enabled() -> bool:
+    """settings.yaml fundamental_factors.enabled，缺省 False（改核心建议·注入PM材料，默认关）。"""
+    try:
+        import yaml
+        p = _CONFIG_DIR / "settings.yaml"
+        if p.exists():
+            with open(p) as f:
+                s = yaml.safe_load(f) or {}
+            return bool(s.get("fundamental_factors", {}).get("enabled", False))
+    except Exception:
+        pass
+    return False
 
 
 def _clip(v: float, lo: float = 0.0, hi: float = 10.0) -> float:
@@ -115,3 +132,15 @@ def calculate_fundamental_factors(info: dict | None,
 
     return FundamentalFactors(fcf_yield=fcf, gp_to_assets=gpa, momentum_12_1=mom,
                               analyst_upside=ana, score=score)
+
+
+def attach_factors(analysis, ff: FundamentalFactors):
+    """把算出的因子原始值落 earnings 字段(供埋点)+ to_prompt_str 追加进 fundamental_view(供PM/辩手)。
+    无任何因子 → view 逐字不变。不覆盖 Claude 原文，只在其后追加因子数字行。"""
+    txt = ff.to_prompt_str()
+    view = analysis.earnings.fundamental_view
+    new_view = f"{view}\n{txt}" if txt and view else (txt or view)
+    return analysis.model_copy(update={"earnings": analysis.earnings.model_copy(update={
+        "fcf_yield": ff.fcf_yield, "gp_to_assets": ff.gp_to_assets,
+        "momentum_12_1": ff.momentum_12_1, "analyst_upside": ff.analyst_upside,
+        "fundamental_score": ff.score, "fundamental_view": new_view})})

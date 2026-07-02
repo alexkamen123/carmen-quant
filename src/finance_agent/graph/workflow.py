@@ -159,7 +159,20 @@ async def fundamentals_node(state: AgentState) -> AgentState:
                 )
             }))
         else:
-            updated.append(await run_fundamental_analysis(analysis))
+            a = await run_fundamental_analysis(analysis)
+            # P1a 基本面因子：flag on 且美股 → 取因子+落字段+注入 view（flag off 恒跳过·零变化）
+            try:
+                from finance_agent.signals.fundamental_score import (
+                    attach_factors, fundamental_factors_enabled)
+                if fundamental_factors_enabled() and a.market == "us":
+                    from finance_agent.data.yfinance_provider import fetch_fundamental_factors
+                    ff = await fetch_fundamental_factors(a.ticker)
+                    a = attach_factors(a, ff)
+                    if a.earnings.fundamental_score is not None:
+                        print(f"[Fundamental] {a.ticker} 因子分 {a.earnings.fundamental_score}/10（占位·待校准）")
+            except Exception as e:
+                print(f"[Fundamental] {analysis.ticker} 因子计算失败（跳过）: {e}")
+            updated.append(a)
     return state.model_copy(update={"stocks": updated})
 
 
@@ -672,6 +685,12 @@ async def track_node(state: AgentState) -> AgentState:
             "price_at_rec":    s.signals.close if s.signals else None,
             # shares=0 = watchlist 影子推荐（纯测量、无真实仓位），记分牌分栏统计
             "is_watch":        0 if s.shares else 1,
+            # P1a 基本面因子埋点（flag off 时恒 None→NULL，与改动前一致）：供日后月度 RankIC 校验
+            "fcf_yield":         s.earnings.fcf_yield,
+            "gp_to_assets":      s.earnings.gp_to_assets,
+            "momentum_12_1":     s.earnings.momentum_12_1,
+            "analyst_upside":    s.earnings.analyst_upside,
+            "fundamental_score": s.earnings.fundamental_score,
         }
         for s in state.stocks
         if s.recommendation  # 跳过没有裁决的股票
