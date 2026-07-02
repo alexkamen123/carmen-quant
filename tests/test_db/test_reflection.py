@@ -109,11 +109,13 @@ def test_unsettled_excluded(tmp_path):
     assert tracker.get_recent_reflections("NVDA", db_path=db) is None
 
 
-def test_format_default_off_empty(tmp_path):
-    """flag 默认 off → format 返回 ""(线上零变化)。"""
+def test_format_default_off_empty(tmp_path, monkeypatch):
+    """flag off → format 返回 ""(零变化不变式)。
+    （2026-07-02 用户点头后仓库实际值已置 true，故 monkeypatch 锁 off 态而非依赖仓库值。）"""
+    monkeypatch.setattr(tracker, "_load_settings_block",
+                        lambda key, d: {**d, "enabled": False} if key == "reflection_injection" else d)
     db = tmp_path / "t.db"; tracker.init_db(db)
     _seed(db, "NVDA", rec="买入", ret=4.0, bm=2.0)
-    # 依赖 settings.yaml reflection_injection.enabled 默认 false
     assert tracker.format_reflection("NVDA", db_path=db) == ""
 
 

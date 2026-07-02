@@ -60,9 +60,10 @@ live_feedback_injection:
 # 裁决材料（strategy_evidence 槽）。区别于 live_feedback(池化胜率、丢基准)：聚焦最近
 # 具体案例 + 超额。确定性模板、零 LLM/网络；措辞只单向收紧(宜更保守/可维持)绝无"更激进"。
 # 默认 off：format_reflection 恒返 ""，strategy_evidence 逐字节与改动前一致。
-# enable 须用户点头，且建议先影子观测一段比对分歧再切注入。
+# 已启用 2026-07-02（用户点头·看过 OFF/ON demo）：PM 裁决前读到该票近3次已结算
+# 方向判断(含vs基准alpha)，措辞只单向收紧。回退改 false 即关。
 reflection_injection:
-  enabled: false
+  enabled: true
   n: 3
 
 # ── P0a 辩论仲裁层（改核心建议·默认 off）────────────────────────────────────────
@@ -82,8 +83,9 @@ debate_arbiter:
 # 追加进 fundamental_view 供辩手+PM，并埋点进 recommendations 供月度 RankIC(P1c) 校验。
 # 默认 off：不取数、不注入、fundamental_view 逐字节不变、因子列恒 NULL。
 # ⚠️ 0-10 映射是 v1 占位 heuristic(非拟合)，≥60条outcome经RankIC校准前禁当已验证alpha、禁用于加仓。
+# 已启用 2026-07-02（用户点头·看过 demo）：美股取4因子注入 fundamental_view+埋点。回退改 false。
 fundamental_factors:
-  enabled: false
+  enabled: true
 
 # ── P1b 新闻情绪因子（双 flag 分层）──────────────────────────────────────────
 # 观测档（默认 on·与 oos_monitor 同治理级别）：news-scan 的 DeepSeek 评分不再「用完即丢」，
@@ -96,8 +98,10 @@ news_sentiment_factor:
 # 追加减仓复核提示（措辞只单向收紧，绝不构成加仓/买入依据）。
 # 默认 off：format_sentiment_note 恒返 ""，strategy_evidence 逐字节与改动前一致。
 # ⚠️ 归一化/阈值是占位启发式，≥60条outcome经RankIC校准前禁当已验证alpha。enable 须用户点头。
+# 已启用 2026-07-02（用户点头·看过 demo）：情绪表当日起步、每票攒满7日窗≥3条新闻后
+# 双确认才可能触发——头几天不开口是数据未积累的预期行为。回退改 false。
 sentiment_double_confirm_alert:
-  enabled: false
+  enabled: true
 
 # ── dip 预警 ATR 自适应阈值（order8）────────────────────────────────────────
 # effective = max(base_pct, min(k * atr_pct, cap_pct))；gap_up 抬升叠加在此结果上。

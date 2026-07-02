@@ -59,8 +59,10 @@ def test_composite_averages_available():
     assert ff.score == 7.5   # (10+5)/2
 
 
-def test_flag_default_off():
-    """改核心建议→flag fundamental_factors.enabled 默认 off。"""
+def test_flag_default_off(tmp_path, monkeypatch):
+    """改核心建议→flag 缺省契约=off：配置缺失/无该块时必须返 False。
+    （2026-07-02 用户点头后仓库实际值已置 true，故此测锁「缺省」而非「仓库当前值」。）"""
+    monkeypatch.setattr(fs, "_CONFIG_DIR", tmp_path)   # 无 settings.yaml → 走缺省
     assert fs.fundamental_factors_enabled() is False
 
 

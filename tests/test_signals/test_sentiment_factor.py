@@ -149,8 +149,10 @@ def _seed_confirming(db):
     _record(db, key="d", date="2026-07-02", sentiment="利空", impact=8)
 
 
-def test_note_default_off_empty(tmp_path):
-    """flag 默认 off（settings.yaml 实际值）→ 恒 ""，strategy_evidence 逐字节零变化。"""
+def test_note_default_off_empty(tmp_path, monkeypatch):
+    """flag off → 恒 ""，strategy_evidence 逐字节零变化（不变式）。
+    （2026-07-02 用户点头后仓库实际值已置 true，故 monkeypatch 锁 off 态而非依赖仓库值。）"""
+    monkeypatch.setattr(sf, "double_confirm_enabled", lambda: False)
     db = tmp_path / "t.db"
     _seed_confirming(db)
     out = sf.format_sentiment_note("NVDA", macd_trend="bearish", composite_score=-0.5,
