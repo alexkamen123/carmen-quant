@@ -1,4 +1,3 @@
-import math
 import pandas as pd
 from finance_agent.data import yf_utils as yp
 

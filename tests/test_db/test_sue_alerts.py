@@ -35,6 +35,11 @@ def test_get_sue_alerts_matured_only_excludes_immature(tmp_path):
     tracker.save_sue_alert("MU", "us", "2026-05-01", 2.0, 25.1, 20.7, 3.0, db_path=db)
     _set_outcome(db, "MU", "2026-05-01", return_30d=8.0, benchmark_return_30d=2.0)
     tracker.save_sue_alert("NVDA", "us", "2026-06-08", 1.9, 1.87, 1.77, 0.05, db_path=db)
+    # return_30d 已填但距 asof 仅 5 天 → 应被"≥30天闸"单独排除（锁未来函数守则）
+    tracker.save_sue_alert("TSLA", "us", "2026-06-05", -1.7, 1.0, 1.3, 0.1, db_path=db)
+    _set_outcome(db, "TSLA", "2026-06-05", return_30d=4.0, benchmark_return_30d=1.0)
+    matured2 = tracker.get_sue_alerts(matured_only=True, asof="2026-06-10", db_path=db)
+    assert "TSLA" not in {r["ticker"] for r in matured2}
     matured = tracker.get_sue_alerts(matured_only=True, asof="2026-06-10", db_path=db)
     assert {r["ticker"] for r in matured} == {"MU"}
 

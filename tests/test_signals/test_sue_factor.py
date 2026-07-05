@@ -1,4 +1,3 @@
-import math
 from finance_agent.signals import sue_factor as sf
 
 

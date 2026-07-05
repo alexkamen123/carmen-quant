@@ -575,7 +575,7 @@ def get_sue_alerts(ticker=None, db_path=None, matured_only=False, asof=None):
     if matured_only:
         where.append("return_30d IS NOT NULL")
         where.append("julianday(?) - julianday(earnings_date) >= 30")
-        params.append(asof or datetime.today().strftime("%Y-%m-%d"))
+        params.append(asof or _today().strftime("%Y-%m-%d"))
     sql = "SELECT * FROM earnings_surprise_alerts"
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -662,6 +662,7 @@ async def backfill_sue_outcomes(db_path=None):
     """回填 earnings_surprise_alerts 的 30天漂移 outcome。抄 fill_long_returns 30d 分支：
     成熟闸 last_idx<=21 整行跳过；个股/基准原子两腿都成功才写、任一失败留 NULL；cutoff/floor 双边界。"""
     p = _resolve_db(db_path)
+    init_db(p)
     fwd_td = 21
     cutoff = (_today() - timedelta(days=30)).strftime("%Y-%m-%d")
     floor = (_today() - timedelta(days=fwd_td * 2 + 14 + 7)).strftime("%Y-%m-%d")
