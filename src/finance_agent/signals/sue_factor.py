@@ -123,5 +123,5 @@ def format_sue_note(ticker, asof=None, db_path=None) -> str:
             return (f"【盈余惊喜】{ticker} 最新财报大幅低于预期(SUE={sue:+.1f}σ)，"
                     f"警惕盈余后下行漂移，宜更保守/止损复核。")
         return (f"【盈余惊喜】{ticker} 最新财报录强正向盈余惊喜(SUE={sue:+.1f}σ)，"
-                f"短期回调或为噪声，减仓/止损前需额外确认，别慌卖。")
+                f"若已持有，减仓/止损前需额外确认避免过早了结；此提示仅用于防卖飞，非增持信号。")
     return ""
