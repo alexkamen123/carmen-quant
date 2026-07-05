@@ -71,6 +71,20 @@ def _ticker_calendar_with_retry(ticker: str, retries: int = 3):
     return None
 
 
+def _ticker_earnings_dates_with_retry(ticker: str, retries: int = 3, limit: int = 20):
+    """同步获取 yf.Ticker(ticker).get_earnings_dates(limit=)，失败静默返回 None。
+
+    照抄 _ticker_calendar_with_retry：for-retry + except Exception + sleep(2)（非末次）。
+    """
+    for attempt in range(retries):
+        try:
+            return yf.Ticker(ticker).get_earnings_dates(limit=limit)
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(2)
+    return None
+
+
 @contextlib.contextmanager
 def _direct_connection():
     """
