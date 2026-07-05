@@ -84,3 +84,28 @@ def _direct_connection():
         for k, v in saved.items():
             if v is not None:
                 os.environ[k] = v
+
+
+def _extract_surprises(df):
+    """把 get_earnings_dates 的 DataFrame 解析成按日期升序的 [(date, reported, estimate)]。
+
+    剔除 Reported EPS / EPS Estimate 为 NaN 的行（未发布或缺数据）。
+    列名固定 'EPS Estimate' / 'Reported EPS'（driver: yfinance get_earnings_dates·驼峰空格勿与 earnings_history 混用）。
+    """
+    if df is None or len(df) == 0:
+        return []
+    out = []
+    for idx, row in df.iterrows():
+        est = row.get("EPS Estimate")
+        rep = row.get("Reported EPS")
+        if est is None or rep is None:
+            continue
+        if (isinstance(est, float) and est != est) or (isinstance(rep, float) and rep != rep):
+            continue
+        try:
+            d = idx.date()
+        except AttributeError:
+            d = idx
+        out.append((d, float(rep), float(est)))
+    out.sort(key=lambda x: x[0])
+    return out
