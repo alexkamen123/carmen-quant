@@ -400,6 +400,22 @@ def rankic_monitor_cmd(
         asyncio.run(notify_if_decaying(d, skip_notify=skip_notify))
 
 
+@app.command("sue-edge")
+def sue_edge_cmd():
+    """P2b 扩展：SUE 漂移 edge 影子测量——反事实测『大超预期后做多/爆雷后避开』到底赚不赚。
+    纯观测·不发建议·不花钱；诚实：样本<60 不下结论，in-sample 读数、OOS 校准前禁据此加仓。"""
+    from finance_agent.value.sue_edge import sue_edge_reading
+    rd = sue_edge_reading(db_path=DB_PATH)
+    vlabel = {"insufficient": "⚪ 样本不足·暂不下结论", "edge_present": "✅ 漂移按方向兑现",
+              "no_edge": "❌ 无边际"}
+    for side, name in (("beat", "大超预期→做多"), ("miss", "爆雷→避开/做空")):
+        s = rd[side]
+        console.print(f"📈 {name}：n={s['n']} · 命中率={s['hit_rate']} · 均超额={s['mean_excess']} · "
+                      f"RankIC={s['rankic']} → {vlabel.get(s['verdict'], s['verdict'])}")
+    console.print(f"   整体 RankIC(SUE vs 30日超额)={rd['overall_rankic']} · 总样本 {rd['n_total']}")
+    console.print(f"   ⚠️ {rd['caveat']}")
+
+
 @app.command("value-report")
 def value_report(
     skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
