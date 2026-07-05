@@ -81,6 +81,24 @@ CREATE TABLE IF NOT EXISTS dip_alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_dip_ticker ON dip_alerts(ticker);
 CREATE INDEX IF NOT EXISTS idx_dip_at     ON dip_alerts(alerted_at);
+
+CREATE TABLE IF NOT EXISTS earnings_surprise_alerts (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker                TEXT NOT NULL,
+    market                TEXT NOT NULL DEFAULT 'us',
+    earnings_date         TEXT NOT NULL,
+    sue_score             REAL,
+    eps_reported          REAL,
+    eps_estimate          REAL,
+    surprise_std          REAL,
+    price_at_event        REAL,
+    price_30d             REAL,
+    return_30d            REAL,
+    benchmark_return_30d  REAL,
+    created_at            TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sue_ticker ON earnings_surprise_alerts(ticker);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sue_uniq ON earnings_surprise_alerts(ticker, earnings_date);
 """
 
 
@@ -119,6 +137,22 @@ def _migrate_dip_alerts_table(con: sqlite3.Connection) -> None:
                 pass
 
 
+def _migrate_sue_table(con: sqlite3.Connection) -> None:
+    """为已存在的 earnings_surprise_alerts 补 outcome 列（向后兼容旧库）。"""
+    try:
+        existing = {row[1] for row in con.execute(
+            "PRAGMA table_info(earnings_surprise_alerts)").fetchall()}
+    except sqlite3.OperationalError:
+        return
+    for col, typ in (("price_at_event", "REAL"), ("price_30d", "REAL"),
+                     ("return_30d", "REAL"), ("benchmark_return_30d", "REAL")):
+        if col not in existing:
+            try:
+                con.execute(f"ALTER TABLE earnings_surprise_alerts ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError:
+                pass
+
+
 @contextmanager
 def _conn(db_path: Path | None = None):
     p = db_path or DB_PATH
@@ -144,6 +178,7 @@ def init_db(db_path: str | Path | None = None) -> None:
         _migrate_actions_table(con)
         _migrate_recommendations_table(con)
         _migrate_dip_alerts_table(con)
+        _migrate_sue_table(con)
 
 
 # ── 写入当日推荐 ──────────────────────────────────────────────
@@ -512,6 +547,41 @@ async def realign_alpha(db_path: str | Path | None = None, dry_run: bool = True,
                 )
     return {"checked": len(rows), "changed": changed, "failed": failed,
             "dry_run": dry_run, "samples": samples, "failed_samples": failed_samples}
+
+
+def save_sue_alert(ticker, market, earnings_date, sue_score, eps_reported,
+                   eps_estimate, surprise_std, price_at_event=None, db_path=None):
+    """写 SUE 事件行，(ticker, earnings_date) 幂等（UNIQUE index + INSERT OR IGNORE）。"""
+    p = _resolve_db(db_path)
+    with _conn(p) as con:
+        con.execute(
+            "INSERT OR IGNORE INTO earnings_surprise_alerts "
+            "(ticker, market, earnings_date, sue_score, eps_reported, eps_estimate, "
+            " surprise_std, price_at_event) VALUES (?,?,?,?,?,?,?,?)",
+            (ticker.upper(), market, earnings_date, sue_score, eps_reported,
+             eps_estimate, surprise_std, price_at_event))
+
+
+def get_sue_alerts(ticker=None, db_path=None, matured_only=False, asof=None):
+    """读 SUE 事件（默认按 earnings_date DESC）。
+
+    ticker=None → 全部。matured_only=True → 仅 return_30d 非空且 earnings_date 距 asof ≥30 日历日（供 RankIC/outcome）。
+    """
+    p = _resolve_db(db_path)
+    where, params = [], []
+    if ticker:
+        where.append("ticker = ?")
+        params.append(ticker.upper())
+    if matured_only:
+        where.append("return_30d IS NOT NULL")
+        where.append("julianday(?) - julianday(earnings_date) >= 30")
+        params.append(asof or datetime.today().strftime("%Y-%m-%d"))
+    sql = "SELECT * FROM earnings_surprise_alerts"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY earnings_date DESC"
+    with _conn(p) as con:
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
 
 
 _LONG_WINDOWS = [
