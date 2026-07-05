@@ -38,9 +38,9 @@ def test_get_sue_alerts_matured_only_excludes_immature(tmp_path):
 def test_backfill_maturity_gate_skips_immature(tmp_path, monkeypatch):
     db = tmp_path / "t.db"; tk.init_db(db)
     monkeypatch.setattr(tk, "_today", lambda: __import__("datetime").datetime(2026, 7, 1))
-    tk.save_sue_alert("AAPL", "us", "2026-06-10", -1.8, 1.5, 1.8, 0.15, db_path=db)
+    tk.save_sue_alert("AAPL", "us", "2026-05-25", -1.8, 1.5, 1.8, 0.15, db_path=db)
     monkeypatch.setattr(tk, "_fetch_paired_window",
-                        lambda t, m, d, fwd_td=21: (100.0, 108.0, "2026-06-10", "2026-06-25", 15))
+                        lambda t, m, d, fwd_td=21: (100.0, 108.0, "2026-05-25", "2026-06-15", 15))
     res = asyncio.run(tk.backfill_sue_outcomes(db_path=db))
     assert res["immature"] == 1 and res["filled"] == 0
     assert tk.get_sue_alerts("AAPL", db_path=db)[0]["return_30d"] is None

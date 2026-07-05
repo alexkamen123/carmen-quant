@@ -663,9 +663,7 @@ async def backfill_sue_outcomes(db_path=None):
     成熟闸 last_idx<=21 整行跳过；个股/基准原子两腿都成功才写、任一失败留 NULL；cutoff/floor 双边界。"""
     p = _resolve_db(db_path)
     fwd_td = 21
-    # 无最小年龄闸门（不同于 fill_long_returns 的 recommendations cutoff）：
-    # 成熟与否交给 last_idx<=fwd_td 判断，避免 21 交易日≈30 日历日在假期密集期把刚发布
-    # 不久的事件误判为"太新不查"而漏检——floor 仍防止对退市/超长停牌股永久重试。
+    cutoff = (_today() - timedelta(days=30)).strftime("%Y-%m-%d")
     floor = (_today() - timedelta(days=fwd_td * 2 + 14 + 7)).strftime("%Y-%m-%d")
     filled = immature = failed = 0
     loop = asyncio.get_event_loop()
@@ -673,8 +671,8 @@ async def backfill_sue_outcomes(db_path=None):
         pending = con.execute(
             "SELECT id, ticker, earnings_date, COALESCE(market,'us') AS market "
             "FROM earnings_surprise_alerts "
-            "WHERE earnings_date >= ? AND return_30d IS NULL",
-            (floor,),
+            "WHERE earnings_date <= ? AND earnings_date >= ? AND return_30d IS NULL",
+            (cutoff, floor),
         ).fetchall()
     for row in pending:
         win = await loop.run_in_executor(
