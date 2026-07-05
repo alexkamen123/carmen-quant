@@ -1,5 +1,9 @@
 import asyncio
+import datetime as _dt
 
+import pandas as pd
+
+import finance_agent.alerts.earnings_trigger as et
 import finance_agent.db.tracker as tk
 from finance_agent.db import tracker
 
@@ -69,3 +73,38 @@ def test_backfill_success_writes_both_legs(tmp_path, monkeypatch):
     row = tk.get_sue_alerts("AAPL", db_path=db)[0]
     assert res["filled"] == 1
     assert row["return_30d"] == 10.0 and row["benchmark_return_30d"] == 3.5
+
+
+def test_record_sue_events_writes_fresh_earnings(tmp_path, monkeypatch):
+    db = tmp_path / "t.db"; tk.init_db(db)
+    dates = pd.date_range("2023-06-01", periods=12, freq="90D", tz="US/Eastern")
+    dates = dates.append(pd.DatetimeIndex([pd.Timestamp("2026-06-30", tz="US/Eastern")]))
+    # 历史 12 季 surprise 小幅波动（保证 sigma>0），最新一季大幅高于历史波动区间形成 SUE 信号
+    hist_surprises = [0.02, -0.03, 0.01, 0.04, -0.02, 0.03, 0.00, -0.01, 0.02, -0.04, 0.01, 0.03]
+    df = pd.DataFrame({
+        "EPS Estimate": [1.0 + 0.02 * i for i in range(12)] + [1.5],
+        "Reported EPS": [1.0 + 0.02 * i + s for i, s in enumerate(hist_surprises)] + [1.5 + 0.30],
+        "Surprise(%)": [0.0] * 13,
+    }, index=pd.DatetimeIndex(list(dates), name="Earnings Date"))
+    monkeypatch.setattr(et, "_load_us_holdings", lambda: [{"ticker": "AAPL", "market": "us"}])
+    monkeypatch.setattr(et, "_ticker_earnings_dates_with_retry", lambda t, limit=20: df)
+    monkeypatch.setattr(et, "_today_date", lambda: _dt.date(2026, 7, 1))
+    asyncio.run(et.record_sue_events(db_path=db))
+    rows = tk.get_sue_alerts("AAPL", db_path=db)
+    assert len(rows) == 1 and rows[0]["earnings_date"] == "2026-06-30"
+    assert rows[0]["sue_score"] is not None
+
+
+def test_record_sue_events_skips_stale_earnings(tmp_path, monkeypatch):
+    db = tmp_path / "t.db"; tk.init_db(db)
+    dates = pd.date_range("2023-06-01", periods=13, freq="90D", tz="US/Eastern")
+    df = pd.DataFrame({
+        "EPS Estimate": [1.0 + 0.02 * i for i in range(13)],
+        "Reported EPS": [1.0 + 0.02 * i + 0.30 for i in range(13)],
+        "Surprise(%)": [0.0] * 13,
+    }, index=pd.DatetimeIndex(list(dates), name="Earnings Date"))
+    monkeypatch.setattr(et, "_load_us_holdings", lambda: [{"ticker": "AAPL", "market": "us"}])
+    monkeypatch.setattr(et, "_ticker_earnings_dates_with_retry", lambda t, limit=20: df)
+    monkeypatch.setattr(et, "_today_date", lambda: _dt.date(2026, 7, 1))
+    asyncio.run(et.record_sue_events(db_path=db))
+    assert tk.get_sue_alerts("AAPL", db_path=db) == []
