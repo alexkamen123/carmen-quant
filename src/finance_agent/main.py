@@ -423,6 +423,15 @@ async def _value_report(skip_notify: bool):
             f"🌡️ 影子A/B：回填 {rep['backfilled']} 行 · 分歧样本 n={rep['n']} · 裁决 {rep['verdict']}")
     except Exception as e:
         console.print(f"[ShadowAB] 周回填跳过（不影响体检）: {e}")
+    # P2b SUE 因子：观测档漂移回填（30天到期样本，guarded·失败不拖垮体检）
+    from finance_agent.signals.sue_factor import sue_factor_enabled
+    if sue_factor_enabled():
+        try:
+            from finance_agent.db.tracker import backfill_sue_outcomes
+            res = await backfill_sue_outcomes()
+            console.print(f"📊 SUE 漂移回填：{res}")
+        except Exception as e:
+            console.print(f"[SUE] 回填跳过（不影响体检）: {e}")
 
 
 @app.command("monthly-review")
@@ -632,6 +641,16 @@ async def _earnings_check(skip_notify: bool):
                 f"  🔔 [bold]{item['ticker']}[/bold] 财报：{item['earnings_date']} "
                 f"（{item['days_until']} 天后）"
             )
+    # P2b SUE 因子：观测档回看落库（guarded·失败不拖垮 earnings-check）
+    from finance_agent.signals.sue_factor import sue_factor_enabled
+    if sue_factor_enabled():
+        try:
+            from finance_agent.alerts.earnings_trigger import record_sue_events
+            rec = await record_sue_events()
+            if rec:
+                console.print(f"📊 SUE 观测：落库 {len(rec)} 条盈余惊喜事件 {rec}")
+        except Exception as e:
+            console.print(f"[SUE] 回看落库跳过（不影响 earnings-check）: {e}")
 
 
 @app.command("cooldown-check")
