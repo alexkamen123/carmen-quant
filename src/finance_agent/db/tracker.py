@@ -654,6 +654,55 @@ async def fill_long_returns(db_path: str | Path | None = None) -> dict:
     return {"filled": filled, "immature": immature, "failed": failed}
 
 
+def _today():
+    return datetime.today()
+
+
+async def backfill_sue_outcomes(db_path=None):
+    """回填 earnings_surprise_alerts 的 30天漂移 outcome。抄 fill_long_returns 30d 分支：
+    成熟闸 last_idx<=21 整行跳过；个股/基准原子两腿都成功才写、任一失败留 NULL；cutoff/floor 双边界。"""
+    p = _resolve_db(db_path)
+    fwd_td = 21
+    # 无最小年龄闸门（不同于 fill_long_returns 的 recommendations cutoff）：
+    # 成熟与否交给 last_idx<=fwd_td 判断，避免 21 交易日≈30 日历日在假期密集期把刚发布
+    # 不久的事件误判为"太新不查"而漏检——floor 仍防止对退市/超长停牌股永久重试。
+    floor = (_today() - timedelta(days=fwd_td * 2 + 14 + 7)).strftime("%Y-%m-%d")
+    filled = immature = failed = 0
+    loop = asyncio.get_event_loop()
+    with _conn(p) as con:
+        pending = con.execute(
+            "SELECT id, ticker, earnings_date, COALESCE(market,'us') AS market "
+            "FROM earnings_surprise_alerts "
+            "WHERE earnings_date >= ? AND return_30d IS NULL",
+            (floor,),
+        ).fetchall()
+    for row in pending:
+        win = await loop.run_in_executor(
+            None, lambda t=row["ticker"], m=row["market"], d=row["earnings_date"]:
+            _fetch_paired_window(t, m, d, fwd_td=fwd_td))
+        if win is None:
+            failed += 1
+            continue
+        p0, p_exit, start_date, exit_date, last_idx = win
+        if last_idx <= fwd_td:
+            immature += 1
+            continue
+        bm = await loop.run_in_executor(
+            None, lambda m=row["market"], s=start_date, e=exit_date:
+            _fetch_benchmark_window(m, s, e))
+        if bm is None:
+            failed += 1
+            continue
+        with _conn(p) as con:
+            con.execute(
+                "UPDATE earnings_surprise_alerts SET price_30d=?, return_30d=?, "
+                "benchmark_return_30d=? WHERE id=?",
+                (round(p_exit, 4), round((p_exit - p0) / p0 * 100, 2),
+                 round(bm, 2), row["id"]))
+        filled += 1
+    return {"filled": filled, "immature": immature, "failed": failed}
+
+
 def backfill_market(db_path: str | Path | None = None) -> int:
     """
     为 market 为 NULL 的历史推荐按 ticker 推断补齐（纯数字→hk，其余→us）。
