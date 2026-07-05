@@ -75,3 +75,53 @@ def compute_sue(reported_eps, estimate_eps, hist_surprises, min_quarters: int = 
     if sigma == 0:
         return None
     return (reported_eps - estimate_eps) / sigma
+
+
+def _to_date(v):
+    if v is None:
+        return None
+    if isinstance(v, date) and not isinstance(v, datetime):
+        return v
+    if isinstance(v, datetime):
+        return v.date()
+    try:
+        return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def format_sue_note(ticker, asof=None, db_path=None) -> str:
+    """【盈余惊喜】双向审慎注入（strategy_evidence 槽）。
+
+    注入档 off → ""（三重护栏第一层）。确定性模板、零 LLM/网络。
+    取该 ticker 最近一条『已发布且仍在漂移窗口内(earnings_date ∈ [asof−track_days, asof])』的事件，
+    |SUE| ≥ sigma_threshold 才出文字。措辞只单向收紧：
+      miss(SUE≤−阈) → 更保守/止损复核；beat(SUE≥+阈) → 减仓/止损前多确认防卖飞。绝无加仓字样。
+    """
+    from finance_agent.db.tracker import get_sue_alerts  # 延迟导入避免循环依赖
+
+    cfg = _sue_pead_cfg()
+    if not cfg["enabled"]:
+        return ""
+    asof_d = _to_date(asof) or datetime.today().date()
+    track = int(cfg.get("track_days", 30))
+    thr = float(cfg.get("sigma_threshold", 1.5))
+    try:
+        rows = get_sue_alerts(ticker, db_path=db_path)  # 按 earnings_date DESC
+    except Exception:
+        return ""
+    for r in rows:
+        ed = _to_date(r.get("earnings_date"))
+        if ed is None or ed > asof_d:
+            continue                       # 未来事件不注入（未来函数防护）
+        if (asof_d - ed).days > track:
+            continue                       # 超出漂移窗口不再警示
+        sue = r.get("sue_score")
+        if sue is None or abs(sue) < thr:
+            return ""                       # 最近一条也不过阈 → 不注入
+        if sue <= -thr:
+            return (f"【盈余惊喜】{ticker} 最新财报大幅低于预期(SUE={sue:+.1f}σ)，"
+                    f"警惕盈余后下行漂移，宜更保守/止损复核。")
+        return (f"【盈余惊喜】{ticker} 最新财报录强正向盈余惊喜(SUE={sue:+.1f}σ)，"
+                f"短期回调或为噪声，减仓/止损前需额外确认，别慌卖。")
+    return ""
