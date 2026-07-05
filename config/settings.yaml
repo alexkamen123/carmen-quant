@@ -103,6 +103,22 @@ news_sentiment_factor:
 sentiment_double_confirm_alert:
   enabled: true
 
+# ── P2b 盈余惊喜(SUE)因子 · 观测档（纯观测·默认 on）────────────────
+# flag on：earnings-check 回看近3交易日财报→算 SUE→落 earnings_surprise_alerts 表；周六 value-report 回填30天漂移。
+# 只读财报+写独立表，不碰任何 recommendation/仓位/权重。与 P1b/P1c/P2a 同治理级。
+# off 则 earnings-check 逐字节不变、永不积累样本（无法验证覆盖度）——故默认 on 才能攒数据。
+sue_factor:
+  enabled: true
+# ── P2b 盈余惊喜(SUE)因子 · 注入档（改核心建议·默认 off）──────────────
+# flag on：日报 strategy_node 向 PM 注入双向审慎（miss→更保守·beat→减仓前多确认防卖飞），绝无加仓字样。
+# 默认 off：format_sue_note 恒返 ""，strategy_evidence 逐字节与改动前一致（护栏第一层）。
+# ⚠️ SUE 是占位因子，≥60条 outcome 经 RankIC 校准前禁当已验证 alpha、禁用于加仓。enable 须用户点头。
+sue_pead_alert:
+  enabled: false
+  sigma_threshold: 1.5   # PRD 给定，直抄不做回测调参
+  min_quarters: 8        # 历史 surprise 样本闸，不足则 SUE=None
+  track_days: 30         # 漂移追踪/注入窗口（交易日约21，日历约30）
+
 # ── dip 预警 ATR 自适应阈值（order8）────────────────────────────────────────
 # effective = max(base_pct, min(k * atr_pct, cap_pct))；gap_up 抬升叠加在此结果上。
 # 只抬升不下调（effective >= base_pct），低波动票不会被降阈值。
