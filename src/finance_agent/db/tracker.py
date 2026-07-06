@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS theses (
     ticker          TEXT PRIMARY KEY,
     market          TEXT NOT NULL DEFAULT 'us',
     thesis_text     TEXT NOT NULL,          -- Claude 生成的完整持仓逻辑（Markdown）
-    pillars         TEXT,                   -- JSON 数组：[{"pillar": "...", "status": "intact|weakening|broken"}]
+    pillars         TEXT,                   -- JSON: [{"pillar":..,"trigger_type": "earnings_miss|news_negative|price_break|revenue_decline|margin_break","threshold": num|null,"status":"intact|weakening|broken"}]
     stop_conditions TEXT,                   -- 什么情况下应考虑出场（一段文字）
     generated_at    TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))

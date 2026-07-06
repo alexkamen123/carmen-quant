@@ -162,7 +162,7 @@ def extract_rev_margin(df):
 
     df 列=季度、行含 'Total Revenue'/'Gross Profit'。
     返回 {"yoy_growths": [...], "gross_margin": float} 或 None（数据不足/缺行）。
-    yoy = (本季营收 − 去年同季营收)/|去年同季| ·%；至少 5 季才能算最近 2 季同比。
+    yoy = (本季营收 − 去年同季营收)/|去年同季| ·%；至少 6 季才能算最近 2 季同比（5 季只够 1 个 yoy）。
     """
     if df is None or getattr(df, "empty", True):
         return None

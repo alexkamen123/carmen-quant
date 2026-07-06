@@ -5,6 +5,8 @@ def test_check_earnings_miss():
     assert ti.check_earnings_miss(-2.0, sigma=1.5) is True
     assert ti.check_earnings_miss(-1.0, sigma=1.5) is False
     assert ti.check_earnings_miss(None) is False
+    # earnings_miss：恰好等于阈值算触发（<=）
+    assert ti.check_earnings_miss(-1.5, sigma=1.5) is True
 
 
 def test_check_news_negative():
@@ -34,6 +36,8 @@ def test_check_margin_break():
     assert ti.check_margin_break(45.0, 40.0) is False
     assert ti.check_margin_break(35.0, None) is False
     assert ti.check_margin_break(None, 40.0) is False
+    # margin_break：恰好等于阈值不算（<，需真跌破）
+    assert ti.check_margin_break(40.0, 40.0) is False
 
 
 def test_match_triggers():
