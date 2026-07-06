@@ -135,6 +135,8 @@ async def generate_thesis_for(ticker: str, market: str, cost_basis: float,
     # 触发器解析要用 strip_markdown 之前的原始文本：strip_markdown 只锚定字符串首尾，
     # 会把正文末尾附带的 ```json ... ``` 代码块的收尾栅栏吃掉，导致正则拿不到闭合围栏。
     pillars, stop_conditions = _parse_thesis_triggers(raw)
+    # 存库的 thesis_text 要去掉整个 ```json``` 块（PM 只读人看的自由文本·不被 JSON 污染）
+    thesis = re.sub(r"\s*```json\b.*$", "", thesis, flags=re.DOTALL).strip()
     save_thesis(ticker, market, thesis, pillars=pillars,
                 stop_conditions=stop_conditions, db_path=db_path)
     return thesis

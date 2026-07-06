@@ -36,6 +36,9 @@ def test_generate_parses_structured_triggers(tmp_path, monkeypatch):
     text = tracker.load_thesis("NVDA", db_path=db)
     assert "核心论点" in text
 
+    stored = tracker.load_thesis("NVDA", db_path=db)
+    assert "```json" not in stored and "pillars" not in stored   # 正文不被 JSON 污染
+
 
 def test_generate_parse_failure_degrades(tmp_path, monkeypatch):
     db = tmp_path / "t.db"

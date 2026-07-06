@@ -42,11 +42,13 @@ def _detail_for(pillar, measured):
     if tt == "earnings_miss":
         return f"财报大幅低于预期（SUE={measured.get('earnings_miss'):+.1f}σ）"
     if tt == "revenue_decline":
-        return f"营收连续两季同比转负（{measured.get('revenue_decline')}）"
+        ys = measured.get("revenue_decline") or []
+        s = "、".join(f"{y:+.1f}%" for y in ys[-2:])
+        return f"营收连续两季同比转负（{s}）"
     if tt == "margin_break":
         return f"毛利率跌破 {pillar.get('threshold')}%（当前 {measured.get('margin_break'):.1f}%）"
     if tt == "price_break":
-        return f"收盘价跌破止损价 {pillar.get('threshold')}"
+        return f"最新价(盘中)跌破止损价 {pillar.get('threshold')}"
     if tt == "news_negative":
         return "出现重大利空新闻"
     return "触发失效条件"
@@ -67,19 +69,24 @@ async def _push_invalidation(ticker, pillar, trigger_type, detail):
         pass
 
 
-async def _record_and_alert(ticker, hits, measured, db_path):
+async def _record_and_alert(ticker, hits, measured, db_path, push=True):
     for p in hits:
         detail = _detail_for(p, measured)
         save_invalidation_event(ticker, "us", p["trigger_type"], p.get("pillar", ""),
                                 _today_str(), detail, db_path=db_path)
-        await _push_invalidation(ticker, p.get("pillar", ""), p["trigger_type"], detail)
+        if push:
+            await _push_invalidation(ticker, p.get("pillar", ""), p["trigger_type"], detail)
 
 
-async def scan_earnings_invalidation(db_path=None):
+async def scan_earnings_invalidation(db_path=None, push=True):
     """命中 earnings_miss / revenue_decline / margin_break → 落库+告警。挂 earnings-check。"""
     cfg = _ti_cfg()
     loop = asyncio.get_event_loop()
-    for h in _load_us_holdings():
+    try:
+        holdings = _load_us_holdings()
+    except Exception:
+        return
+    for h in holdings:
         ticker = h["ticker"]
         try:
             trig = load_thesis_triggers(ticker, db_path=db_path)
@@ -100,15 +107,19 @@ async def scan_earnings_invalidation(db_path=None):
                         measured["margin_break"] = rm["gross_margin"]
             hits = match_triggers(trig["pillars"], measured,
                                   sigma=float(cfg["sigma"]), impact_min=int(cfg["impact_min"]))
-            await _record_and_alert(ticker, hits, measured, db_path)
+            await _record_and_alert(ticker, hits, measured, db_path, push=push)
         except Exception:
             continue
 
 
-async def scan_price_invalidation(db_path=None):
+async def scan_price_invalidation(db_path=None, push=True):
     """命中 price_break（收盘跌破声明止损价）→ 落库+告警。挂 price-scan。"""
     loop = asyncio.get_event_loop()
-    for h in _load_us_holdings():
+    try:
+        holdings = _load_us_holdings()
+    except Exception:
+        return
+    for h in holdings:
         ticker = h["ticker"]
         try:
             trig = load_thesis_triggers(ticker, db_path=db_path)
@@ -119,12 +130,12 @@ async def scan_price_invalidation(db_path=None):
                 continue
             close = await loop.run_in_executor(None, lambda t=ticker: _latest_close(t))
             hits = [p for p in pbs if check_price_break(close, p.get("threshold"))]
-            await _record_and_alert(ticker, hits, {"price_break": close}, db_path)
+            await _record_and_alert(ticker, hits, {"price_break": close}, db_path, push=push)
         except Exception:
             continue
 
 
-async def scan_news_invalidation(ticker, impact, sentiment, db_path=None):
+async def scan_news_invalidation(ticker, impact, sentiment, db_path=None, push=True):
     """news-scan 分类出一条新闻时回调：命中该票声明的 news_negative → 落库+告警。"""
     cfg = _ti_cfg()
     try:
@@ -134,6 +145,6 @@ async def scan_news_invalidation(ticker, impact, sentiment, db_path=None):
         measured = {"news_negative": (impact, sentiment)}
         hits = match_triggers(trig["pillars"], measured,
                               sigma=float(cfg["sigma"]), impact_min=int(cfg["impact_min"]))
-        await _record_and_alert(ticker, hits, measured, db_path)
+        await _record_and_alert(ticker, hits, measured, db_path, push=push)
     except Exception:
         return

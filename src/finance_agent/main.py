@@ -431,9 +431,9 @@ def sue_edge_cmd():
 
 @app.command("check-invalidation")
 def check_invalidation_cmd(skip_notify: bool = typer.Option(False, "--skip-notify", help="不推飞书只跑")):
-    """P2c 手动跑一次全持仓失效扫描（命中声明的失效条件→止损复核告警）。"""
+    """手动跑一次持仓财报维度失效扫描（命中声明的失效条件→止损复核告警）。"""
     from finance_agent.alerts.thesis_invalidation_trigger import scan_earnings_invalidation
-    asyncio.run(scan_earnings_invalidation())
+    asyncio.run(scan_earnings_invalidation(push=not skip_notify))
 
 
 @app.command("value-report")
