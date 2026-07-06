@@ -1890,6 +1890,15 @@ async def run_news_scan(impact_threshold: int = 7) -> int:
             except Exception as e:
                 print(f"[Sentiment] {scan_ticker} 情绪落库失败（跳过，不影响扫描）: {e}")
 
+            # P2c 失效触发器：新闻向失效扫描（guarded·失败不拖垮扫描主流程）
+            from finance_agent.signals.thesis_invalidation import thesis_invalidation_enabled
+            if thesis_invalidation_enabled():
+                try:
+                    from finance_agent.alerts.thesis_invalidation_trigger import scan_news_invalidation
+                    await scan_news_invalidation(scan_ticker, impact, sentiment)
+                except Exception as e:
+                    print(f"[Invalidation] {scan_ticker} 失效扫描(news)失败（跳过）: {e}")
+
             if pushed >= MAX_PUSH_PER_SCAN:
                 print(f"[NewsScan] 单次推送达上限 {MAX_PUSH_PER_SCAN}，剩余高分新闻留待下轮")
                 break

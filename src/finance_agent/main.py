@@ -157,8 +157,21 @@ def price_scan(
     threshold: float = typer.Option(3.0, "--threshold", "-t", help="1小时跌幅阈值（%），默认 3.0"),
 ):
     """轻量价格异动扫描，跳过新闻，约 30 秒，适合每 5 分钟触发"""
-    pushed = asyncio.run(run_price_scan(threshold_pct=threshold))
+    pushed = asyncio.run(_price_scan(threshold_pct=threshold))
     console.print(f"{'✅' if pushed else '⚪'} 价格扫描完成，推送 {pushed} 条异动")
+
+
+async def _price_scan(threshold_pct: float) -> int:
+    pushed = await run_price_scan(threshold_pct=threshold_pct)
+    # P2c 失效触发器：价格向失效扫描（guarded·失败不拖垮 price-scan）
+    from finance_agent.signals.thesis_invalidation import thesis_invalidation_enabled
+    if thesis_invalidation_enabled():
+        try:
+            from finance_agent.alerts.thesis_invalidation_trigger import scan_price_invalidation
+            await scan_price_invalidation()
+        except Exception as e:
+            console.print(f"⚠️ 失效扫描(price)失败，跳过：{e}")
+    return pushed
 
 
 @app.command("weekly-report")
@@ -416,6 +429,13 @@ def sue_edge_cmd():
     console.print(f"   ⚠️ {rd['caveat']}")
 
 
+@app.command("check-invalidation")
+def check_invalidation_cmd(skip_notify: bool = typer.Option(False, "--skip-notify", help="不推飞书只跑")):
+    """P2c 手动跑一次全持仓失效扫描（命中声明的失效条件→止损复核告警）。"""
+    from finance_agent.alerts.thesis_invalidation_trigger import scan_earnings_invalidation
+    asyncio.run(scan_earnings_invalidation())
+
+
 @app.command("value-report")
 def value_report(
     skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
@@ -667,6 +687,15 @@ async def _earnings_check(skip_notify: bool):
                 console.print(f"📊 SUE 观测：落库 {len(rec)} 条盈余惊喜事件 {rec}")
         except Exception as e:
             console.print(f"[SUE] 回看落库跳过（不影响 earnings-check）: {e}")
+
+    # P2c 失效触发器：财报向失效扫描（guarded·失败不拖垮 earnings-check）
+    from finance_agent.signals.thesis_invalidation import thesis_invalidation_enabled
+    if thesis_invalidation_enabled():
+        try:
+            from finance_agent.alerts.thesis_invalidation_trigger import scan_earnings_invalidation
+            await scan_earnings_invalidation()
+        except Exception as e:
+            console.print(f"⚠️ 失效扫描(earnings)失败，跳过：{e}")
 
 
 @app.command("cooldown-check")
