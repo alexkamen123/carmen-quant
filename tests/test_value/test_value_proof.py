@@ -43,3 +43,29 @@ def test_gather_is_guarded(monkeypatch):
     monkeypatch.setattr(m, "_read_shadow", lambda: None)
     out = m.gather_thermometer_readings(db_path=None)
     assert out["rankic"] is None and set(out) == {"rankic", "oos", "sue", "shadow"}
+
+
+def test_card_contains_thermometer_panel(tmp_path):
+    from finance_agent.value.metrics import compute_value_metrics
+    from finance_agent.db import tracker
+    from finance_agent.value.report import build_value_card
+    db = tmp_path / "t.db"; tracker.init_db(db)
+    m = compute_value_metrics(str(db))
+    m["thermometer"] = {"rankic": None, "oos": None, "sue": None, "shadow": None}
+    card = build_value_card(m)
+    panels = [e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel"]
+    therm = next(p for p in panels if "体温计" in p["header"]["title"]["content"])
+    body = therm["elements"][0]["content"]
+    assert "排序力" in body and "护栏" in body and "暂无数据" in body
+
+
+def test_card_still_builds_without_thermometer_key(tmp_path):
+    # 向后兼容：m 没 thermometer 键也不崩（面板缺省空读数）
+    from finance_agent.value.metrics import compute_value_metrics
+    from finance_agent.db import tracker
+    from finance_agent.value.report import build_value_card
+    db = tmp_path / "t.db"; tracker.init_db(db)
+    m = compute_value_metrics(str(db))
+    m.pop("thermometer", None)
+    card = build_value_card(m)   # 不崩
+    assert card["schema"] == "2.0"
