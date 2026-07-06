@@ -131,6 +131,8 @@ thesis_invalidation:
 # ── P3b 波动率仓控（vol_guard）───────────────────────────────────────────
 # realized vol 相对历史 z-score > sigma_threshold → 注入"收紧止损"审慎警示。
 # 单向收紧·不改 stop_loss_hint 数值·绝无加仓字样。默认 off：format_vol_note 恒 ""，逐字节不变。
+# ⚠️ 阈值/窗口是占位启发式(非拟合)·enable 须用户点头。「跌市加重措辞」依赖 regime_aware_guardrail 同时开启
+# （_current_regime 在该 flag 关时恒返 None→不加重，安全但那句重措辞不会出现）。
 vol_guard:
   enabled: false
   vol_window: 20
