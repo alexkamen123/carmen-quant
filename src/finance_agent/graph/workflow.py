@@ -287,7 +287,17 @@ async def strategy_node(state: AgentState) -> AgentState:
             print(f"[Strategy] {s.ticker} SUE 因子查找失败（跳过）: {e}")
         if sue:
             print(f"[Strategy] {s.ticker} SUE 审慎提示注入 ↓\n{sue}")
-        combined = "\n".join(x for x in (evidence, live, refl, dip_note, senti, sue) if x)
+        # P3b 波动率仓控审慎注入（flag 默认 off → 恒 "" → 线上零变化）
+        vol = ""
+        try:
+            from finance_agent.signals.vol_guard import format_vol_note
+            from finance_agent.signals.opportunities import _current_regime
+            vol = format_vol_note(s.ticker, regime=_current_regime())
+        except Exception as e:
+            print(f"[Strategy] {s.ticker} 波动率仓控检查失败（跳过）: {e}")
+        if vol:
+            print(f"[Strategy] {s.ticker} 波动率仓控注入 ↓\n{vol}")
+        combined = "\n".join(x for x in (evidence, live, refl, dip_note, senti, sue, vol) if x)
         updated.append(s.model_copy(update={"strategy_evidence": combined}))
     return state.model_copy(update={"stocks": updated})
 

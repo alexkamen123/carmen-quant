@@ -128,6 +128,15 @@ thesis_invalidation:
   sigma: 1.5
   impact_min: 7
 
+# ── P3b 波动率仓控（vol_guard）───────────────────────────────────────────
+# realized vol 相对历史 z-score > sigma_threshold → 注入"收紧止损"审慎警示。
+# 单向收紧·不改 stop_loss_hint 数值·绝无加仓字样。默认 off：format_vol_note 恒 ""，逐字节不变。
+vol_guard:
+  enabled: false
+  vol_window: 20
+  baseline_window: 60
+  sigma_threshold: 1.5
+
 # ── dip 预警 ATR 自适应阈值（order8）────────────────────────────────────────
 # effective = max(base_pct, min(k * atr_pct, cap_pct))；gap_up 抬升叠加在此结果上。
 # 只抬升不下调（effective >= base_pct），低波动票不会被降阈值。
