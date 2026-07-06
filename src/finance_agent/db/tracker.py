@@ -99,6 +99,24 @@ CREATE TABLE IF NOT EXISTS earnings_surprise_alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_sue_ticker ON earnings_surprise_alerts(ticker);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sue_uniq ON earnings_surprise_alerts(ticker, earnings_date);
+
+CREATE TABLE IF NOT EXISTS thesis_invalidation_events (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker                TEXT NOT NULL,
+    market                TEXT NOT NULL DEFAULT 'us',
+    trigger_type          TEXT NOT NULL,
+    pillar                TEXT,
+    triggered_at          TEXT NOT NULL,
+    detail                TEXT,
+    price_at_event        REAL,
+    price_30d             REAL,
+    return_30d            REAL,
+    benchmark_return_30d  REAL,
+    created_at            TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_inval_ticker ON thesis_invalidation_events(ticker);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inval_uniq
+    ON thesis_invalidation_events(ticker, trigger_type, triggered_at);
 """
 
 
@@ -153,6 +171,22 @@ def _migrate_sue_table(con: sqlite3.Connection) -> None:
                 pass
 
 
+def _migrate_invalidation_table(con: sqlite3.Connection) -> None:
+    """为已存在的 thesis_invalidation_events 补 outcome 列（向后兼容旧库）。"""
+    try:
+        existing = {r[1] for r in con.execute(
+            "PRAGMA table_info(thesis_invalidation_events)").fetchall()}
+    except sqlite3.OperationalError:
+        return
+    for col, typ in (("price_at_event", "REAL"), ("price_30d", "REAL"),
+                     ("return_30d", "REAL"), ("benchmark_return_30d", "REAL")):
+        if col not in existing:
+            try:
+                con.execute(f"ALTER TABLE thesis_invalidation_events ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError:
+                pass
+
+
 @contextmanager
 def _conn(db_path: Path | None = None):
     p = db_path or DB_PATH
@@ -179,6 +213,7 @@ def init_db(db_path: str | Path | None = None) -> None:
         _migrate_recommendations_table(con)
         _migrate_dip_alerts_table(con)
         _migrate_sue_table(con)
+        _migrate_invalidation_table(con)
 
 
 # ── 写入当日推荐 ──────────────────────────────────────────────
@@ -582,6 +617,56 @@ def get_sue_alerts(ticker=None, db_path=None, matured_only=False, asof=None):
     sql += " ORDER BY earnings_date DESC"
     with _conn(p) as con:
         return [dict(r) for r in con.execute(sql, params).fetchall()]
+
+
+def save_invalidation_event(ticker, market, trigger_type, pillar, triggered_at,
+                            detail, price_at_event=None, db_path=None):
+    """写失效事件·(ticker,trigger_type,triggered_at) 幂等（UNIQUE + INSERT OR IGNORE）。"""
+    p = _resolve_db(db_path)
+    with _conn(p) as con:
+        con.execute(
+            "INSERT OR IGNORE INTO thesis_invalidation_events "
+            "(ticker, market, trigger_type, pillar, triggered_at, detail, price_at_event) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (ticker.upper(), market, trigger_type, pillar, triggered_at, detail, price_at_event))
+
+
+def get_invalidation_events(ticker=None, db_path=None, matured_only=False, asof=None):
+    """读失效事件（默认按 triggered_at DESC）。matured_only=True → 仅 return_30d 非空且
+    triggered_at 距 asof ≥30 日历日（供 RankIC/outcome，同 get_sue_alerts 口径）。"""
+    p = _resolve_db(db_path)
+    where, params = [], []
+    if ticker:
+        where.append("ticker = ?")
+        params.append(ticker.upper())
+    if matured_only:
+        where.append("return_30d IS NOT NULL")
+        where.append("julianday(?) - julianday(triggered_at) >= 30")
+        params.append(asof or _today().strftime("%Y-%m-%d"))
+    sql = "SELECT * FROM thesis_invalidation_events"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY triggered_at DESC"
+    with _conn(p) as con:
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
+
+
+def load_thesis_triggers(ticker, db_path=None):
+    """取该票结构化触发器 {pillars:[...], stop_conditions:str}；无/解析失败 → None。"""
+    import json
+    p = _resolve_db(db_path)
+    with _conn(p) as con:
+        row = con.execute("SELECT pillars, stop_conditions FROM theses WHERE ticker=?",
+                          (ticker.upper(),)).fetchone()
+    if not row or not row["pillars"]:
+        return None
+    try:
+        pillars = json.loads(row["pillars"])
+    except (ValueError, TypeError):
+        return None
+    if not pillars:
+        return None
+    return {"pillars": pillars, "stop_conditions": row["stop_conditions"] or ""}
 
 
 _LONG_WINDOWS = [
