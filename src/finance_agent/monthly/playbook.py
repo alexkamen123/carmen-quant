@@ -178,7 +178,8 @@ def playbook_panel(play: dict | None) -> dict | None:
     lines = [
         f"卖出退出 **{play['n_exits']}** 次，FIFO 拆成 **{play['n_closed']}** 个批次切片"
         f" · 切片胜率 **{play['win_rate']:.0f}%** · 切片均盈亏 **{play['avg_pnl']:+.1f}%**\n"
-        f"（按已记录成交价配对；auto 检测行用检测日近似价，非成交回单）",
+        f"（切片胜率＝你已平仓批次里真金实盈的比例，非模型信号方向对错；按已记录成交价配对，"
+        f"auto 检测行用检测日近似价，非成交回单）",
     ]
     if play["findings"]:
         lines.append("")

@@ -726,7 +726,7 @@ async def _feedback_stats():
     console.print("\n[bold]📊 操作反馈统计[/bold]")
     if b["total"] > 0:
         console.print(
-            f"  买入 {b['total']} 次 → 胜率 {b['win_rate']}%，平均 {b['avg_return']:+.2f}%"
+            f"  买入 {b['total']} 次 → 操作胜率 {b['win_rate']}%（你的实操·非模型建议），平均 {b['avg_return']:+.2f}%"
         )
     else:
         console.print("  暂无已回填的 BUY 操作")

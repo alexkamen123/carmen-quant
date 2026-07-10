@@ -1990,7 +1990,9 @@ def ticker_signal_stats(ticker: str, db_path: str | Path | None = None) -> str:
 def feedback_summary(db_path: str | Path | None = None) -> str:
     """
     返回一行反馈闭环摘要文字，供注入飞书卡片或月度回顾。
-    示例：「实际买入 8 次：胜率 75% · 均盈 +3.2%；跳过 5 次：其中 3 次事后涨了」
+    示例：「实际买入 8 次：操作胜率 75%（你的实操·非模型建议） · 均盈 +3.2%；跳过 5 次：其中 3 次事后涨了」
+    口径统一（2026-07-10）：此处「操作胜率」= 你真金白银买入后 7 日盈利比例，与模型「命中率」
+    （方向判断对错）、月报「切片胜率」（已平仓了结盈亏）是三个不同主体，词面即区分、不可混读。
     """
     s = get_feedback_accuracy(db_path)
     b, k = s["bought"], s["skipped"]
@@ -1999,7 +2001,7 @@ def feedback_summary(db_path: str | Path | None = None) -> str:
     parts = []
     if b["total"] > 0:
         parts.append(
-            f"实际买入 {b['total']} 次：胜率 {b['win_rate']}% · 均{'+' if b['avg_return'] >= 0 else ''}{b['avg_return']}%"
+            f"实际买入 {b['total']} 次：操作胜率 {b['win_rate']}%（你的实操·非模型建议） · 均{'+' if b['avg_return'] >= 0 else ''}{b['avg_return']}%"
         )
     if sold["total"] > 0:
         parts.append(
