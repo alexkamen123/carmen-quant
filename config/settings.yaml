@@ -114,7 +114,7 @@ sue_factor:
 # 默认 off：format_sue_note 恒返 ""，strategy_evidence 逐字节与改动前一致（护栏第一层）。
 # ⚠️ SUE 是占位因子，≥60条 outcome 经 RankIC 校准前禁当已验证 alpha、禁用于加仓。enable 须用户点头。
 sue_pead_alert:
-  enabled: false
+  enabled: true   # 启用 2026-07-10（用户点头·看过 OFF/ON demo）：日报向 PM 注入双向审慎(miss→防死扛·beat→防卖飞)，绝无加仓。回退改 false。
   sigma_threshold: 1.5   # PRD 给定，直抄不做回测调参
   min_quarters: 8        # 历史 surprise 样本闸，不足则 SUE=None
   track_days: 30         # 漂移追踪/注入窗口（交易日约21，日历约30）
@@ -134,7 +134,7 @@ thesis_invalidation:
 # ⚠️ 阈值/窗口是占位启发式(非拟合)·enable 须用户点头。「跌市加重措辞」依赖 regime_aware_guardrail 同时开启
 # （_current_regime 在该 flag 关时恒返 None→不加重，安全但那句重措辞不会出现）。
 vol_guard:
-  enabled: false
+  enabled: true   # 启用 2026-07-10（用户点头·看过 demo）：高波动持仓(realized vol>1.5σ)注入"收紧止损"警示·跌市加重·单向收紧·不改数值。回退改 false。
   vol_window: 20
   baseline_window: 60
   sigma_threshold: 1.5
