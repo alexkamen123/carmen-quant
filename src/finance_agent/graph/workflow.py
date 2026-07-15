@@ -278,7 +278,26 @@ async def strategy_node(state: AgentState) -> AgentState:
             print(f"[Strategy] {s.ticker} 情绪双确认检查失败（跳过）: {e}")
         if senti:
             print(f"[Strategy] {s.ticker} 情绪双确认注入 ↓\n{senti}")
-        combined = "\n".join(x for x in (evidence, live, refl, dip_note, senti) if x)
+        # P2b 盈余惊喜(SUE)审慎注入（flag 默认 off → 恒 "" → 线上零变化）
+        sue = ""
+        try:
+            from finance_agent.signals.sue_factor import format_sue_note
+            sue = format_sue_note(s.ticker)
+        except Exception as e:
+            print(f"[Strategy] {s.ticker} SUE 因子查找失败（跳过）: {e}")
+        if sue:
+            print(f"[Strategy] {s.ticker} SUE 审慎提示注入 ↓\n{sue}")
+        # P3b 波动率仓控审慎注入（flag 默认 off → 恒 "" → 线上零变化）
+        vol = ""
+        try:
+            from finance_agent.signals.vol_guard import format_vol_note
+            from finance_agent.signals.opportunities import _current_regime
+            vol = format_vol_note(s.ticker, regime=_current_regime())
+        except Exception as e:
+            print(f"[Strategy] {s.ticker} 波动率仓控检查失败（跳过）: {e}")
+        if vol:
+            print(f"[Strategy] {s.ticker} 波动率仓控注入 ↓\n{vol}")
+        combined = "\n".join(x for x in (evidence, live, refl, dip_note, senti, sue, vol) if x)
         updated.append(s.model_copy(update={"strategy_evidence": combined}))
     return state.model_copy(update={"stocks": updated})
 

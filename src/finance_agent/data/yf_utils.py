@@ -71,6 +71,20 @@ def _ticker_calendar_with_retry(ticker: str, retries: int = 3):
     return None
 
 
+def _ticker_earnings_dates_with_retry(ticker: str, retries: int = 3, limit: int = 20):
+    """同步获取 yf.Ticker(ticker).get_earnings_dates(limit=)，失败静默返回 None。
+
+    照抄 _ticker_calendar_with_retry：for-retry + except Exception + sleep(2)（非末次）。
+    """
+    for attempt in range(retries):
+        try:
+            return yf.Ticker(ticker).get_earnings_dates(limit=limit)
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(2)
+    return None
+
+
 @contextlib.contextmanager
 def _direct_connection():
     """
@@ -84,3 +98,28 @@ def _direct_connection():
         for k, v in saved.items():
             if v is not None:
                 os.environ[k] = v
+
+
+def _extract_surprises(df):
+    """把 get_earnings_dates 的 DataFrame 解析成按日期升序的 [(date, reported, estimate)]。
+
+    剔除 Reported EPS / EPS Estimate 为 NaN 的行（未发布或缺数据）。
+    列名固定 'EPS Estimate' / 'Reported EPS'（driver: yfinance get_earnings_dates·驼峰空格勿与 earnings_history 混用）。
+    """
+    if df is None or len(df) == 0:
+        return []
+    out = []
+    for idx, row in df.iterrows():
+        est = row.get("EPS Estimate")
+        rep = row.get("Reported EPS")
+        if est is None or rep is None:
+            continue
+        if (isinstance(est, float) and est != est) or (isinstance(rep, float) and rep != rep):
+            continue
+        try:
+            d = idx.date()
+        except AttributeError:
+            d = idx
+        out.append((d, float(rep), float(est)))
+    out.sort(key=lambda x: x[0])
+    return out

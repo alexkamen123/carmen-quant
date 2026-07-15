@@ -155,3 +155,53 @@ async def fetch_fundamental_factors(ticker: str):
     except Exception:
         pass
     return calculate_fundamental_factors(info or {}, fin_col, bal_col, close)
+
+
+def extract_rev_margin(df):
+    """从 quarterly_financials DataFrame 抽最近若干季同比营收增速 + 最新季毛利率。
+
+    df 列=季度、行含 'Total Revenue'/'Gross Profit'。
+    返回 {"yoy_growths": [...], "gross_margin": float} 或 None（数据不足/缺行）。
+    yoy = (本季营收 − 去年同季营收)/|去年同季| ·%；至少 6 季才能算最近 2 季同比（5 季只够 1 个 yoy）。
+    """
+    if df is None or getattr(df, "empty", True):
+        return None
+    try:
+        if "Total Revenue" not in df.index:
+            return None
+        cols_sorted = sorted(df.columns)          # 升序：老→新
+        if len(cols_sorted) < 5:
+            # 不足算同比，但仍可给最新季毛利率
+            if "Gross Profit" in df.index:
+                latest = cols_sorted[-1]
+                r0 = df.at["Total Revenue", latest]
+                g0 = df.at["Gross Profit", latest]
+                gm = float(g0) / float(r0) * 100 if r0 else None
+                return {"yoy_growths": [], "gross_margin": gm} if gm is not None else None
+            return None
+        seq = [float(df.at["Total Revenue", c]) for c in cols_sorted]
+        yoy = []
+        for i in range(4, len(seq)):
+            base = seq[i - 4]
+            if base:
+                yoy.append(round((seq[i] - base) / abs(base) * 100, 2))
+        latest = cols_sorted[-1]
+        r0 = df.at["Total Revenue", latest]
+        g0 = df.at["Gross Profit", latest] if "Gross Profit" in df.index else None
+        gm = float(g0) / float(r0) * 100 if (g0 is not None and r0) else None
+        return {"yoy_growths": yoy, "gross_margin": gm}
+    except Exception:
+        return None
+
+
+def fetch_quarterly_rev_margin(ticker):
+    """同步取 yf.Ticker(t).quarterly_financials → extract_rev_margin。失败静默 None。
+
+    仿 fetch_fundamental_factors：由调用方用 run_in_executor 包装。
+    ⚠️ quarterly_financials 行名跨 yfinance 版本可能不同，若线上验证发现字段不符，
+    需调整或改用 .quarterly_income_stmt。
+    """
+    try:
+        return extract_rev_margin(yf.Ticker(ticker).quarterly_financials)
+    except Exception:
+        return None

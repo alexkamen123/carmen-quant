@@ -439,6 +439,11 @@ def _header_template(m: dict) -> str:
     return _TEMPLATE.get(m["verdict"]["color"], "grey")
 
 
+def _thermometer_from_m(m):
+    from finance_agent.value.value_proof import thermometer_section
+    return thermometer_section(m.get("thermometer") or {})
+
+
 def build_value_card(m: dict) -> dict:
     """schema 2.0：主屏只留「头条(你vs躺平) + 一句话结论(三类建议准不准+行动)」，
     所有精确数字/命中率/分窗口/逐笔/明细全部折叠（用户反馈：信息过载、正负数打架看不懂）。"""
@@ -453,6 +458,7 @@ def build_value_card(m: dict) -> dict:
         *([_panel("🔭 试用选股名单 · 不花钱考眼光", _shadow_section(m))] if _shadow_section(m) else []),
         _panel("🛡️ 暴跌预警准不准", _dip_section(m)),
         _panel("🧪 名词小课堂 + 选股套路体检", strat_block),
+        _panel("🌡️ 价值证明 · 多维体温计（建议/行为双向打分）", _thermometer_from_m(m)),
         _panel("📎 诚实附录 · 数据怎么来的", _meta_section(m)),
         {"tag": "markdown", "content":
             "_仅统计已回填记录；过往表现不代表未来收益；样本越小越不可靠；不构成投资建议_"},
@@ -508,6 +514,11 @@ async def run_value_report(db_path: str = "data/agent.db") -> tuple[dict, str, d
     except Exception as e:
         print(f"[ValueReport] 终局口径拉取跳过(回落第7天定格)：{e}")
     m = compute_value_metrics(p, live_overrides=live_recs)
+    try:
+        from finance_agent.value.value_proof import gather_thermometer_readings
+        m["thermometer"] = gather_thermometer_readings(db_path=p)
+    except Exception:
+        m["thermometer"] = {}
     # 累计「你 vs 躺平·截至今天」头条——实时拉价，失败兜底 None 绝不崩卡
     try:
         m["cumulative"] = compute_cumulative_value(p)

@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS theses (
     ticker          TEXT PRIMARY KEY,
     market          TEXT NOT NULL DEFAULT 'us',
     thesis_text     TEXT NOT NULL,          -- Claude 生成的完整持仓逻辑（Markdown）
-    pillars         TEXT,                   -- JSON 数组：[{"pillar": "...", "status": "intact|weakening|broken"}]
+    pillars         TEXT,                   -- JSON: [{"pillar":..,"trigger_type": "earnings_miss|news_negative|price_break|revenue_decline|margin_break","threshold": num|null,"status":"intact|weakening|broken"}]
     stop_conditions TEXT,                   -- 什么情况下应考虑出场（一段文字）
     generated_at    TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))
@@ -81,6 +81,42 @@ CREATE TABLE IF NOT EXISTS dip_alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_dip_ticker ON dip_alerts(ticker);
 CREATE INDEX IF NOT EXISTS idx_dip_at     ON dip_alerts(alerted_at);
+
+CREATE TABLE IF NOT EXISTS earnings_surprise_alerts (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker                TEXT NOT NULL,
+    market                TEXT NOT NULL DEFAULT 'us',
+    earnings_date         TEXT NOT NULL,
+    sue_score             REAL,
+    eps_reported          REAL,
+    eps_estimate          REAL,
+    surprise_std          REAL,
+    price_at_event        REAL,
+    price_30d             REAL,
+    return_30d            REAL,
+    benchmark_return_30d  REAL,
+    created_at            TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sue_ticker ON earnings_surprise_alerts(ticker);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sue_uniq ON earnings_surprise_alerts(ticker, earnings_date);
+
+CREATE TABLE IF NOT EXISTS thesis_invalidation_events (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker                TEXT NOT NULL,
+    market                TEXT NOT NULL DEFAULT 'us',
+    trigger_type          TEXT NOT NULL,
+    pillar                TEXT,
+    triggered_at          TEXT NOT NULL,
+    detail                TEXT,
+    price_at_event        REAL,
+    price_30d             REAL,
+    return_30d            REAL,
+    benchmark_return_30d  REAL,
+    created_at            TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_inval_ticker ON thesis_invalidation_events(ticker);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inval_uniq
+    ON thesis_invalidation_events(ticker, trigger_type, triggered_at);
 """
 
 
@@ -119,6 +155,38 @@ def _migrate_dip_alerts_table(con: sqlite3.Connection) -> None:
                 pass
 
 
+def _migrate_sue_table(con: sqlite3.Connection) -> None:
+    """为已存在的 earnings_surprise_alerts 补 outcome 列（向后兼容旧库）。"""
+    try:
+        existing = {row[1] for row in con.execute(
+            "PRAGMA table_info(earnings_surprise_alerts)").fetchall()}
+    except sqlite3.OperationalError:
+        return
+    for col, typ in (("price_at_event", "REAL"), ("price_30d", "REAL"),
+                     ("return_30d", "REAL"), ("benchmark_return_30d", "REAL")):
+        if col not in existing:
+            try:
+                con.execute(f"ALTER TABLE earnings_surprise_alerts ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError:
+                pass
+
+
+def _migrate_invalidation_table(con: sqlite3.Connection) -> None:
+    """为已存在的 thesis_invalidation_events 补 outcome 列（向后兼容旧库）。"""
+    try:
+        existing = {r[1] for r in con.execute(
+            "PRAGMA table_info(thesis_invalidation_events)").fetchall()}
+    except sqlite3.OperationalError:
+        return
+    for col, typ in (("price_at_event", "REAL"), ("price_30d", "REAL"),
+                     ("return_30d", "REAL"), ("benchmark_return_30d", "REAL")):
+        if col not in existing:
+            try:
+                con.execute(f"ALTER TABLE thesis_invalidation_events ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError:
+                pass
+
+
 @contextmanager
 def _conn(db_path: Path | None = None):
     p = db_path or DB_PATH
@@ -144,6 +212,8 @@ def init_db(db_path: str | Path | None = None) -> None:
         _migrate_actions_table(con)
         _migrate_recommendations_table(con)
         _migrate_dip_alerts_table(con)
+        _migrate_sue_table(con)
+        _migrate_invalidation_table(con)
 
 
 # ── 写入当日推荐 ──────────────────────────────────────────────
@@ -514,6 +584,91 @@ async def realign_alpha(db_path: str | Path | None = None, dry_run: bool = True,
             "dry_run": dry_run, "samples": samples, "failed_samples": failed_samples}
 
 
+def save_sue_alert(ticker, market, earnings_date, sue_score, eps_reported,
+                   eps_estimate, surprise_std, price_at_event=None, db_path=None):
+    """写 SUE 事件行，(ticker, earnings_date) 幂等（UNIQUE index + INSERT OR IGNORE）。"""
+    p = _resolve_db(db_path)
+    with _conn(p) as con:
+        con.execute(
+            "INSERT OR IGNORE INTO earnings_surprise_alerts "
+            "(ticker, market, earnings_date, sue_score, eps_reported, eps_estimate, "
+            " surprise_std, price_at_event) VALUES (?,?,?,?,?,?,?,?)",
+            (ticker.upper(), market, earnings_date, sue_score, eps_reported,
+             eps_estimate, surprise_std, price_at_event))
+
+
+def get_sue_alerts(ticker=None, db_path=None, matured_only=False, asof=None):
+    """读 SUE 事件（默认按 earnings_date DESC）。
+
+    ticker=None → 全部。matured_only=True → 仅 return_30d 非空且 earnings_date 距 asof ≥30 日历日（供 RankIC/outcome）。
+    """
+    p = _resolve_db(db_path)
+    where, params = [], []
+    if ticker:
+        where.append("ticker = ?")
+        params.append(ticker.upper())
+    if matured_only:
+        where.append("return_30d IS NOT NULL")
+        where.append("julianday(?) - julianday(earnings_date) >= 30")
+        params.append(asof or _today().strftime("%Y-%m-%d"))
+    sql = "SELECT * FROM earnings_surprise_alerts"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY earnings_date DESC"
+    with _conn(p) as con:
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
+
+
+def save_invalidation_event(ticker, market, trigger_type, pillar, triggered_at,
+                            detail, price_at_event=None, db_path=None):
+    """写失效事件·(ticker,trigger_type,triggered_at) 幂等（UNIQUE + INSERT OR IGNORE）。"""
+    p = _resolve_db(db_path)
+    with _conn(p) as con:
+        con.execute(
+            "INSERT OR IGNORE INTO thesis_invalidation_events "
+            "(ticker, market, trigger_type, pillar, triggered_at, detail, price_at_event) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (ticker.upper(), market, trigger_type, pillar, triggered_at, detail, price_at_event))
+
+
+def get_invalidation_events(ticker=None, db_path=None, matured_only=False, asof=None):
+    """读失效事件（默认按 triggered_at DESC）。matured_only=True → 仅 return_30d 非空且
+    triggered_at 距 asof ≥30 日历日（供 RankIC/outcome，同 get_sue_alerts 口径）。"""
+    p = _resolve_db(db_path)
+    where, params = [], []
+    if ticker:
+        where.append("ticker = ?")
+        params.append(ticker.upper())
+    if matured_only:
+        where.append("return_30d IS NOT NULL")
+        where.append("julianday(?) - julianday(triggered_at) >= 30")
+        params.append(asof or _today().strftime("%Y-%m-%d"))
+    sql = "SELECT * FROM thesis_invalidation_events"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY triggered_at DESC"
+    with _conn(p) as con:
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
+
+
+def load_thesis_triggers(ticker, db_path=None):
+    """取该票结构化触发器 {pillars:[...], stop_conditions:str}；无/解析失败 → None。"""
+    import json
+    p = _resolve_db(db_path)
+    with _conn(p) as con:
+        row = con.execute("SELECT pillars, stop_conditions FROM theses WHERE ticker=?",
+                          (ticker.upper(),)).fetchone()
+    if not row or not row["pillars"]:
+        return None
+    try:
+        pillars = json.loads(row["pillars"])
+    except (ValueError, TypeError):
+        return None
+    if not pillars:
+        return None
+    return {"pillars": pillars, "stop_conditions": row["stop_conditions"] or ""}
+
+
 _LONG_WINDOWS = [
     # (fwd_td, col_suffix, cutoff_calendar_days)  30日≈21交易日 / 90日≈63交易日
     (21, "30d", 30),
@@ -581,6 +736,54 @@ async def fill_long_returns(db_path: str | Path | None = None) -> dict:
 
     if filled or immature or failed:
         print(f"[Tracker] 回填 {filled} 条 30/90 日窗口（immature={immature} failed={failed}）")
+    return {"filled": filled, "immature": immature, "failed": failed}
+
+
+def _today():
+    return datetime.today()
+
+
+async def backfill_sue_outcomes(db_path=None):
+    """回填 earnings_surprise_alerts 的 30天漂移 outcome。抄 fill_long_returns 30d 分支：
+    成熟闸 last_idx<=21 整行跳过；个股/基准原子两腿都成功才写、任一失败留 NULL；cutoff/floor 双边界。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    fwd_td = 21
+    cutoff = (_today() - timedelta(days=30)).strftime("%Y-%m-%d")
+    floor = (_today() - timedelta(days=fwd_td * 2 + 14 + 7)).strftime("%Y-%m-%d")
+    filled = immature = failed = 0
+    loop = asyncio.get_event_loop()
+    with _conn(p) as con:
+        pending = con.execute(
+            "SELECT id, ticker, earnings_date, COALESCE(market,'us') AS market "
+            "FROM earnings_surprise_alerts "
+            "WHERE earnings_date <= ? AND earnings_date >= ? AND return_30d IS NULL",
+            (cutoff, floor),
+        ).fetchall()
+    for row in pending:
+        win = await loop.run_in_executor(
+            None, lambda t=row["ticker"], m=row["market"], d=row["earnings_date"]:
+            _fetch_paired_window(t, m, d, fwd_td=fwd_td))
+        if win is None:
+            failed += 1
+            continue
+        p0, p_exit, start_date, exit_date, last_idx = win
+        if last_idx <= fwd_td:
+            immature += 1
+            continue
+        bm = await loop.run_in_executor(
+            None, lambda m=row["market"], s=start_date, e=exit_date:
+            _fetch_benchmark_window(m, s, e))
+        if bm is None:
+            failed += 1
+            continue
+        with _conn(p) as con:
+            con.execute(
+                "UPDATE earnings_surprise_alerts SET price_30d=?, return_30d=?, "
+                "benchmark_return_30d=? WHERE id=?",
+                (round(p_exit, 4), round((p_exit - p0) / p0 * 100, 2),
+                 round(bm, 2), row["id"]))
+        filled += 1
     return {"filled": filled, "immature": immature, "failed": failed}
 
 
@@ -1787,7 +1990,9 @@ def ticker_signal_stats(ticker: str, db_path: str | Path | None = None) -> str:
 def feedback_summary(db_path: str | Path | None = None) -> str:
     """
     返回一行反馈闭环摘要文字，供注入飞书卡片或月度回顾。
-    示例：「实际买入 8 次：胜率 75% · 均盈 +3.2%；跳过 5 次：其中 3 次事后涨了」
+    示例：「实际买入 8 次：操作胜率 75%（你的实操·非模型建议） · 均盈 +3.2%；跳过 5 次：其中 3 次事后涨了」
+    口径统一（2026-07-10）：此处「操作胜率」= 你真金白银买入后 7 日盈利比例，与模型「命中率」
+    （方向判断对错）、月报「切片胜率」（已平仓了结盈亏）是三个不同主体，词面即区分、不可混读。
     """
     s = get_feedback_accuracy(db_path)
     b, k = s["bought"], s["skipped"]
@@ -1796,7 +2001,7 @@ def feedback_summary(db_path: str | Path | None = None) -> str:
     parts = []
     if b["total"] > 0:
         parts.append(
-            f"实际买入 {b['total']} 次：胜率 {b['win_rate']}% · 均{'+' if b['avg_return'] >= 0 else ''}{b['avg_return']}%"
+            f"实际买入 {b['total']} 次：操作胜率 {b['win_rate']}%（你的实操·非模型建议） · 均{'+' if b['avg_return'] >= 0 else ''}{b['avg_return']}%"
         )
     if sold["total"] > 0:
         parts.append(

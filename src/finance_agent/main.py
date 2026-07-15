@@ -157,8 +157,21 @@ def price_scan(
     threshold: float = typer.Option(3.0, "--threshold", "-t", help="1小时跌幅阈值（%），默认 3.0"),
 ):
     """轻量价格异动扫描，跳过新闻，约 30 秒，适合每 5 分钟触发"""
-    pushed = asyncio.run(run_price_scan(threshold_pct=threshold))
+    pushed = asyncio.run(_price_scan(threshold_pct=threshold))
     console.print(f"{'✅' if pushed else '⚪'} 价格扫描完成，推送 {pushed} 条异动")
+
+
+async def _price_scan(threshold_pct: float) -> int:
+    pushed = await run_price_scan(threshold_pct=threshold_pct)
+    # P2c 失效触发器：价格向失效扫描（guarded·失败不拖垮 price-scan）
+    from finance_agent.signals.thesis_invalidation import thesis_invalidation_enabled
+    if thesis_invalidation_enabled():
+        try:
+            from finance_agent.alerts.thesis_invalidation_trigger import scan_price_invalidation
+            await scan_price_invalidation()
+        except Exception as e:
+            console.print(f"⚠️ 失效扫描(price)失败，跳过：{e}")
+    return pushed
 
 
 @app.command("weekly-report")
@@ -400,6 +413,29 @@ def rankic_monitor_cmd(
         asyncio.run(notify_if_decaying(d, skip_notify=skip_notify))
 
 
+@app.command("sue-edge")
+def sue_edge_cmd():
+    """P2b 扩展：SUE 漂移 edge 影子测量——反事实测『大超预期后做多/爆雷后避开』到底赚不赚。
+    纯观测·不发建议·不花钱；诚实：样本<60 不下结论，in-sample 读数、OOS 校准前禁据此加仓。"""
+    from finance_agent.value.sue_edge import sue_edge_reading
+    rd = sue_edge_reading(db_path=DB_PATH)
+    vlabel = {"insufficient": "⚪ 样本不足·暂不下结论", "edge_present": "✅ 漂移按方向兑现",
+              "no_edge": "❌ 无边际"}
+    for side, name in (("beat", "大超预期→做多"), ("miss", "爆雷→避开/做空")):
+        s = rd[side]
+        console.print(f"📈 {name}：n={s['n']} · 命中率={s['hit_rate']} · 均超额={s['mean_excess']} · "
+                      f"RankIC={s['rankic']} → {vlabel.get(s['verdict'], s['verdict'])}")
+    console.print(f"   整体 RankIC(SUE vs 30日超额)={rd['overall_rankic']} · 总样本 {rd['n_total']}")
+    console.print(f"   ⚠️ {rd['caveat']}")
+
+
+@app.command("check-invalidation")
+def check_invalidation_cmd(skip_notify: bool = typer.Option(False, "--skip-notify", help="不推飞书只跑")):
+    """手动跑一次持仓财报维度失效扫描（命中声明的失效条件→止损复核告警）。"""
+    from finance_agent.alerts.thesis_invalidation_trigger import scan_earnings_invalidation
+    asyncio.run(scan_earnings_invalidation(push=not skip_notify))
+
+
 @app.command("value-report")
 def value_report(
     skip_notify: bool = typer.Option(False, "--skip-notify", help="不发飞书，只打印"),
@@ -423,6 +459,15 @@ async def _value_report(skip_notify: bool):
             f"🌡️ 影子A/B：回填 {rep['backfilled']} 行 · 分歧样本 n={rep['n']} · 裁决 {rep['verdict']}")
     except Exception as e:
         console.print(f"[ShadowAB] 周回填跳过（不影响体检）: {e}")
+    # P2b SUE 因子：观测档漂移回填（30天到期样本，guarded·失败不拖垮体检）
+    from finance_agent.signals.sue_factor import sue_factor_enabled
+    if sue_factor_enabled():
+        try:
+            from finance_agent.db.tracker import backfill_sue_outcomes
+            res = await backfill_sue_outcomes()
+            console.print(f"📊 SUE 漂移回填：{res}")
+        except Exception as e:
+            console.print(f"[SUE] 回填跳过（不影响体检）: {e}")
 
 
 @app.command("monthly-review")
@@ -632,6 +677,25 @@ async def _earnings_check(skip_notify: bool):
                 f"  🔔 [bold]{item['ticker']}[/bold] 财报：{item['earnings_date']} "
                 f"（{item['days_until']} 天后）"
             )
+    # P2b SUE 因子：观测档回看落库（guarded·失败不拖垮 earnings-check）
+    from finance_agent.signals.sue_factor import sue_factor_enabled
+    if sue_factor_enabled():
+        try:
+            from finance_agent.alerts.earnings_trigger import record_sue_events
+            rec = await record_sue_events()
+            if rec:
+                console.print(f"📊 SUE 观测：落库 {len(rec)} 条盈余惊喜事件 {rec}")
+        except Exception as e:
+            console.print(f"[SUE] 回看落库跳过（不影响 earnings-check）: {e}")
+
+    # P2c 失效触发器：财报向失效扫描（guarded·失败不拖垮 earnings-check）
+    from finance_agent.signals.thesis_invalidation import thesis_invalidation_enabled
+    if thesis_invalidation_enabled():
+        try:
+            from finance_agent.alerts.thesis_invalidation_trigger import scan_earnings_invalidation
+            await scan_earnings_invalidation()
+        except Exception as e:
+            console.print(f"⚠️ 失效扫描(earnings)失败，跳过：{e}")
 
 
 @app.command("cooldown-check")
@@ -662,7 +726,7 @@ async def _feedback_stats():
     console.print("\n[bold]📊 操作反馈统计[/bold]")
     if b["total"] > 0:
         console.print(
-            f"  买入 {b['total']} 次 → 胜率 {b['win_rate']}%，平均 {b['avg_return']:+.2f}%"
+            f"  买入 {b['total']} 次 → 操作胜率 {b['win_rate']}%（你的实操·非模型建议），平均 {b['avg_return']:+.2f}%"
         )
     else:
         console.print("  暂无已回填的 BUY 操作")

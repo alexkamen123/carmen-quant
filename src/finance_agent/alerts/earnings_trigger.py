@@ -7,15 +7,21 @@
 """
 import asyncio
 import datetime
+import statistics
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 import yaml
 import yfinance as yf
 
+from finance_agent.data.yf_utils import _ticker_earnings_dates_with_retry, _extract_surprises
+from finance_agent.db.tracker import save_sue_alert
 from finance_agent.notifications.feishu import send_feishu_card
+from finance_agent.signals.sue_factor import compute_sue, _sue_pead_cfg
 
 EARNINGS_WINDOW_DAYS = 7  # 提前几天触发预警
+SUE_LOOKBACK_TD = 3  # 近 N 个交易日内的财报判为"刚出炉"
 
 
 def get_next_earnings(ticker: str) -> Optional[datetime.date]:
@@ -185,3 +191,57 @@ async def _push_earnings_alert(upcoming: list[dict]) -> None:
         f"{u['ticker']} {u['earnings_date']}（{u['days_until']}天后）" for u in upcoming)
     ok = await send_feishu_card(card, fallback_text=fallback)
     print(f"[EarningsTrigger] 飞书推送{'✅' if ok else '❌'}")
+
+
+def _today_date():
+    return datetime.date.today()
+
+
+def _load_us_holdings():
+    config_path = Path(__file__).parents[3] / "config" / "portfolio.yaml"
+    with open(config_path) as f:
+        portfolio = yaml.safe_load(f)
+    return [h for h in portfolio.get("holdings", []) if h.get("market", "us") == "us"]
+
+
+def _td_since(d, today):
+    """d 到 today 的交易日跨度（bdate 近似，含跨周末）。d>today → 0。"""
+    if d > today:
+        return 0
+    return max(0, len(pd.bdate_range(d, today)) - 1)
+
+
+async def record_sue_events(db_path=None):
+    """观测线：对每只美股持仓，若最近一次已发布财报落在近 SUE_LOOKBACK_TD 交易日内 → 算 SUE 落库。
+
+    调用方须在 sue_factor_enabled() 为真时才调；off 时根本不调，earnings-check 逐字节不变。
+    单票失败降级（try/except continue）；幂等靠 save_sue_alert 的 (ticker,earnings_date)。
+    """
+    cfg = _sue_pead_cfg()
+    min_q = int(cfg.get("min_quarters", 8))
+    today = _today_date()
+    loop = asyncio.get_event_loop()
+    recorded = []
+    for h in _load_us_holdings():
+        ticker = h["ticker"]
+        try:
+            df = await loop.run_in_executor(
+                None, lambda t=ticker: _ticker_earnings_dates_with_retry(t, limit=20))
+            surprises = _extract_surprises(df)
+            if not surprises:
+                continue
+            last_date, last_rep, last_est = surprises[-1]
+            if _td_since(last_date, today) > SUE_LOOKBACK_TD:
+                continue
+            hist = [rep - est for (_, rep, est) in surprises[:-1]]
+            sue = compute_sue(last_rep, last_est, hist, min_quarters=min_q)
+            if sue is None:
+                continue
+            sigma = statistics.stdev(hist) if len(hist) >= 2 else None
+            save_sue_alert(ticker=ticker, market="us", earnings_date=last_date.isoformat(),
+                           sue_score=sue, eps_reported=last_rep, eps_estimate=last_est,
+                           surprise_std=sigma, db_path=db_path)
+            recorded.append((ticker, sue))
+        except Exception:
+            continue
+    return recorded

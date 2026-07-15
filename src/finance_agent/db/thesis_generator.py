@@ -5,6 +5,7 @@
 """
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -13,6 +14,27 @@ import yfinance as yf
 from finance_agent.agents.claude_client import claude_cli_chat, has_claude_cli, strip_markdown
 from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.db.tracker import save_thesis, load_thesis
+
+
+_VALID_TRIGGERS = {"earnings_miss", "news_negative", "price_break",
+                   "revenue_decline", "margin_break"}
+
+
+def _parse_thesis_triggers(text):
+    """从 thesis 原始文本（strip_markdown 之前）抽 ```json``` 块 → (pillars|None, stop_conditions)。
+    解析失败 → (None, "")。"""
+    m = re.search(r"```json\s*(\{.*?\})\s*```", text or "", re.DOTALL)
+    if not m:
+        return None, ""
+    try:
+        obj = json.loads(m.group(1))
+    except (ValueError, TypeError):
+        return None, ""
+    pillars = obj.get("pillars")
+    if not isinstance(pillars, list):
+        return None, ""
+    clean = [p for p in pillars if isinstance(p, dict) and p.get("trigger_type") in _VALID_TRIGGERS]
+    return (clean or None), (obj.get("stop_conditions") or "")
 
 
 THESIS_SYSTEM = """你是一位价值投资顾问，帮助个人投资者梳理每只持仓的核心投资逻辑。
@@ -33,7 +55,13 @@ THESIS_SYSTEM = """你是一位价值投资顾问，帮助个人投资者梳理�
 **当前阶段**
 目前处于什么阶段（如：早期成长/成熟扩张/估值修复等）。
 
-要求：简洁，总字数不超过 200 字，基于真实数据，不要无根据乐观。"""
+要求：简洁，总字数不超过 200 字，基于真实数据，不要无根据乐观。
+
+另外，在正文之后附一段 JSON 代码块（```json ... ```），声明这只票的"论点失效条件"，供机器监控：
+{"pillars": [{"pillar": "<支柱名>", "trigger_type": "<从下列固定值选>", "threshold": <数值或null>, "status": "intact"}],
+ "stop_conditions": "<给人看的一句话止损条件摘要>"}
+trigger_type 只能取：earnings_miss / news_negative / price_break / revenue_decline / margin_break。
+price_break 与 margin_break 必须给数值 threshold（止损价 / 毛利率百分比）；其余 threshold 填 null。最多 4 条，只列真正会证伪核心逻辑的。"""
 
 THESIS_USER = """股票：{ticker}（{market}市场）
 持仓成本：{cost_basis}
@@ -71,14 +99,14 @@ async def _fetch_quick_financials(ticker: str, market: str) -> str:
 
 async def generate_thesis_for(ticker: str, market: str, cost_basis: float,
                                shares: float, notes: str = "",
-                               force: bool = False) -> str:
+                               force: bool = False, db_path=None) -> str:
     """
     为单只股票生成持仓逻辑。
     force=True 时即使已有记录也重新生成。
     返回生成的 thesis 文字。
     """
     if not force:
-        existing = load_thesis(ticker)
+        existing = load_thesis(ticker, db_path=db_path)
         if existing:
             print(f"[ThesisGen] {ticker} 已有持仓逻辑，跳过（用 --force 覆盖）")
             return existing
@@ -95,14 +123,22 @@ async def generate_thesis_for(ticker: str, market: str, cost_basis: float,
 
     try:
         if has_claude_cli():
-            thesis = strip_markdown(await claude_cli_chat(THESIS_SYSTEM, user_msg, timeout=90))
+            raw = await claude_cli_chat(THESIS_SYSTEM, user_msg, timeout=90)
+            thesis = strip_markdown(raw)
         else:
             raise RuntimeError("无 Claude CLI")
     except Exception as e:
         print(f"[ThesisGen] Claude 失败，降级 DeepSeek ({ticker}): {e}")
-        thesis = await deepseek_chat(THESIS_SYSTEM, user_msg)
+        raw = await deepseek_chat(THESIS_SYSTEM, user_msg)
+        thesis = raw
 
-    save_thesis(ticker, market, thesis)
+    # 触发器解析要用 strip_markdown 之前的原始文本：strip_markdown 只锚定字符串首尾，
+    # 会把正文末尾附带的 ```json ... ``` 代码块的收尾栅栏吃掉，导致正则拿不到闭合围栏。
+    pillars, stop_conditions = _parse_thesis_triggers(raw)
+    # 存库的 thesis_text 要去掉整个 ```json``` 块（PM 只读人看的自由文本·不被 JSON 污染）
+    thesis = re.sub(r"\s*```json\b.*$", "", thesis, flags=re.DOTALL).strip()
+    save_thesis(ticker, market, thesis, pillars=pillars,
+                stop_conditions=stop_conditions, db_path=db_path)
     return thesis
 
 
