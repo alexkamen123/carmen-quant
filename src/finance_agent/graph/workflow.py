@@ -371,6 +371,12 @@ _SHADOW_EMOJI = {"买入": "🟢", "持有": "🟡", "观望": "🟡",
                  "减仓": "🟠", "卖出": "🔴", "按计划定投": "⬜"}
 _SHADOW_CONF = {"高": "★★★", "中": "★★☆", "低": "★☆☆"}
 
+# 逐股渲染共用常量（视觉改版：日报卡逐股块与顶部速览共用一套口径）
+_REC_EMOJI = {"买入": "🟢", "持有": "🟡", "观望": "🟡",
+              "减仓": "🟠", "卖出": "🔴", "按计划定投": "⬜"}
+_CONF_LABEL = {"高": "信心 高", "中": "信心 中", "低": "信心 低"}  # ★★★ → 说人话
+_POS_EMOJI = {"减仓": "🔽", "维持": "➡️", "小加": "🔼", "大加": "⏫"}
+
 
 def _panel(title: str, content: str, expanded: bool = False) -> dict:
     """schema 2.0 折叠面板（与 value/report.py 同款）：主屏只显标题，点开看 content。"""
@@ -406,6 +412,123 @@ def _build_shadow_panel(shadow_stocks: list) -> dict | None:
         lines.append(body)
     title = f"**🔍 非持仓·影子股观察（{len(shadow_stocks)}）**　_点开看触发信号与简评_"
     return _panel(title, "\n".join(lines))
+
+
+def _stock_head_columns(head_md: str, meta_md: str) -> dict:
+    """逐股首行两栏对齐（column_set）：左=标的+建议，右=信心+仓位增减。
+    比单行 markdown 更清爽，让"一眼扫动作"有独立视觉层级。meta_md 为空时仍保留右栏占位。"""
+    return {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "horizontal_spacing": "default",
+        "columns": [
+            {"tag": "column", "width": "weighted", "weight": 3, "vertical_align": "center",
+             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": head_md}}]},
+            {"tag": "column", "width": "weighted", "weight": 2, "vertical_align": "center",
+             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": meta_md or " "}}]},
+        ],
+    }
+
+
+def _first_point(text: str) -> str:
+    """提取第一条编号论点或第一句，截到 45 字（多空辩论用）。"""
+    import re
+    m = re.search(r"(?:^|\n)\s*[1１]\s*[\.．、:：]?\s*(.+)", text)
+    s_ = m.group(1).strip() if m else text.split("\n")[0]
+    return _clip_md(s_)
+
+
+def _build_held_stock_elements(s) -> list[dict]:
+    """单只持仓股 → 卡片元素列表（视觉改版·纯展示重组，不改任何建议逻辑/数字）：
+      · 主屏可见：标的/建议/信心（column_set 首行）+ 结论 + 本周操作 + 财报预警
+        + 要盯的风险 + 卖飞/该减没减守门警示（安全相关，不折叠）
+      · 折叠详情「展开理由」：入场点 / 假设 / 止损 / 基本面 / 多空辩论 / 信号历史
+    折叠让长持仓不再撑爆屏幕；信息一条不少，只是重型细节下沉一层。"""
+    emoji = _REC_EMOJI.get(s.recommendation, "⬜")
+    conf_label = _CONF_LABEL.get(s.confidence, "")
+    is_etf = s.ticker in ("QQQM", "VOO")
+
+    # 财报预警（距今 ≤7 天）——逻辑原样搬运
+    earnings_alert = ""
+    ned = s.earnings.next_earnings_date
+    if ned:
+        try:
+            days_to_earnings = (datetime.strptime(ned, "%Y-%m-%d").date() - datetime.today().date()).days
+            if 0 <= days_to_earnings <= 3:
+                earnings_alert = f"🔔 **财报预警**：{ned}（{days_to_earnings}天后）"
+            elif days_to_earnings <= 7:
+                earnings_alert = f"📅 财报临近：{ned}（{days_to_earnings}天后）"
+        except ValueError:
+            pass
+
+    pos_icon = next((v for k, v in _POS_EMOJI.items() if k in (s.position_change or "")), "➡️")
+
+    # ── 首行：两栏 column_set ──
+    head_md = f"**{emoji} {s.ticker}**　{s.recommendation}"
+    meta_bits = [b for b in (conf_label, f"{pos_icon} {s.position_change or '维持'}") if b]
+    els: list[dict] = [_stock_head_columns(head_md, "　".join(meta_bits))]
+
+    # ── 主屏可见块：结论 + 本周操作 + 财报 + 风险 + 守门警示 ──
+    vis_lines: list[str] = []
+    if s.one_line:
+        vis_lines.append(s.one_line)
+    # PM 降级兜底：核心字段全空时给个交代，不留白卡
+    elif not (s.entry_hint or s.key_risk or s.key_assumption):
+        vis_lines.append("_（本股本次为降级分析，详情不全，建议以持仓逻辑为准）_")
+    if s.short_term_action and s.short_term_action != "立即执行":
+        vis_lines.append(f"⏱️ **本周操作：{s.short_term_action}**（长期建议仍为{s.recommendation}）")
+    if earnings_alert:
+        vis_lines.append(earnings_alert)
+    if s.key_risk:
+        vis_lines.append(f"⚠️ {s.key_risk}")
+    # 卖飞守门：减仓/卖出但技术面仍强势时追加警示（不改建议本身·安全相关留主屏）
+    sig = s.signals
+    sell_warn = flag_sell_into_strength(
+        recommendation=s.recommendation, position_change=s.position_change or "",
+        rsi=sig.rsi, price=sig.close, ma20=sig.ma20, ma60=sig.ma60, macd=sig.macd,
+    )
+    if sell_warn:
+        vis_lines.append(sell_warn)
+    # 该减没减守门：持有立场但技术面明显走弱时追加警示（与卖飞守门互斥）。
+    # ETF/定投逆势继续买是策略本意，短路跳过，避免反向误警。
+    if not is_etf and s.recommendation != "按计划定投":
+        hold_warn = flag_hold_into_weakness(
+            recommendation=s.recommendation,
+            rsi=sig.rsi, price=sig.close, ma20=sig.ma20, ma60=sig.ma60, macd=sig.macd,
+        )
+        if hold_warn:
+            vis_lines.append(hold_warn)
+    if vis_lines:
+        els.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(vis_lines)}})
+
+    # ── 折叠详情：入场/假设/止损/基本面/多空/信号历史（重型细节下沉）──
+    fold_lines: list[str] = []
+    if s.entry_hint:
+        fold_lines.append(f"📌 入场：{s.entry_hint}")
+    if s.key_assumption:
+        fold_lines.append(f"🔑 假设：{s.key_assumption}")
+    if s.stop_loss_hint:
+        fold_lines.append(f"🛡️ 止损：{s.stop_loss_hint}")
+    if s.bull_thesis and not is_etf:
+        fv = s.earnings.fundamental_view
+        if fv and "宽基" not in fv and "暂无" not in fv:
+            fv_short = _clip_md(fv.split("。")[0].split("\n")[0], limit=80)
+            fold_lines.append(f"📈 {fv_short}")
+        bull_short = _first_point(s.bull_thesis)
+        bear_short = _first_point(s.bear_thesis or "")
+        if bull_short:
+            fold_lines.append(f"🐂 多方：{bull_short}")
+        if bear_short:
+            fold_lines.append(f"🐻 空方：{bear_short}")
+        # 信号历史面板：只对买入/加仓显示，样本不足时函数内部会加警示
+        if s.recommendation in ("买入",) or "加" in (s.position_change or ""):
+            hist = ticker_signal_stats(s.ticker)
+            if hist:
+                fold_lines.append(hist)
+    if fold_lines:
+        els.append(_panel("**展开理由 · 入场/止损/多空**　_点开看细节_", "\n".join(fold_lines)))
+
+    return els
 
 
 async def format_report_node(state: AgentState) -> AgentState:
@@ -457,113 +580,7 @@ async def format_report_node(state: AgentState) -> AgentState:
     shadow_stocks = [s for s in state.stocks if not s.shares]
 
     for i, s in enumerate(held_stocks):
-        emoji = EMOJI.get(s.recommendation, "⬜")
-        conf  = CONF.get(s.confidence, "")
-        is_etf = s.ticker in ("QQQM", "VOO")
-
-        # 财报预警（距今 ≤7 天）
-        earnings_alert = ""
-        ned = s.earnings.next_earnings_date
-        if ned:
-            try:
-                days_to_earnings = (datetime.strptime(ned, "%Y-%m-%d").date() - datetime.today().date()).days
-                if 0 <= days_to_earnings <= 3:
-                    earnings_alert = f"🔔 **财报预警**：{ned}（{days_to_earnings}天后）"
-                elif days_to_earnings <= 7:
-                    earnings_alert = f"📅 财报临近：{ned}（{days_to_earnings}天后）"
-            except ValueError:
-                pass
-
-        # 仓位建议标签
-        POS_EMOJI = {"减仓": "🔽", "维持": "➡️", "小加": "🔼", "大加": "⏫"}
-        pos_icon = next((v for k, v in POS_EMOJI.items() if k in (s.position_change or "")), "➡️")
-
-        # 主推荐块
-        main_md_lines = [
-            f"**{emoji} {s.ticker}**　{s.recommendation}　{conf}　{pos_icon} {s.position_change or '维持'}",
-        ]
-        if s.one_line:
-            main_md_lines.append(f"{s.one_line}")
-        # PM 降级兜底：核心字段全空（DeepSeek 降级且单票也失败）时给个交代，不留白卡
-        elif not (s.entry_hint or s.key_risk or s.key_assumption):
-            main_md_lines.append("_（本股本次为降级分析，详情不全，建议以持仓逻辑为准）_")
-        # 短期执行建议（只在与长期不一致时显示）
-        if s.short_term_action and s.short_term_action != "立即执行":
-            main_md_lines.append(f"⏱️ **本周操作：{s.short_term_action}**（长期建议仍为{s.recommendation}）")
-        if earnings_alert:
-            main_md_lines.append(earnings_alert)
-        if s.entry_hint:
-            main_md_lines.append(f"📌 {s.entry_hint}")
-        if s.key_risk:
-            main_md_lines.append(f"⚠️ {s.key_risk}")
-        if s.key_assumption:
-            main_md_lines.append(f"🔑 **假设**：{s.key_assumption}")
-        if s.stop_loss_hint:
-            main_md_lines.append(f"🛡️ **止损**：{s.stop_loss_hint}")
-        # 卖飞守门：减仓/卖出建议但技术面仍强势时追加警示（不改变建议本身）
-        sig = s.signals
-        sell_warn = flag_sell_into_strength(
-            recommendation=s.recommendation,
-            position_change=s.position_change or "",
-            rsi=sig.rsi,
-            price=sig.close,
-            ma20=sig.ma20,
-            ma60=sig.ma60,
-            macd=sig.macd,
-        )
-        if sell_warn:
-            main_md_lines.append(sell_warn)
-        # 该减没减守门：持有立场但技术面明显走弱时追加警示（与卖飞守门互斥）。
-        # ETF/定投标的逆势继续买是策略本意，短路跳过，避免反向误警。
-        if not is_etf and s.recommendation != "按计划定投":
-            hold_warn = flag_hold_into_weakness(
-                recommendation=s.recommendation,
-                rsi=sig.rsi,
-                price=sig.close,
-                ma20=sig.ma20,
-                ma60=sig.ma60,
-                macd=sig.macd,
-            )
-            if hold_warn:
-                main_md_lines.append(hold_warn)
-
-        elements.append({
-            "tag": "div",
-            "text": {"tag": "lark_md", "content": "\n".join(main_md_lines)},
-        })
-
-        # 辩论 + 基本面块（非 ETF，精简为 1-2 行）
-        if s.bull_thesis and not is_etf:
-            debate_lines = []
-            fv = s.earnings.fundamental_view
-            if fv and "宽基" not in fv and "暂无" not in fv:
-                # 📈 基本面摘要句较长，放宽到 80 字避免拦腰断句
-                fv_short = _clip_md(fv.split("。")[0].split("\n")[0], limit=80)
-                debate_lines.append(f"📈 {fv_short}")
-            # 多空：各取第一条论点，分两行展示
-            def _first_point(text: str) -> str:
-                """提取第一条编号论点或第一句，截到 45 字"""
-                import re
-                m = re.search(r"(?:^|\n)\s*[1１]\s*[\.．、:：]?\s*(.+)", text)
-                s_ = m.group(1).strip() if m else text.split("\n")[0]
-                return _clip_md(s_)
-            bull_short = _first_point(s.bull_thesis)
-            bear_short = _first_point(s.bear_thesis or "")
-            if bull_short:
-                debate_lines.append(f"🐂 {bull_short}")
-            if bear_short:
-                debate_lines.append(f"🐻 {bear_short}")
-            # 信号历史面板：只对买入/加仓显示，样本不足时加警示
-            if s.recommendation in ("买入",) or "加" in (s.position_change or ""):
-                hist = ticker_signal_stats(s.ticker)
-                if hist:
-                    debate_lines.append(hist)
-            if debate_lines:
-                elements.append({
-                    "tag": "div",
-                    "text": {"tag": "lark_md", "content": "\n".join(debate_lines)},
-                })
-
+        elements.extend(_build_held_stock_elements(s))
         # 分隔线（最后一只持仓股不加）
         if i < len(held_stocks) - 1:
             elements.append({"tag": "hr"})
@@ -650,11 +667,15 @@ async def format_report_node(state: AgentState) -> AgentState:
              if s.recommendation == "买入" or (s.position_change or "").startswith(("大加", "小加"))]
     sell_t = [s.ticker for s in state.stocks
               if s.recommendation in ("减仓", "卖出") or (s.position_change or "").startswith("减仓")]
+    hold_n = sum(1 for s in state.stocks if s.shares
+                 and s.recommendation in ("持有", "观望"))
     tldr_parts = []
     if buy_t:
-        tldr_parts.append(f"🟢 加/买：{'、'.join(buy_t)}")
+        tldr_parts.append(f"🟢 加/买 {len(buy_t)}：{'、'.join(buy_t)}")
     if sell_t:
-        tldr_parts.append(f"🔴 减/卖：{'、'.join(sell_t)}")
+        tldr_parts.append(f"🔴 减/卖 {len(sell_t)}：{'、'.join(sell_t)}")
+    if hold_n:
+        tldr_parts.append(f"🟡 拿住 {hold_n}")
     tldr_body = "　·　".join(tldr_parts) if tldr_parts else "今日无买卖建议，持有/定投为主"
     tldr_elements = [
         {"tag": "div", "text": {"tag": "lark_md", "content": f"**📋 今日速览**\n{tldr_body}"}},
