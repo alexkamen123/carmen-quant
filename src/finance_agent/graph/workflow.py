@@ -414,22 +414,6 @@ def _build_shadow_panel(shadow_stocks: list) -> dict | None:
     return _panel(title, "\n".join(lines))
 
 
-def _stock_head_columns(head_md: str, meta_md: str) -> dict:
-    """逐股首行两栏对齐（column_set）：左=标的+建议，右=信心+仓位增减。
-    比单行 markdown 更清爽，让"一眼扫动作"有独立视觉层级。meta_md 为空时仍保留右栏占位。"""
-    return {
-        "tag": "column_set",
-        "flex_mode": "none",
-        "horizontal_spacing": "default",
-        "columns": [
-            {"tag": "column", "width": "weighted", "weight": 3, "vertical_align": "center",
-             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": head_md}}]},
-            {"tag": "column", "width": "weighted", "weight": 2, "vertical_align": "center",
-             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": meta_md or " "}}]},
-        ],
-    }
-
-
 def _first_point(text: str) -> str:
     """提取第一条编号论点或第一句，截到 45 字（多空辩论用）。"""
     import re
@@ -440,10 +424,12 @@ def _first_point(text: str) -> str:
 
 def _build_held_stock_elements(s) -> list[dict]:
     """单只持仓股 → 卡片元素列表（视觉改版·纯展示重组，不改任何建议逻辑/数字）：
-      · 主屏可见：标的/建议/信心（column_set 首行）+ 结论 + 本周操作 + 财报预警
-        + 要盯的风险 + 卖飞/该减没减守门警示（安全相关，不折叠）
-      · 折叠详情「展开理由」：入场点 / 假设 / 止损 / 基本面 / 多空辩论 / 信号历史
-    折叠让长持仓不再撑爆屏幕；信息一条不少，只是重型细节下沉一层。"""
+      · 首行单行紧凑：标的 · 建议 · 信心 · 仓位增减（不用 column_set——手机端两栏
+        分割会甩出中间空白+撑高纵向间距，实测布局散乱）
+      · 主屏可见：结论 + 本周操作 + 财报预警 + 入场 + 止损 + 要盯的风险
+        + 卖飞/该减没减守门警示（都属"今天要看的动作/安全线"，不折叠）
+      · 折叠详情「展开理由」：假设 / 基本面 / 多空辩论 / 信号历史（讨论性内容下沉一层）
+    折叠让长持仓不撑爆屏幕；信息一条不少，只是背景论述收进一层。"""
     emoji = _REC_EMOJI.get(s.recommendation, "⬜")
     conf_label = _CONF_LABEL.get(s.confidence, "")
     is_etf = s.ticker in ("QQQM", "VOO")
@@ -463,13 +449,12 @@ def _build_held_stock_elements(s) -> list[dict]:
 
     pos_icon = next((v for k, v in _POS_EMOJI.items() if k in (s.position_change or "")), "➡️")
 
-    # ── 首行：两栏 column_set ──
-    head_md = f"**{emoji} {s.ticker}**　{s.recommendation}"
-    meta_bits = [b for b in (conf_label, f"{pos_icon} {s.position_change or '维持'}") if b]
-    els: list[dict] = [_stock_head_columns(head_md, "　".join(meta_bits))]
+    # ── 首行：单行紧凑 标的 · 建议 · 信心 · 仓位 ──
+    head_bits = [f"**{emoji} {s.ticker}**　{s.recommendation}"]
+    head_bits += [b for b in (conf_label, f"{pos_icon} {s.position_change or '维持'}") if b]
+    vis_lines: list[str] = [" · ".join(head_bits)]
 
-    # ── 主屏可见块：结论 + 本周操作 + 财报 + 风险 + 守门警示 ──
-    vis_lines: list[str] = []
+    # ── 主屏可见：结论 + 本周操作 + 财报 + 入场 + 止损 + 风险 + 守门警示 ──
     if s.one_line:
         vis_lines.append(s.one_line)
     # PM 降级兜底：核心字段全空时给个交代，不留白卡
@@ -479,6 +464,10 @@ def _build_held_stock_elements(s) -> list[dict]:
         vis_lines.append(f"⏱️ **本周操作：{s.short_term_action}**（长期建议仍为{s.recommendation}）")
     if earnings_alert:
         vis_lines.append(earnings_alert)
+    if s.entry_hint:
+        vis_lines.append(f"📌 入场：{s.entry_hint}")
+    if s.stop_loss_hint:
+        vis_lines.append(f"🛡️ 止损：{s.stop_loss_hint}")
     if s.key_risk:
         vis_lines.append(f"⚠️ {s.key_risk}")
     # 卖飞守门：减仓/卖出但技术面仍强势时追加警示（不改建议本身·安全相关留主屏）
@@ -498,17 +487,12 @@ def _build_held_stock_elements(s) -> list[dict]:
         )
         if hold_warn:
             vis_lines.append(hold_warn)
-    if vis_lines:
-        els.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(vis_lines)}})
+    els: list[dict] = [{"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(vis_lines)}}]
 
-    # ── 折叠详情：入场/假设/止损/基本面/多空/信号历史（重型细节下沉）──
+    # ── 折叠详情：假设/基本面/多空/信号历史（讨论性内容下沉）──
     fold_lines: list[str] = []
-    if s.entry_hint:
-        fold_lines.append(f"📌 入场：{s.entry_hint}")
     if s.key_assumption:
         fold_lines.append(f"🔑 假设：{s.key_assumption}")
-    if s.stop_loss_hint:
-        fold_lines.append(f"🛡️ 止损：{s.stop_loss_hint}")
     if s.bull_thesis and not is_etf:
         fv = s.earnings.fundamental_view
         if fv and "宽基" not in fv and "暂无" not in fv:
@@ -526,7 +510,7 @@ def _build_held_stock_elements(s) -> list[dict]:
             if hist:
                 fold_lines.append(hist)
     if fold_lines:
-        els.append(_panel("**展开理由 · 入场/止损/多空**　_点开看细节_", "\n".join(fold_lines)))
+        els.append(_panel("**展开理由 · 假设/多空**　_点开看细节_", "\n".join(fold_lines)))
 
     return els
 

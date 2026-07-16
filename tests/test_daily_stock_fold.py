@@ -2,13 +2,14 @@
 """日报卡视觉改版（路线A·飞书原生组件）：持仓股逐股块重组为
 「主屏可见 + 展开理由折叠」，纯展示重构、不改任何建议逻辑/数字。
 
-主屏可见：column_set 首行(标的/建议/信心) + 结论 + 本周操作 + 财报预警
-          + 要盯的风险 + 卖飞/该减没减守门警示（安全相关不折叠）
-折叠详情：入场点 / 假设 / 止损 / 基本面 / 多空辩论 / 信号历史
+首行单行紧凑：标的 · 建议 · 信心 · 仓位（不用 column_set——手机端布局散乱）
+主屏可见：结论 + 本周操作 + 财报预警 + 入场 + 止损 + 要盯的风险
+          + 卖飞/该减没减守门警示（今天要看的动作/安全线，不折叠）
+折叠详情：假设 / 基本面 / 多空辩论 / 信号历史（讨论性内容下沉）
 """
 from types import SimpleNamespace
 
-from finance_agent.graph.workflow import _build_held_stock_elements, _stock_head_columns
+from finance_agent.graph.workflow import _build_held_stock_elements
 
 
 def _sig(**kw):
@@ -36,74 +37,64 @@ def _stk(ticker="NVDA", rec="买入", conf="高", shares=10.0, **kw):
     return SimpleNamespace(**base)
 
 
-def _texts(els):
-    """收集所有 div/column 里的 markdown 文本（含 column_set 嵌套）。"""
-    out = []
+def _vis(els):
+    """主屏可见文本 = 第一个 div（首行+结论+动作+止损/入场+风险+守门）。"""
+    return els[0]["text"]["content"]
+
+
+def _fold(els):
+    """折叠面板正文（无则空串）。"""
     for e in els:
-        if e.get("tag") == "div":
-            out.append(e["text"]["content"])
-        elif e.get("tag") == "column_set":
-            for col in e["columns"]:
-                for ce in col["elements"]:
-                    out.append(ce["text"]["content"])
-    return "\n".join(out)
+        if e.get("tag") == "collapsible_panel":
+            return e["elements"][0]["content"]
+    return ""
 
 
-def test_head_row_is_column_set():
+def test_head_row_single_line_compact():
     els = _build_held_stock_elements(_stk())
-    assert els[0]["tag"] == "column_set"
-    assert len(els[0]["columns"]) == 2
+    head = _vis(els).splitlines()[0]
+    assert "NVDA" in head and "买入" in head and "信心 高" in head  # 标的·建议·信心同一行
+    assert els[0]["tag"] == "div"                                  # 不再用 column_set
 
 
 def test_confidence_is_plain_words_not_stars():
     """★★★ → 「信心 高」说人话。"""
-    head = _texts(_build_held_stock_elements(_stk(conf="高")))
+    head = _vis(_build_held_stock_elements(_stk(conf="高")))
     assert "信心 高" in head
     assert "★" not in head
 
 
-def test_visible_block_keeps_conclusion_action_and_guards():
-    els = _build_held_stock_elements(_stk())
-    txt = _texts(els)  # 只看主屏可见（column + div），不含折叠面板正文
-    assert "增长与利润俱强" in txt          # 结论
-    assert "本周操作：逢回调分批" in txt      # 本周操作
-    assert "板块短期情绪弱" in txt           # 要盯的风险
+def test_visible_block_keeps_action_stop_entry_and_guards():
+    """止损/入场/结论/本周操作/风险都露在主屏（用户要求止损入场露出）。"""
+    vis = _vis(_build_held_stock_elements(_stk()))
+    assert "增长与利润俱强" in vis            # 结论
+    assert "本周操作：逢回调分批" in vis        # 本周操作
+    assert "入场：回踩20日线" in vis           # 入场露出
+    assert "止损：跌破前低8%减半" in vis        # 止损露出
+    assert "板块短期情绪弱" in vis             # 要盯的风险
 
 
-def test_heavy_details_go_into_collapsible_panel():
+def test_discussion_goes_into_collapsible_panel():
     els = _build_held_stock_elements(_stk())
     panels = [e for e in els if e.get("tag") == "collapsible_panel"]
     assert len(panels) == 1
     assert panels[0]["expanded"] is False          # 默认折叠
-    body = panels[0]["elements"][0]["content"]
-    # 重型细节下沉到折叠里
-    assert "入场：回踩20日线" in body
-    assert "假设：AI资本开支未见拐点" in body
-    assert "止损：跌破前低8%减半" in body
+    body = _fold(els)
+    assert "假设：AI资本开支未见拐点" in body       # 讨论性内容下沉
     assert "多方" in body and "空方" in body
-    # 主屏可见区不再平铺这些重型字段
-    vis = _texts(els)
-    assert "回踩20日线" not in vis
-    assert "跌破前低8%减半" not in vis
+    # 主屏可见区不含多空辩论
+    assert "多方" not in _vis(els)
 
 
 def test_earnings_alert_visible_when_near():
     from datetime import date, timedelta
     soon = (date.today() + timedelta(days=2)).strftime("%Y-%m-%d")
     els = _build_held_stock_elements(_stk(earnings=_earn(next_earnings_date=soon)))
-    assert "财报预警" in _texts(els)
+    assert "财报预警" in _vis(els)
 
 
-def test_no_panel_when_no_heavy_details():
-    """无入场/假设/止损/多空 → 不生成空折叠面板。"""
-    s = _stk(entry_hint="", key_assumption="", stop_loss_hint="", bull_thesis="")
+def test_no_panel_when_no_discussion():
+    """无假设/多空 → 不生成空折叠面板（止损/入场在主屏、不算折叠内容）。"""
+    s = _stk(key_assumption="", bull_thesis="")
     els = _build_held_stock_elements(s)
     assert not any(e.get("tag") == "collapsible_panel" for e in els)
-
-
-def test_head_columns_helper_shape():
-    c = _stock_head_columns("**🟢 NVDA**", "信心 高")
-    assert c["tag"] == "column_set"
-    assert c["columns"][0]["elements"][0]["text"]["content"] == "**🟢 NVDA**"
-    # 右栏空 meta 时用占位空格，避免飞书空 column 渲染异常
-    assert _stock_head_columns("x", "")["columns"][1]["elements"][0]["text"]["content"] == " "
