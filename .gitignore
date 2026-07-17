@@ -15,8 +15,9 @@ tests/fixtures/price_snapshots/*.json
 # 真实持仓 / 账户余额，绝不入库（仅保留 config/portfolio.example.yaml 模板）
 config/portfolio.yaml
 
-# 本地 Claude Code 配置（机器级权限，勿入库）
-.claude/
+# 本地 Claude Code 配置（机器级权限，勿入库）；仅放开 skills/ 入库（出片工具随仓版本化）
+.claude/*
+!.claude/skills/
 # 一次性调研 brief（保留本地，不入代码历史）
 ONBOARDING.md
 logs/

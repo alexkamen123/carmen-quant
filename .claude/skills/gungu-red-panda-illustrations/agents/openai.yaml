@@ -1,0 +1,6 @@
+interface:
+  display_name: "滚滚小熊猫配图"
+  short_description: "为中文文章生成滚滚IP正文配图"
+  default_prompt: "Use $gungu-red-panda-illustrations to 为这篇中文文章设计并生成几张滚滚小熊猫正文配图。"
+policy:
+  allow_implicit_invocation: true
