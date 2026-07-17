@@ -19,11 +19,21 @@ export async function runCodexExec(input: SpawnInput): Promise<CodexRunResult> {
   // --skip-git-repo-check: lets the wrapper run from non-git cwds
   //   (e.g. /tmp, or a skill installed under ~/.claude/plugins/...).
   //   Without it, codex refuses with "Not inside a trusted directory".
+  // SECURITY (local hardening, diverges from upstream): default to the
+  //   workspace-write sandbox instead of danger-full-access — the wrapper only
+  //   needs to write the output PNG, not full-machine access. The prompt is
+  //   untrusted data (may contain injection); running it under a full-access
+  //   codex agent = arbitrary command execution as the user. Escalation to
+  //   danger-full-access is gated behind an explicit opt-in env var.
+  const sandbox =
+    process.env.BAOYU_CODEX_IMAGEGEN_DANGER === "1"
+      ? "danger-full-access"
+      : "workspace-write";
   const args = [
     "exec",
     "--json",
     "--sandbox",
-    "danger-full-access",
+    sandbox,
     "--skip-git-repo-check",
   ];
   for (const img of input.refImages ?? []) {
