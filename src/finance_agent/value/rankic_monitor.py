@@ -154,19 +154,30 @@ def run_rankic_monitor(today: str | None = None, log_path: Path = LOG_PATH,
 
 
 def build_rankic_alert_card(verdict: dict) -> dict:
-    """构建 RankIC 衰减告警飞书卡（v1 interactive，与减仓卡同款结构）。仅 decaying 时用。"""
+    """构建 RankIC 衰减告警飞书卡（v1 interactive，与减仓卡同款结构）。仅 decaying 时用。
+    视觉改版：主句说人话（保留全部数字），RankIC 黑话定义降为小字注释。"""
     ics = "、".join(f"{v:+.3f}" for v in verdict.get("recent_ics", []))
     return {
         "config": {"wide_screen_mode": True},
         "header": {"template": "orange",
-                   "title": {"tag": "plain_text", "content": "🌡️ 策略复核提醒：建议方向排序力可疑"}},
-        "elements": [{
-            "tag": "div",
-            "text": {"tag": "lark_md",
-                     "content": (f"连续 {verdict['k_needed']} 个可测月 RankIC 低于 {IC_THRESHOLD}"
-                                 f"（近期 IC：{ics}），我们的建议方向与后续超额收益的秩相关偏弱——"
-                                 f"**建议人工复核策略是否失效**（纯观测提醒，不自动改任何建议）。")},
-        }],
+                   "title": {"tag": "plain_text", "content": "🌡️ 策略复核提醒：最近方向判断不太准"}},
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md",
+                         "content": (
+                             f"连续 **{verdict['k_needed']} 个月**，我们给的「买/卖/持」方向和之后的"
+                             f"实际涨跌基本对不上（近几个月吻合度 {ics}，都低于 {IC_THRESHOLD} 的健康线）。\n"
+                             f"可能策略在钝化，**建议你人工复核一下它是否还有效**。")},
+            },
+            {
+                "tag": "note",
+                "elements": [{"tag": "plain_text",
+                              "content": "纯观测提醒，系统不会自动改任何建议。"
+                                         "「吻合度」= RankIC，衡量我们排的方向顺序和实际涨跌顺序有多一致，"
+                                         "越接近 0 越弱、可为负。"}],
+            },
+        ],
     }
 
 

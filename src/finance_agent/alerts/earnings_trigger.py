@@ -173,8 +173,8 @@ async def _push_earnings_alert(upcoming: list[dict]) -> None:
     elements.append({
         "tag": "note",
         "elements": [{"tag": "plain_text",
-                      "content": "财报前后波动通常较大，注意仓位管理。"
-                                 "建议提前用 equity-research:earnings 做深度预分析。"}],
+                      "content": "财报前后波动通常较大，注意仓位管理，"
+                                 "别在财报公布前重仓押单一方向。"}],
     })
 
     card = {

@@ -127,3 +127,24 @@ def test_run_idempotent_same_month(tmp_path):
                                 rows_fn=lambda: _rows(15, 15, 2.0, -2.0))
     assert out["skipped"] == "already_recorded_this_month"
     assert len(log.read_text().splitlines()) == 1   # 未追加
+
+
+def test_alert_card_is_plain_language():
+    """视觉改版：RankIC 衰减卡说人话——保留全部数字，黑话降为小字注释。"""
+    from finance_agent.value.rankic_monitor import build_rankic_alert_card, IC_THRESHOLD
+    verdict = {"status": "decaying", "k_needed": 2, "recent_ics": [0.02, -0.01]}
+    card = build_rankic_alert_card(verdict)
+    title = card["header"]["title"]["content"]
+    divs = [e for e in card["elements"] if e.get("tag") == "div"]
+    notes = [e for e in card["elements"] if e.get("tag") == "note"]
+    main = "\n".join(d["text"]["content"] for d in divs)
+    note = "\n".join(n["elements"][0]["content"] for n in notes)
+    # 主句说人话：不裸露"秩相关/排序力"，标题讲"方向判断"
+    assert "方向判断" in title
+    assert "秩相关" not in main and "排序力" not in main
+    # 数字不折损：月数 + 两个 IC 值 + 健康线阈值都在
+    assert "2 个月" in main
+    assert "+0.020" in main and "-0.010" in main
+    assert str(IC_THRESHOLD) in main
+    # 黑话定义 + "不自动改建议"降到小字注释
+    assert "RankIC" in note and "不会自动改" in note
