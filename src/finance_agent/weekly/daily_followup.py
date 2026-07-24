@@ -133,7 +133,7 @@ def build_followup_card(
     # ── 免责声明 ───────────────────────────────────────────────────────────
     elements.append({
         "tag": "note",
-        "elements": [{"tag": "plain_text", "content": "以上为 AI 辅助参考，不构成投资建议，请结合自身风险偏好决策"}],
+        "elements": [{"tag": "plain_text", "content": "以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行"}],
     })
 
     return {

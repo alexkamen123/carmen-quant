@@ -319,7 +319,7 @@ async def run_monthly_review(db_path_str: str = "data/agent.db") -> tuple[dict, 
             {
                 "tag": "note",
                 "elements": [{"tag": "plain_text",
-                               "content": "以上为 AI 辅助复盘，不构成投资建议"}],
+                               "content": "以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行"}],
             },
         ],
     }

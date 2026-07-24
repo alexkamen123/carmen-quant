@@ -4,9 +4,10 @@ from datetime import datetime, timedelta
 
 from finance_agent.db import tracker
 from finance_agent.db.tracker import (
-    save_guidance, check_guidance_adherence, get_open_guidance,
+    save_guidance, check_guidance_adherence, get_open_guidance, save_recommendations,
 )
 from finance_agent.weekly.drift import bucket_of, compute_drift, derive_guidance
+from finance_agent.weekly.allocation_advisor import _apply_cross_report_consistency
 
 
 _STRATEGY = {
@@ -130,3 +131,47 @@ def test_check_adherence_open(tmp_path):
     # 未到期、无操作 → 仍 open
     res = check_guidance_adherence(db_path=db)
     assert len(res["open"]) == 1 and res["followed"] == [] and res["expired"] == []
+
+
+# ── P1 跨报告一致性校验 ───────────────────────────────────────
+
+def test_consistency_conflict_appends_warning(tmp_path):
+    db = tmp_path / "t.db"
+    # 日报刚说 NVDA 买入/大加 → 周报因集中度红线要减仓，方向冲突
+    save_recommendations("2026-07-20", [
+        {"ticker": "NVDA", "recommendation": "买入", "position_change": "大加"},
+    ], db_path=db)
+    items = [{"ticker": "NVDA", "action": "减仓", "rationale": "单票超集中度红线15%"}]
+    result = _apply_cross_report_consistency(items, db_path=db)
+    rationale = result[0]["rationale"]
+    assert "单票超集中度红线15%" in rationale
+    assert "⚠️ 与近日日报方向不同" in rationale
+
+
+def test_consistency_no_conflict_no_append(tmp_path):
+    db = tmp_path / "t.db"
+    # 日报也说减仓，方向一致
+    save_recommendations("2026-07-20", [
+        {"ticker": "NVDA", "recommendation": "减仓", "position_change": "减仓"},
+    ], db_path=db)
+    items = [{"ticker": "NVDA", "action": "减仓", "rationale": "单票超集中度红线15%"}]
+    result = _apply_cross_report_consistency(items, db_path=db)
+    assert result[0]["rationale"] == "单票超集中度红线15%"
+
+
+def test_consistency_no_record_silent_skip(tmp_path):
+    db = tmp_path / "t.db"  # 空库，不写任何 recommendations
+    items = [{"ticker": "IAU,SGOV", "action": "建仓", "rationale": "对冲桶低于下限"}]
+    result = _apply_cross_report_consistency(items, db_path=db)
+    assert result[0]["rationale"] == "对冲桶低于下限"
+
+
+def test_consistency_skips_non_directional_action(tmp_path):
+    db = tmp_path / "t.db"
+    # 日报方向冲突，但指导项 action=补仓，不在受检范围
+    save_recommendations("2026-07-20", [
+        {"ticker": "QQQM", "recommendation": "减仓", "position_change": "减仓"},
+    ], db_path=db)
+    items = [{"ticker": "QQQM", "action": "补仓", "rationale": "被动Beta桶严重低配"}]
+    result = _apply_cross_report_consistency(items, db_path=db)
+    assert result[0]["rationale"] == "被动Beta桶严重低配"

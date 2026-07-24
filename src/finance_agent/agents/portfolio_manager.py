@@ -103,6 +103,7 @@ def _parse_decision(d: dict) -> dict:
         "one_line":          d.get("one_line", ""),
         "key_assumption":    d.get("key_assumption", ""),
         "stop_loss_hint":    d.get("stop_loss_hint", ""),
+        "is_fallback":       bool(d.get("is_fallback", False)),
     }
 
 
@@ -236,7 +237,7 @@ async def run_portfolio_manager_batch(
             except Exception as e2:
                 print(f"[PM] DeepSeek 也失败 {s.ticker}: {e2}，默认观望")
                 return {"ticker": s.ticker, "recommendation": "观望", "confidence": "低",
-                        "one_line": "数据处理异常，建议观望"}
+                        "one_line": "数据处理异常，建议观望", "is_fallback": True}
 
         sem = asyncio.Semaphore(3)
 
