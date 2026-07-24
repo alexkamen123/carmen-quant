@@ -200,7 +200,7 @@ def playbook_panel(play: dict | None) -> dict | None:
         lines.append(f"⚠️ 另有 {play['dropped']} 笔卖出存在无法配对/无法定价的部分，"
                      "该部分未计入上述统计（追踪前建仓或记录缺价——不臆造成本价，宁缺勿假）")
     lines.append("")
-    lines.append("_以上为你已记录操作的描述性复盘（递镜子），不构成投资建议_")
+    lines.append("_以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行_")
     title = (f"**📒 操作剧本 · 卖出退出 {play['n_exits']} 次"
              f" · 切片胜率 {play['win_rate']:.0f}%**　_点开看盈亏与模式_")
     return collapsible_panel(title, "\n".join(lines))

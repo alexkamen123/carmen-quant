@@ -461,7 +461,7 @@ def build_value_card(m: dict) -> dict:
         _panel("🌡️ 价值证明 · 多维体温计（建议/行为双向打分）", _thermometer_from_m(m)),
         _panel("📎 诚实附录 · 数据怎么来的", _meta_section(m)),
         {"tag": "markdown", "content":
-            "_仅统计已回填记录；过往表现不代表未来收益；样本越小越不可靠；不构成投资建议_"},
+            "_仅统计已回填记录；过往表现不代表未来收益；样本越小越不可靠；以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行_"},
     ]
     return {
         "schema": "2.0",

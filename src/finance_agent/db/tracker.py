@@ -135,6 +135,8 @@ def _migrate_recommendations_table(con: sqlite3.Connection) -> None:
         ("analyst_upside", "REAL"), ("fundamental_score", "REAL"),
         # P1b 情绪因子埋点：NULL=未计算（观测 flag off/窗口内新闻<3 因子闭嘴）；同供 RankIC
         ("sentiment_7d", "REAL"), ("sentiment_trend", "REAL"), ("sentiment_n", "INTEGER"),
+        # P2c 兜底标记：1=异常降级观望，NULL/0=正常裁决，供 value/metrics.py 排除统计
+        ("is_fallback", "INTEGER"),
     ]:
         if col not in existing:
             try:
@@ -239,7 +241,9 @@ def save_recommendations(date: str, records: list[dict],
              r.get("fcf_yield"), r.get("gp_to_assets"), r.get("momentum_12_1"),
              r.get("analyst_upside"), r.get("fundamental_score"),
              # P1b 情绪因子（同上可选 key）
-             r.get("sentiment_7d"), r.get("sentiment_trend"), r.get("sentiment_n"))
+             r.get("sentiment_7d"), r.get("sentiment_trend"), r.get("sentiment_n"),
+             # P2c 兜底标记（同上可选 key，缺省 0=非兜底，向后兼容旧调用方）
+             int(r.get("is_fallback") or 0))
             for r in records
             if r["ticker"] not in existing
         ]
@@ -248,8 +252,8 @@ def save_recommendations(date: str, records: list[dict],
                 "INSERT INTO recommendations(date,ticker,recommendation,confidence,"
                 "position_change,price_at_rec,market,is_watch,"
                 "fcf_yield,gp_to_assets,momentum_12_1,analyst_upside,fundamental_score,"
-                "sentiment_7d,sentiment_trend,sentiment_n) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "sentiment_7d,sentiment_trend,sentiment_n,is_fallback) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
             print(f"[Tracker] 保存 {len(rows)} 条推荐记录（{date}）")
@@ -1259,7 +1263,9 @@ def check_guidance_adherence(db_path: str | Path | None = None) -> dict:
             tickers = [t.strip().upper() for t in (g["ticker"] or "").split(",") if t.strip()]
             action = g["action"] or ""
             item = {"id": g["id"], "ticker": g["ticker"], "action": action,
-                    "target": g["target"], "due_by": g["due_by"]}
+                    "target": g["target"], "due_by": g["due_by"],
+                    # P1 跨报告一致性：带出 rationale，卡片提取其中的方向冲突警示句
+                    "rationale": g["rationale"]}
 
             # ── 护栏(反向语义)：买了=没忍住(ignored)；到期没买=忍住了(resisted)──
             if g["source"] == "guardrail":
@@ -1635,6 +1641,44 @@ def get_latest_recommendation(ticker: str, db_path: str | Path | None = None) ->
             (ticker.upper(),),
         ).fetchone()
     return dict(row) if row else None
+
+
+# ── 周期性复盘（P3）：记账断档提醒 + 持仓分层 ──────────────────────────────
+
+def get_action_gap_alert(db_path: str | Path | None = None) -> str | None:
+    """行为闭环断档检查（P3a）：user_actions 表最近一条记录距今超过 7 天，
+    说明用户没在记账，行为复盘（P1 采集/月报打分）跟着停摆——查询只读，
+    调用方需 try/except 兜底，本函数不吞异常。"""
+    p = _resolve_db(db_path)
+    init_db(p)
+    with _conn(p) as con:
+        row = con.execute("SELECT MAX(date) AS d FROM user_actions").fetchone()
+    d = row["d"] if row else None
+    if not d:
+        return "📒 尚未记录过任何操作，行为复盘停摆中——有买卖请 `log-action` 补记"
+    gap = (datetime.now().date() - datetime.strptime(d, "%Y-%m-%d").date()).days
+    if gap > 7:
+        return f"📒 已 {gap} 天未记录操作，行为复盘停摆中——有买卖请 `log-action` 补记"
+    return None
+
+
+# 五档裁决 → 三层（P3b 周报持仓分层用）：持有/观望=不动，买入=可加，减仓/卖出=该减
+_LAYER_OF_REC = {"持有": "hold", "观望": "hold", "买入": "add_on_dip", "减仓": "trim", "卖出": "trim"}
+
+
+def layer_holdings(tickers: list[str], db_path: str | Path | None = None) -> dict[str, list[str]]:
+    """按每只持仓最近一次真实日报裁决（get_latest_recommendation），
+    归入 hold/add_on_dip/trim 三层，供周报『持仓分层』小节渲染。
+    无历史裁决或裁决不在映射内的 ticker 直接跳过，不臆测。"""
+    layers: dict[str, list[str]] = {"hold": [], "add_on_dip": [], "trim": []}
+    for t in tickers:
+        rec = get_latest_recommendation(t, db_path=db_path)
+        if not rec:
+            continue
+        layer = _LAYER_OF_REC.get(rec.get("recommendation"))
+        if layer:
+            layers[layer].append(t)
+    return layers
 
 
 def get_today_dip_conclusion(ticker: str, db_path: str | Path | None = None) -> str:

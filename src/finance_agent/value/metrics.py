@@ -382,8 +382,9 @@ def compute_value_metrics(db_path=None, live_overrides=None) -> dict:
         hold_rows = [dict(r) for r in con.execute(
             "SELECT id, date, ticker, return_7d, benchmark_return_7d FROM recommendations "
             "WHERE return_7d IS NOT NULL AND benchmark_return_7d IS NOT NULL "
-            "AND recommendation IN ('持有', '观望') AND IFNULL(is_watch, 0) = 0"
-        ).fetchall()]   # 影子票没有真实持仓，"持有判断"无意义，排除
+            "AND recommendation IN ('持有', '观望') AND IFNULL(is_watch, 0) = 0 "
+            "AND IFNULL(is_fallback, 0) = 0"
+        ).fetchall()]   # 影子票没有真实持仓/异常兜底观望，"持有判断"无意义，排除
     # 终局口径：持有判断同样切至今 alpha、只留满 X 天且至今基准可得的行
     if live_overrides is not None:
         hold_rows = [r for r in hold_rows if r["id"] in live_overrides]

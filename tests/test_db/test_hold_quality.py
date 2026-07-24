@@ -81,3 +81,17 @@ def test_save_recommendations_is_watch_roundtrip(tmp_path):
         rows = {r["ticker"]: r["is_watch"] for r in
                 con.execute("SELECT ticker, is_watch FROM recommendations").fetchall()}
     assert rows == {"AVGO": 1, "MU": 0}
+
+
+def test_save_recommendations_is_fallback_roundtrip(tmp_path):
+    """P2c：save 路径写入 is_fallback；缺省 0；不传 key 的旧调用方（向后兼容）不报错。"""
+    db = tmp_path / "t.db"
+    tracker.init_db(db)
+    tracker.save_recommendations("2026-06-11", [
+        {"ticker": "MU", "recommendation": "观望", "is_fallback": True},
+        {"ticker": "AVGO", "recommendation": "持有"},  # 旧调用方，无 is_fallback key
+    ], db_path=db)
+    with tracker._conn(db) as con:
+        rows = {r["ticker"]: r["is_fallback"] for r in
+                con.execute("SELECT ticker, is_fallback FROM recommendations").fetchall()}
+    assert rows == {"MU": 1, "AVGO": 0}

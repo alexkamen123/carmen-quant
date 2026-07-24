@@ -409,6 +409,8 @@ def _build_shadow_panel(shadow_stocks: list) -> dict | None:
         body = head + (f" — {one_line}" if one_line else "")
         if risk:
             body += f"\n　⚠️ {risk}"
+        if getattr(s, "is_fallback", False):
+            body += "\n　⚠️ 数据异常兜底"
         lines.append(body)
     title = f"**🔍 非持仓·影子股观察（{len(shadow_stocks)}）**　_点开看触发信号与简评_"
     return _panel(title, "\n".join(lines))
@@ -452,6 +454,8 @@ def _build_held_stock_elements(s) -> list[dict]:
     # ── 首行：单行紧凑 标的 · 建议 · 信心 · 仓位 ──
     head_bits = [f"**{emoji} {s.ticker}**　{s.recommendation}"]
     head_bits += [b for b in (conf_label, f"{pos_icon} {s.position_change or '维持'}") if b]
+    if getattr(s, "is_fallback", False):
+        head_bits.append("⚠️ 数据异常兜底")
     vis_lines: list[str] = [" · ".join(head_bits)]
 
     # ── 主屏可见：结论 + 本周操作 + 财报 + 入场 + 止损 + 风险 + 守门警示 ──
@@ -531,6 +535,8 @@ async def format_report_node(state: AgentState) -> AgentState:
         conf  = CONF.get(s.confidence, "")
         lines.append(f"\n{emoji} {s.ticker}  {s.recommendation} {conf}")
         lines.append(f"   {s.one_line}")
+        if getattr(s, "is_fallback", False):
+            lines.append("   ⚠️ 数据异常兜底")
         if s.short_term_action and s.short_term_action != "立即执行":
             lines.append(f"   ⏱️  本周：{s.short_term_action}")
         if s.entry_hint:
@@ -548,7 +554,7 @@ async def format_report_node(state: AgentState) -> AgentState:
             lines.append(f"   🐻 空方：{s.bear_thesis}")
     if state.errors:
         lines.append(f"\n⚙️ 获取失败：{', '.join(state.errors)}")
-    lines.append("\n以上仅供参考，操作前请自行判断")
+    lines.append("\n以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行")
     report_text = "\n".join(lines)
 
     # ── 飞书卡片 JSON ────────────────────────────────────────────
@@ -594,7 +600,7 @@ async def format_report_node(state: AgentState) -> AgentState:
     elements.append({
         "tag": "note",
         "elements": [{"tag": "plain_text",
-                       "content": "以上仅供参考，操作前请自行判断。"
+                       "content": "以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行。"
                                   "如实际操作，可运行 finance-agent log-action TICKER BUY/SELL 记录"}],
     })
 
@@ -727,6 +733,8 @@ async def track_node(state: AgentState) -> AgentState:
             "price_at_rec":    s.signals.close if s.signals else None,
             # shares=0 = watchlist 影子推荐（纯测量、无真实仓位），记分牌分栏统计
             "is_watch":        0 if s.shares else 1,
+            # P2c：1=本次为异常兜底裁决（观望），供 value/metrics.py 排除“真实观望”统计
+            "is_fallback":     int(getattr(s, "is_fallback", False)),
             # P1a 基本面因子埋点（flag off 时恒 None→NULL，与改动前一致）：供日后月度 RankIC 校验
             "fcf_yield":         s.earnings.fcf_yield,
             "gp_to_assets":      s.earnings.gp_to_assets,

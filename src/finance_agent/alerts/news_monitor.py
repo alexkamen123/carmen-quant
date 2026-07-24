@@ -535,7 +535,7 @@ async def _send_stock_alert(ticker: str, market: str, title: str, published: str
     elements += [
         {"tag": "hr"},
         {"tag": "note", "elements": [{"tag": "plain_text",
-                                      "content": "以上为 AI 快速判断，仅供参考，请自行核实原文"}]},
+                                      "content": "以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行；如需核实可查阅原文"}]},
     ]
 
     card = {
@@ -646,7 +646,7 @@ async def _send_macro_alert(title: str, published: str, impact: int, sentiment: 
             {"tag": "div", "text": {"tag": "lark_md", "content": f"💡 {reason}"}},
             {"tag": "hr"},
             {"tag": "note", "elements": [{"tag": "plain_text",
-                                          "content": "宏观快讯 · AI 快速判断，仅供参考"}]},
+                                          "content": "宏观快讯 · 以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行"}]},
         ],
     }
     await send_feishu_card(card, fallback_text=_card_fallback_text(card))
@@ -738,7 +738,7 @@ async def _send_us_macro_alert(title: str, published: str, impact: int, sentimen
             {"tag": "div", "text": {"tag": "lark_md", "content": f"💡 {reason}"}},
             {"tag": "hr"},
             {"tag": "note", "elements": [{"tag": "plain_text",
-                                          "content": "美股宏观快讯 · AI 快速判断，仅供参考"}]},
+                                          "content": "美股宏观快讯 · 以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行"}]},
         ],
     }
     await send_feishu_card(card, fallback_text=_card_fallback_text(card))
@@ -1741,7 +1741,7 @@ async def _send_price_drop_alert(ticker: str, market: str,
         })
     elements.append({
         "tag": "note",
-        "elements": [{"tag": "plain_text", "content": "价格异动 · AI 辅助判断，不构成投资建议，请结合自身情况决策"}],
+        "elements": [{"tag": "plain_text", "content": "价格异动 · 以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行"}],
     })
 
     _act = analysis.get("action") if analysis else None

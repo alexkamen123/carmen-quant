@@ -109,3 +109,38 @@ async def test_fallback_empty_evidence_no_placeholder(monkeypatch):
 
     assert "暂未记录持仓逻辑" in captured["user"]
     assert "实盘反馈" not in captured["user"].split("若材料中含")[0]   # 正文无凭空的反馈区块
+
+
+@pytest.mark.asyncio
+async def test_deepseek_double_failure_marks_is_fallback(monkeypatch):
+    """P2c：DeepSeek 也失败时的兜底观望，必须打 is_fallback=True 标记，
+    供 value/metrics.py 从"真实观望"统计里排除。"""
+    stock = _mk_stock(thesis="持仓逻辑", shares=1.0)
+    monkeypatch.setattr(pm, "has_claude_cli", lambda: False)
+    monkeypatch.setattr(pm, "guard_enabled", lambda: False)
+
+    async def fake_deepseek_fail(system, user):
+        raise RuntimeError("deepseek 挂了")
+
+    with patch.object(pm, "deepseek_chat", new=AsyncMock(side_effect=fake_deepseek_fail)):
+        out = await pm.run_portfolio_manager_batch([stock])
+
+    assert out[0].recommendation == "观望"
+    assert out[0].is_fallback is True
+
+
+@pytest.mark.asyncio
+async def test_normal_decision_is_fallback_false(monkeypatch):
+    """正常 DeepSeek 裁决成功时，is_fallback 默认透传为 False，不误标。"""
+    stock = _mk_stock(thesis="持仓逻辑", shares=1.0)
+    monkeypatch.setattr(pm, "has_claude_cli", lambda: False)
+    monkeypatch.setattr(pm, "guard_enabled", lambda: False)
+
+    async def fake_deepseek_ok(system, user):
+        return json.dumps({"recommendation": "持有", "confidence": "中",
+                           "position_change": "维持", "one_line": "ok"})
+
+    with patch.object(pm, "deepseek_chat", new=AsyncMock(side_effect=fake_deepseek_ok)):
+        out = await pm.run_portfolio_manager_batch([stock])
+
+    assert out[0].is_fallback is False

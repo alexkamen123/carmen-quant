@@ -6,6 +6,18 @@ from finance_agent.notifications.glossary import build_glossary_element
 from finance_agent.notifications.cards import collapsible_panel
 
 URGENCY_EMOJI = {"高": "🔴", "中": "🟡", "低": "🟢"}
+
+# P1 跨报告一致性：rationale 里由 _apply_cross_report_consistency 追加的警示句前缀
+_CONFLICT_MARK = "⚠️ 与近日日报方向不同"
+
+
+def _conflict_warning(item: dict) -> str | None:
+    """从指导项 rationale 中提取方向冲突警示句（只取警示句，不带整段理由）。"""
+    rationale = item.get("rationale") or ""
+    idx = rationale.find(_CONFLICT_MARK)
+    return rationale[idx:] if idx >= 0 else None
+
+
 SIGNAL_EMOJI = {"强": "🔥", "中": "✨"}
 TYPE_TAG = {"防御/对冲型": "🛡️ 防御/对冲", "成长型": "📈 成长", "ETF/宽基": "📦 ETF/宽基"}
 
@@ -52,6 +64,15 @@ def build_weekly_card(result: dict) -> dict:
         })
         elements.append({"tag": "hr"})
 
+    # ── 记账断档提醒（P3a）：user_actions 超过 7 天没记，独立成段，不影响 TL;DR ──
+    action_gap_alert = result.get("action_gap_alert")
+    if action_gap_alert:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": action_gap_alert},
+        })
+        elements.append({"tag": "hr"})
+
     # ── 诊断摘要 ──────────────────────────────────────────────────────────────
     diag_lines = []
     if concentration_risk:
@@ -90,14 +111,32 @@ def build_weekly_card(result: dict) -> dict:
             g_lines.append(f"✅ 已照做：{it['action']} **{it['ticker']}**")
         for it in adherence.get("expired", []):
             g_lines.append(f"❌ 未执行（已过期）：{it['action']} **{it['ticker']}** — {it.get('target', '')}")
+            if (w := _conflict_warning(it)):
+                g_lines.append(f"　{w}")
         for it in adherence.get("open", []):
             g_lines.append(
                 f"⏳ 进行中：{it['action']} **{it['ticker']}** — {it.get('target', '')}"
                 f"（截止 {it.get('due_by', '')}）"
             )
+            if (w := _conflict_warning(it)):
+                g_lines.append(f"　{w}")
         elements.append({
             "tag": "div",
             "text": {"tag": "lark_md", "content": "\n".join(g_lines)},
+        })
+        elements.append({"tag": "hr"})
+
+    # ── 持仓分层（P3b）：五档裁决归三层，只覆盖有日报裁决记录的持仓 ────────────
+    layers = result.get("holdings_layers", {})
+    _LAYER_ORDER = [("add_on_dip", "🟢 回调分批可加"), ("hold", "🟡 拿住不动"), ("trim", "🔴 该减照减")]
+    non_empty = [(label, layers[key]) for key, label in _LAYER_ORDER if layers.get(key)]
+    if non_empty:
+        layer_lines = ["**🗂️ 持仓分层**（基于最近一次日报裁决·五档归三层，不动=持有/观望，可加=买入，该减=减仓/卖出）"]
+        for label, tickers in non_empty:
+            layer_lines.append(f"{label}：{'、'.join(tickers)}")
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "\n".join(layer_lines)},
         })
         elements.append({"tag": "hr"})
 
@@ -214,7 +253,7 @@ def build_weekly_card(result: dict) -> dict:
     elements.append({
         "tag": "note",
         "elements": [
-            {"tag": "plain_text", "content": "以上为 AI 辅助配置建议，仅供参考，不构成投资建议，请结合自身风险偏好决策"}
+            {"tag": "plain_text", "content": "以上为系统依据当前数据给出的明确建议，仓位调整请结合自身风险承受能力执行"}
         ],
     })
 

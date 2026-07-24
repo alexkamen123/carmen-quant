@@ -21,8 +21,53 @@ from finance_agent.agents.bull_agent import deepseek_chat
 from finance_agent.data.macro import fetch_macro_context
 from finance_agent.db.tracker import (
     weekly_accuracy_summary, save_guidance, check_guidance_adherence,
+    get_latest_recommendation, get_action_gap_alert, layer_holdings,
 )
 from finance_agent.weekly.drift import bucket_of, compute_drift, derive_guidance
+
+
+# P1 跨报告一致性校验：只检 减仓/建仓 两类方向性指导（其余 action 不涉及方向冲突判定）
+_CONFLICT_TRIGGER = {
+    "减仓": ("持仓集中度红线", "空"),
+    "建仓": ("对冲桶低于下限", "多"),
+}
+
+
+def _apply_cross_report_consistency(guidance_items: list[dict],
+                                     db_path: str | None = None) -> list[dict]:
+    """周报 guidance 落库前对照日报最近裁决，方向冲突时在 rationale 追加警示（不改 action/target_pct）。
+
+    仅覆盖 减仓/建仓 两类：减仓项若日报近期仍看多（买入/大加/小加），或建仓项若日报近期看空
+    （减仓/卖出），视为跨报告矛盾——不隐藏、不改口径，只把矛盾亮出来给人看。
+    """
+    for item in guidance_items:
+        action = item.get("action")
+        if action not in _CONFLICT_TRIGGER:
+            continue
+        trigger_desc, flip_to = _CONFLICT_TRIGGER[action]
+        tickers = [t.strip() for t in str(item.get("ticker", "")).split(",") if t.strip()]
+        for ticker in tickers:
+            try:
+                rec = get_latest_recommendation(ticker, db_path=db_path)
+            except Exception:
+                rec = None
+            if not rec:
+                continue
+            recommendation = rec.get("recommendation") or ""
+            position_change = rec.get("position_change") or ""
+            # 与 db/tracker.py _determine_outcome / _is_directional 同口径的内联小段
+            # （刻意不导出改造该私有集合，避免触碰 tracker.py）
+            bullish = recommendation == "买入" or position_change.startswith(("大加", "小加"))
+            bearish = recommendation in ("减仓", "卖出") or position_change.startswith("减仓")
+
+            conflict = (action == "减仓" and bullish) or (action == "建仓" and bearish)
+            if conflict:
+                warning = f"⚠️ 与近日日报方向不同：本条因{trigger_desc}触发，非基本面转{flip_to}"
+                rationale = item.get("rationale") or ""
+                if warning not in rationale:
+                    item["rationale"] = f"{rationale};{warning}" if rationale else warning
+                break
+    return guidance_items
 
 
 async def _claude_json(system: str, user: str, timeout: int = 120,
@@ -82,7 +127,7 @@ HEDGE_SYSTEM = """你是一位专注 ETF 和全球资产配置的投顾。
         "name": "名称",
         "market": "us" | "hk",
         "rationale": "为什么选这个（一句话）",
-        "entry_hint": "参考买入逻辑（一句话，不要预测具体价格）"
+        "entry_hint": "给出可验证的量化触发条件，如回落到250日均线附近/PE低于X倍/较52周高点回撤Y%时分批介入；禁止预测式喊价（不许说预测会跌到多少）"
       }
     ]
   }
@@ -422,13 +467,27 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
     # ── 三桶漂移 + 指导台账（P2）──
     strategy = portfolio.get("strategy", {})
     drift_rows = compute_drift(bucket_value, total_value, strategy)
-    save_guidance(derive_guidance(drift_rows, holding_value, total_value, strategy),
-                  source="weekly")
+    guidance_items = derive_guidance(drift_rows, holding_value, total_value, strategy)
+    guidance_items = _apply_cross_report_consistency(guidance_items)
+    save_guidance(guidance_items, source="weekly")
     guidance_adherence = check_guidance_adherence()   # 检验历史指导执行情况
     print("[AllocationAdvisor] 三桶漂移：" + " | ".join(
         f"{r['bucket']} {r['current_pct']:.0f}%/{r['target_pct']:.0f}%{r['status']}"
         for r in drift_rows
     ))
+
+    # ── 记账断档提醒（P3a）+ 持仓分层（P3b）：只读聚合，失败静默跳过不影响周报主体 ──
+    try:
+        action_gap_alert = get_action_gap_alert()
+    except Exception as e:
+        print(f"[AllocationAdvisor] ⚠️ 记账断档检查失败（静默跳过）: {e}")
+        action_gap_alert = None
+
+    try:
+        holdings_layers = layer_holdings([h["ticker"] for h in holdings])
+    except Exception as e:
+        print(f"[AllocationAdvisor] ⚠️ 持仓分层聚合失败（静默跳过）: {e}")
+        holdings_layers = {}
 
     result: dict[str, Any] = {
         "date": __import__("datetime").date.today().isoformat(),
@@ -442,6 +501,8 @@ async def run_allocation_advisor(force: bool = False) -> dict[str, Any]:
         "weekly_stats": weekly_stats,
         "drift_rows": drift_rows,
         "guidance_adherence": guidance_adherence,
+        "action_gap_alert": action_gap_alert,
+        "holdings_layers": holdings_layers,
         # 跟进用：本次推荐的所有 instrument tickers
         "watch_tickers": list({
             ins["ticker"]
