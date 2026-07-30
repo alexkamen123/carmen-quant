@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-将 Claude Code 飞书 bot (cli_aa9c839de1f95cdd) 拉入"粥卡门持仓分析"群，
-并更新 lark-channel workspaces.json 映射。
+将 Claude Code 飞书 bot 拉入指定群，并更新 lark-channel workspaces.json 映射。
 全程本地运行，凭据不出机器。
+
+用法（应用与群标识都走环境变量，不硬编码）：
+    FEISHU_APP_ID=cli_xxx FEISHU_CHAT_ID=oc_xxx python3 scripts/add_cc_bot_to_group.py
+
+AGENT_CWD 可选，默认取本仓库根目录。
 """
 import json, subprocess, sys, os
 from pathlib import Path
 import urllib.request, urllib.error
 
-APP_ID   = "cli_aa9c839de1f95cdd"
-CHAT_ID  = "oc_25e108f486a9cf3a7eeb051a1f1b6fc0"
-CHAT_CWD = "/Users/zhouyihao/Projects/personal/finance-agent"
+APP_ID   = os.environ.get("FEISHU_APP_ID", "")
+CHAT_ID  = os.environ.get("FEISHU_CHAT_ID", "")
+CHAT_CWD = os.environ.get("AGENT_CWD") or str(Path(__file__).resolve().parents[1])
 
 SECRETS_GETTER = Path.home() / ".lark-channel" / "secrets-getter"
 WORKSPACES     = Path.home() / ".lark-channel" / "workspaces.json"
@@ -108,7 +112,13 @@ def update_workspaces() -> None:
 
 
 if __name__ == "__main__":
-    print("=== Claude Code bot → 粥卡门持仓分析 群 ===\n")
+    missing = [k for k, v in (("FEISHU_APP_ID", APP_ID), ("FEISHU_CHAT_ID", CHAT_ID)) if not v]
+    if missing:
+        print(f"[ERROR] 缺少环境变量：{', '.join(missing)}")
+        print("用法：FEISHU_APP_ID=cli_xxx FEISHU_CHAT_ID=oc_xxx python3 scripts/add_cc_bot_to_group.py")
+        sys.exit(1)
+
+    print(f"=== Claude Code bot → 群 {CHAT_ID} ===\n")
     secret = get_app_secret()
     token  = get_app_token(secret)
     add_bot_to_chat(token)
