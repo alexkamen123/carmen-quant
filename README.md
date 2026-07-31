@@ -26,34 +26,51 @@
 
 ### 日报流水线（LangGraph 7 节点）
 
-```
-fetch_data → thesis → fundamentals → debate → decision → format → track
-    ↓           ↓           ↓           ↓         ↓         ↓       ↓
-行情/新闻    加载持仓    Claude      DeepSeek  Claude    飞书卡片  SQLite
-技术指标     逻辑(DB)   基本面分析  多空辩论   最终裁决  + 名词解释  + 回填
+蓝色是**代码**负责的确定性环节，橙色是**模型**负责的推理环节 —— 职责边界在图上是看得见的：
+
+```mermaid
+flowchart LR
+    A["fetch_data<br/>行情 · 新闻 · 技术指标"]:::code
+    B["thesis<br/>加载持仓逻辑"]:::code
+    C["fundamentals<br/>基本面分析"]:::llm
+    D["debate<br/>多空各持一方举证"]:::llm
+    E["decision<br/>综合裁决"]:::llm
+    F["format<br/>飞书卡片 + 名词解释"]:::code
+    G["track<br/>回填 SQLite"]:::code
+
+    A --> B --> C --> D --> E --> F --> G
+
+    classDef code fill:#dbeafe,stroke:#2563eb,color:#1e3a5f
+    classDef llm fill:#fed7aa,stroke:#ea580c,color:#7c2d12
 ```
 
-**三个 Agent 角色：**
-
-| 角色 | 模型 | 职责 |
-|------|------|------|
-| 基本面分析师 | Claude CLI | 解读财务数据，输出白话判断 |
-| 多头 / 空头 | DeepSeek V3 | 从价值/成长/动量三视角各持一方辩论 |
-| 组合经理 | Claude CLI（降级 DeepSeek） | 综合持仓成本/浮盈/集中度，给出操作建议 |
+| 节点 | 谁在做 | 说明 |
+|---|---|---|
+| `fetch_data` / `thesis` | 代码 | 行情、新闻、技术指标抓取与持仓逻辑加载，可重放可调试 |
+| `fundamentals` | Claude | 解读财务数据，输出白话判断 |
+| `debate` | DeepSeek V3 | 多头 / 空头从价值·成长·动量三视角**各持一方**辩论 |
+| `decision` | Claude（降级 DeepSeek） | 综合持仓成本、浮盈、集中度给出操作建议 |
+| `format` / `track` | 代码 | 卡片由代码拼装（不让模型直出结构化输出），结果回填以便月度复盘 |
 
 ### 周报流水线（三步）
 
-```
-持仓集中度计算（统一换算为美元）
-      ↓
-Step 1 配置诊断（Claude）  →  集中风险 + 宏观风险 + 对冲方向
-      ↓
-Step 2 对冲选品（Claude）  →  每个方向推荐 1-2 个可交易品种
-      ↓
-Step 3 机会筛选           →  RSI<48 技术初筛 + 基本面双重过滤
-                              → Claude 结合持仓集中度精选 3-5 只
-      ↓
-结果缓存（同一 ISO 周内复用，--force 可强制重跑）
+注意 Step 3：**先用代码把候选集从全市场收窄到几十个，模型只在小候选集里做精选**——
+让 LLM 扫全市场既慢又贵且不稳定。
+
+```mermaid
+flowchart TD
+    S["持仓集中度计算<br/>统一换算为美元"]:::code
+    S1["Step 1 配置诊断<br/>集中风险 · 宏观风险 · 对冲方向"]:::llm
+    S2["Step 2 对冲选品<br/>每个方向 1-2 个可交易品种"]:::llm
+    F1["RSI &lt; 48 技术初筛"]:::code
+    F2["基本面双重过滤"]:::code
+    S3["Step 3 精选<br/>结合持仓集中度选 3-5 只"]:::llm
+    C["结果缓存<br/>同一 ISO 周内复用<br/>加 force 参数可强制重跑"]:::code
+
+    S --> S1 --> S2 --> F1 --> F2 --> S3 --> C
+
+    classDef code fill:#dbeafe,stroke:#2563eb,color:#1e3a5f
+    classDef llm fill:#fed7aa,stroke:#ea580c,color:#7c2d12
 ```
 
 ---
