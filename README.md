@@ -1,3 +1,5 @@
+![多空两股信号流汇聚到中央裁决节点的抽象示意](docs/assets/cover.png)
+
 # 卡门智投 · Carmen Quant
 
 > **多 Agent 对抗式投研助手**：让多空双方各自举证辩论，再由裁决 Agent 出结论——
