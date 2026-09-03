@@ -13,7 +13,7 @@
 权威资产目录：
 
 ```text
-/Users/chenyifan/Documents/小浣熊IP资产
+~/Documents/小浣熊IP资产
 ```
 
 优先读取：

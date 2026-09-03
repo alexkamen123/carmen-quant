@@ -21,7 +21,7 @@ description: 生成滚滚小熊猫 IP 的中文正文配图。用于用户要求
 - `references/prompt-template.md`：单张生图提示词模板。
 - `references/qa-checklist.md`：生成后检查和迭代规则。
 
-如果任务需要保持滚滚形象一致，优先读取本机资产目录 `/Users/chenyifan/Documents/小浣熊IP资产/README.md`，并参考其中四张角色说明书。不要把精确头像发送给图像模型做随意重绘。
+如果任务需要保持滚滚形象一致，优先读取本机资产目录 `~/Documents/小浣熊IP资产/README.md`，并参考其中四张角色说明书。不要把精确头像发送给图像模型做随意重绘。
 
 ## 工作流
 
