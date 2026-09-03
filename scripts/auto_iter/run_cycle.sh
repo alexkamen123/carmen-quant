@@ -5,7 +5,7 @@
 # 验证用法：DRY_RUN=1 bash scripts/auto_iter/run_cycle.sh   （只策划不写码不合并）
 set -uo pipefail
 
-REPO="/Users/zhouyihao/Projects/personal/finance-agent"
+REPO="${CARMEN_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 PROMPT="$REPO/scripts/auto_iter/cycle_runner_prompt.md"
 LOG_DIR="$REPO/logs/auto_iter"
 mkdir -p "$LOG_DIR"

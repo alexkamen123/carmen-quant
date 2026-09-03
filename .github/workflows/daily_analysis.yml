@@ -2,7 +2,7 @@
 name: 每日持仓分析
 
 on:
-  # ⚠️ 定时已彻底迁至本地 launchd（com.zhouyihao.carmen-evening 等，见 CLAUDE.md 时刻表）。
+  # ⚠️ 定时已彻底迁至本地 launchd（com.<user>.carmen-evening 等，见 CLAUDE.md 时刻表）。
   # GitHub schedule 于 2026-06-09 停用、2026-06-18 删除 cron 行彻底断根——
   # 避免与本地双跑（历史上双跑导致日报一天推 3 遍），且 CI 无 portfolio.yaml 会失败。
   workflow_dispatch:          # 仅保留手动触发

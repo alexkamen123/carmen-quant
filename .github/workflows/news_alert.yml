@@ -10,7 +10,7 @@ name: 盘中新闻扫描
 # yfinance news API 会返回各自市场的新闻，两段 cron 共用同一 job 即可。
 
 on:
-  # ⚠️ 定时已迁至本地 launchd（com.zhouyihao.carmen-news，工作日 09:30/13:30/21:30）。
+  # ⚠️ 定时已迁至本地 launchd（com.<user>.carmen-news，工作日 09:30/13:30/21:30）。
   # GitHub schedule 已停用，避免与本地重复推送；保留 workflow_dispatch 供手动触发。
   workflow_dispatch:
     inputs:

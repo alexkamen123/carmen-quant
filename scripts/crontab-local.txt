@@ -1,15 +1,17 @@
 # ── 卡门智投 本地定时任务 ────────────────────────────────────────
+# 使用前设置 REPO 为本仓绝对路径（本文件为遗留参考，实际调度已迁 launchd）
+REPO=/path/to/finance-agent
 # 港股场日报（工作日 09:00）
-0 9 * * 1-5 /Users/zhouyihao/Projects/personal/finance-agent/scripts/run_local.sh run >> /tmp/carmen-morning.log 2>&1
+0 9 * * 1-5 $REPO/scripts/run_local.sh run >> /tmp/carmen-morning.log 2>&1
 # 美股场日报（工作日 21:30）
-30 21 * * 1-5 /Users/zhouyihao/Projects/personal/finance-agent/scripts/run_local.sh run >> /tmp/carmen-evening.log 2>&1
+30 21 * * 1-5 $REPO/scripts/run_local.sh run >> /tmp/carmen-evening.log 2>&1
 # 周报（周一 09:30）
-30 9 * * 1 /Users/zhouyihao/Projects/personal/finance-agent/scripts/run_local.sh weekly-report >> /tmp/carmen-weekly.log 2>&1
+30 9 * * 1 $REPO/scripts/run_local.sh weekly-report >> /tmp/carmen-weekly.log 2>&1
 # 每日轻量跟进（周二到周五 09:30）
-30 9 * * 2-5 /Users/zhouyihao/Projects/personal/finance-agent/scripts/run_local.sh daily-followup >> /tmp/carmen-followup.log 2>&1
+30 9 * * 2-5 $REPO/scripts/run_local.sh daily-followup >> /tmp/carmen-followup.log 2>&1
 # 财报预警（工作日 08:30）
-30 8 * * 1-5 /Users/zhouyihao/Projects/personal/finance-agent/scripts/run_local.sh earnings-check >> /tmp/carmen-earnings.log 2>&1
+30 8 * * 1-5 $REPO/scripts/run_local.sh earnings-check >> /tmp/carmen-earnings.log 2>&1
 # 新闻扫描（工作日每 2 小时，09:30-21:30）
-30 9,11,13,15,17,19,21 * * 1-5 /Users/zhouyihao/Projects/personal/finance-agent/scripts/run_local.sh news-scan >> /tmp/carmen-news.log 2>&1
+30 9,11,13,15,17,19,21 * * 1-5 $REPO/scripts/run_local.sh news-scan >> /tmp/carmen-news.log 2>&1
 # 月度回顾（每月 1 日 10:00）
-0 10 1 * * /Users/zhouyihao/Projects/personal/finance-agent/scripts/run_local.sh monthly-review >> /tmp/carmen-monthly.log 2>&1
+0 10 1 * * $REPO/scripts/run_local.sh monthly-review >> /tmp/carmen-monthly.log 2>&1

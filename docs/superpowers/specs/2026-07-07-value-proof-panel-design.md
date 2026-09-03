@@ -8,7 +8,7 @@
 
 ## 0. 关键事实澄清（决定范围）
 
-盘点曾报"value-report 没进调度(crontab-local.txt 无)"——**误报**。已核实 `~/Library/LaunchAgents/com.zhouyihao.carmen-value.plist` **Weekday 6(周六) 10:00 跑 value-report**（launchd 才是权威·GitHub cron 已废·见 CLAUDE.md 调度表）。`crontab-local.txt` 是遗留参考文件。
+盘点曾报"value-report 没进调度(crontab-local.txt 无)"——**误报**。已核实 `~/Library/LaunchAgents/com.<user>.carmen-value.plist` **Weekday 6(周六) 10:00 跑 value-report**（launchd 才是权威·GitHub cron 已废·见 CLAUDE.md 调度表）。`crontab-local.txt` 是遗留参考文件。
 
 **结论：C（上 cron）已满足、无需改调度。** 本轮收敛成纯 **A**：把 4 个孤儿读数收进 `build_value_card` 折叠面板。因 value-report 本就周六自动跑，收进去即等于"每周自动出双向打分"。
 

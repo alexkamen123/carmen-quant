@@ -55,7 +55,7 @@
 - **飞书**：`FEISHU_WEBHOOK_URL` + `FEISHU_WEBHOOK_SECRET`（HMAC签名），失败自动邮件兜底
 - **DeepSeek V3**：`DEEPSEEK_API_KEY`，用于 Bull/Bear 辩论 + 新闻评分
 - **Claude**：`ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`，用于基本面分析 + 组合决策 + 周报；Claude 子进程失败自动降级 DeepSeek
-- **调度**：**本地 launchd**（`~/Library/LaunchAgents/com.zhouyihao.carmen-*.plist`，备份在 `~/config-backups/launchd-*/`）。⚠️ GitHub Actions 定时任务已于 2026-06-09 全部禁用（仅留"Actions 失败飞书通知"事件触发），**不要再用 GitHub cron**——历史上本地+GitHub 双跑导致日报一天推 3 遍。
+- **调度**：**本地 launchd**（`~/Library/LaunchAgents/com.<user>.carmen-*.plist`，`<user>` 为本机登录用户名，实到的 label 用 `launchctl list | grep carmen` 查；备份在 `~/config-backups/launchd-*/`）。⚠️ GitHub Actions 定时任务已于 2026-06-09 全部禁用（仅留"Actions 失败飞书通知"事件触发），**不要再用 GitHub cron**——历史上本地+GitHub 双跑导致日报一天推 3 遍。
 
 ## 调度时刻表（北京时间 · 本地 launchd 实况，2026-06-13 校准）
 
